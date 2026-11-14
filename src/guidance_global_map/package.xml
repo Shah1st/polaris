@@ -8,7 +8,15 @@
   <license>TODO</license>
 
   <exec_depend>rclpy</exec_depend>
-  <!-- TODO(global_map): add as the logic lands: sensor_msgs, nav_msgs, cv_bridge, python3-opencv, guidance_interfaces -->
+  <exec_depend>guidance_calib</exec_depend>
+  <exec_depend>guidance_rover_pose</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 
