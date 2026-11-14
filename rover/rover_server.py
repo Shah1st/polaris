@@ -21,6 +21,10 @@ HTTP API (JSON bodies). The first two match the shared simulation in sim/run_wor
   POST /stop           stop now and drop the queued steps
   POST /reset_odom     pose back to (0, 0, 0 deg)
   POST /calibrate_gyro measure the gyro bias again (rover must stand still 2 s)
+  POST /sim            simulation only: {"drift": rad/s} the rover turns by itself while moving
+  POST /gimbal         camera pan-tilt: {"pan_rate": -1|0|1, "tilt_rate": -1|0|1} while a key
+                       is held (repeat it like /cmd), {"pan": deg, "tilt": deg} (pan + = right,
+                       tilt + = up), or {"center": true}. A raw {"T":133,...} on /cmd works too.
   GET  /config         settings;  POST /config {"name": value, ...} changes and saves them
 """
 
@@ -179,9 +183,15 @@ class SimCamera(Camera):
             pts = [px(b.x + c * x - s * y, b.y + s * x + c * y) for x, y in body]
             cv2.polylines(img, [np.array(pts, np.int32)], True, (230, 230, 230), 2)
             cv2.arrowedLine(img, px(b.x, b.y), px(b.x + 0.2 * c, b.y + 0.2 * s), (0, 200, 255), 2)
+            cam = b.yaw - math.radians(b.pan)  # pan + = right, i.e. clockwise from above
+            for half in (-0.45, 0.45):  # camera field of view, about 90 deg
+                end = (b.x + 0.5 * math.cos(cam + half), b.y + 0.5 * math.sin(cam + half))
+                cv2.line(img, px(b.x, b.y), px(*end), (255, 200, 80), 1)
             yaw = math.degrees(b.yaw)
             text = f'SIMULATION  true pose x={b.x:+.3f} y={b.y:+.3f} yaw={yaw:+.1f}'
             cv2.putText(img, text, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+            text = f'camera pan {b.pan:+.0f} tilt {b.tilt:+.0f}  drift {b.yaw_drift:+.2f} rad/s'
+            cv2.putText(img, text, (10, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 200, 80), 1)
             cv2.putText(img, 'grid 10 cm', (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
                         (150, 150, 150), 1)  # fmt: skip
             yield img
@@ -293,6 +303,20 @@ def make_handler(app: App):
                         b.trail.clear()
                 elif path == '/calibrate_gyro':
                     rover.recalibrate_gyro()
+                elif path == '/sim' and app.sim_board is not None:
+                    app.sim_board.yaw_drift = float(body['drift'])
+                elif path == '/gimbal':
+                    if body.get('center'):
+                        rover.gimbal_set(0.0, 0.0)
+                    elif 'pan' in body or 'tilt' in body:
+                        g = rover.gimbal
+                        rover.gimbal_set(
+                            float(body.get('pan', g.pan)), float(body.get('tilt', g.tilt))
+                        )
+                    else:
+                        rover.gimbal_rate(
+                            float(body.get('pan_rate', 0)), float(body.get('tilt_rate', 0))
+                        )
                 elif path == '/config':
                     with rover.lock:
                         changed = rover.cfg.update(body)
@@ -317,6 +341,8 @@ def make_handler(app: App):
             elif kind == 1:  # wheel speeds -> (v, w), the ESP32 does the inverse for T:13
                 left, right = float(body.get('L', 0)), float(body.get('R', 0))
                 rover.manual((left + right) / 2, (right - left) / rover.cfg.track)
+            elif kind == 133:  # pan-tilt: keep the commanded angles in sync
+                rover.gimbal_set(float(body.get('X', 0)), float(body.get('Y', 0)))
             elif kind == 0:
                 rover.stop()
             elif kind is not None:
@@ -371,6 +397,12 @@ def main() -> None:
     ap.add_argument('--port', type=int, default=8080, help='HTTP port (default 8080)')
     ap.add_argument('--port-serial', help='ESP32 serial port (default: found automatically)')
     ap.add_argument('--sim', action='store_true', help='simulated ESP32 and camera')
+    ap.add_argument(
+        '--sim-drift',
+        type=float,
+        default=0.0,
+        help='simulation: rad/s the rover turns by itself while moving (slope, grip)',
+    )
     ap.add_argument('--camera', default='0', help='camera index or device (default 0)')
     ap.add_argument('--no-camera', action='store_true')
     ap.add_argument('--width', type=int, default=640)
@@ -388,7 +420,7 @@ def main() -> None:
     if args.sim:
         from fake_esp32 import FakeEsp32, FakeSerial
 
-        sim_board = FakeEsp32(seed=int(time.time()))
+        sim_board = FakeEsp32(seed=int(time.time()), yaw_drift=args.sim_drift)
         rover = Rover(cfg, lambda: FakeSerial(sim_board))
         camera = SimCamera(sim_board, **cam_kw)
         print('Simulated ESP32 and camera.')

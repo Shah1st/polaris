@@ -11,7 +11,11 @@ Rough skid-steer physics, chosen to show the real robot's defects:
   `dist_scale` corrects;
 * the rover only turns 75 % as fast as the wheel speeds imply (`turn_efficiency`), which
   is why the heading comes from the gyro;
-* the gyro has a bias and noise; very slow wheel speeds do not move the motors.
+* the gyro has a bias and noise; very slow wheel speeds do not move the motors;
+* `yaw_drift` (rad/s) turns the rover by itself while it moves, like a slope or uneven
+  grip, to try the gyro steering assist.
+
+T:133 moves the simulated camera pan-tilt (pan/tilt attributes, no angle feedback).
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ class FakeEsp32:
         turn_efficiency: float = 0.75,
         wheel_tau: float = 0.12,
         deadband: float = 0.02,
+        yaw_drift: float = 0.0,
     ) -> None:
         self.rng = random.Random(seed)
         self.gyro_bias_raw = gyro_bias_raw
@@ -49,6 +54,8 @@ class FakeEsp32:
         self.turn_efficiency = turn_efficiency
         self.wheel_tau = wheel_tau
         self.deadband = deadband
+        self.yaw_drift = yaw_drift
+        self.pan = self.tilt = 0.0  # camera pan-tilt, deg (T:133)
         self.blocked = False  # True: wheels stuck (tests the stall detection)
         self.booted = True  # FakeSerial sets it False while "booting"
 
@@ -82,6 +89,9 @@ class FakeEsp32:
             self.target = (0.0, 0.0)
         elif kind == 131:
             self.feedback_on = bool(cmd.get('cmd'))
+        elif kind == 133:
+            self.pan = max(-180.0, min(180.0, float(cmd.get('X', 0))))
+            self.tilt = max(-30.0, min(90.0, float(cmd.get('Y', 0))))
         elif kind == 126:
             return [{'T': 1002, 'r': 0, 'p': 0, 'y': 0, 'q0': 0, 'q1': 0, 'q2': 0, 'q3': 0}]
         elif kind == 130:
@@ -108,6 +118,8 @@ class FakeEsp32:
         if abs(v) < 0.02 and abs(w_kin) < 0.5:
             w_kin = 0.0
         self.yaw_rate = w_kin * self.turn_efficiency
+        if abs(v) > 0.02:
+            self.yaw_rate += self.yaw_drift
         self.yaw += self.yaw_rate * dt
         self.x += v * math.cos(self.yaw) * dt
         self.y += v * math.sin(self.yaw) * dt

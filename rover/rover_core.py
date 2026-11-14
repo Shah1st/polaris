@@ -77,6 +77,34 @@ class Config:
     track: float = 0.125  # m, wheel track used by the ESP32 firmware for the RaspRover
     bias_calib_time: float = 2.0  # s of stillness to measure the gyro bias
 
+    # Gyro steering assist for manual driving (a software differential): when the input is
+    # "straight", hold the heading; when it is a turn, make the measured rotation follow it.
+    # The correction is a rotation command, which the ESP32 turns into a left/right speed
+    # difference. All of it runs on the onboard computer: the ESP32 receives the same 20
+    # commands per second as without it.
+    assist: int = 1  # 1 = on, 0 = off
+    assist_hz: float = 20.0  # corrections per second (at most the 20 Hz control loop)
+    assist_deadband_deg: float = 1.0  # heading errors smaller than this are ignored
+    assist_k: float = 3.0  # heading hold: rad/s of correction per rad of heading error
+    assist_ki: float = 1.0  # heading hold: integral gain (1/s), removes a steady drift
+    assist_k_rate: float = 0.6  # turns: extra rad/s per rad/s of rotation-speed error
+    assist_ki_rate: float = 1.5  # turns: integral gain (1/s), makes up for skidding
+    assist_w_max: float = 0.8  # rad/s, largest correction
+    assist_settle: float = 0.3  # s after a turn ends before the new heading is held
+    assist_min_speed: float = 0.02  # m/s, no help while standing still
+
+    # Camera pan-tilt (UGV firmware T:133: pan -180 left .. 180 right, tilt -30 down .. 90 up)
+    gimbal_speed: float = 90.0  # deg/s while a ZQSD key is held
+    gimbal_hz: float = 10.0  # at most this many pan-tilt commands per second
+    gimbal_spd: int = 0  # firmware servo speed (0 = fastest)
+    gimbal_acc: int = 0  # firmware servo acceleration (0 = fastest)
+    pan_min: float = -180.0
+    pan_max: float = 180.0
+    tilt_min: float = -30.0
+    tilt_max: float = 90.0
+    pan_sign: int = 1  # -1 if the camera turns the wrong way
+    tilt_sign: int = 1
+
     @classmethod
     def load(cls, path: str) -> Config:
         cfg = cls()
@@ -267,6 +295,163 @@ class Step:
         raise ValueError(f'unknown step {d!r}, expected {{"move": m}} or {{"turn": deg}}')
 
 
+class SteeringAssist:
+    """Gyro steering help for manual driving: a software differential.
+
+    * Straight input (w = 0 while moving): hold the heading the rover had when the straight
+      input started (or `assist_settle` s after a turn ended), with a PI correction on the
+      heading error.
+    * Turn input: make the rotation speed measured by the gyro follow the input (the rover
+      skids in turns and on loose ground, so it often turns slower than asked).
+
+    Only rotations show on the gyro: a sideways slide on a slope, without rotation, is not
+    seen and not corrected.
+    """
+
+    def __init__(self, cfg: Config, odom: Odometry) -> None:
+        self.cfg = cfg
+        self.odom = odom
+        self.mode = 'off'  # off | idle | hold | settling | rate
+        self.reset()
+
+    def reset(self, mode: str = 'idle') -> None:
+        self.mode = mode
+        self.ref: float | None = None  # held heading, rad
+        self.integral = 0.0
+        self.w_corr = 0.0  # rad/s added to the input
+        self.err = 0.0  # rad (hold) or rad/s (rate)
+        self._released_at: float | None = None
+        self._next_update = 0.0
+
+    def apply(self, v: float, w: float, t: float) -> float:
+        """Rotation command to send for the input (v, w)."""
+        c = self.cfg
+        if not c.assist or not self.odom.gyro_alive(t):
+            if self.mode != 'off':
+                self.reset('off')
+            return w
+        if abs(v) < c.assist_min_speed and w == 0:
+            if self.mode != 'idle':
+                self.reset('idle')
+            return w
+        if t + 1e-3 >= self._next_update:  # 1 ms margin: loop ticks are not exact
+            period = 1.0 / clamp(c.assist_hz, 0.5, 50.0)
+            self._next_update = t + period
+            self._update(w, t, period)
+        return w + self.w_corr
+
+    def _update(self, w: float, t: float, period: float) -> None:
+        c, o = self.cfg, self.odom
+        if w != 0:
+            if self.mode != 'rate':
+                self.integral = 0.0
+            self.mode = 'rate'
+            self.ref = None
+            self._released_at = None
+            self.err = w - o.yaw_rate
+            if c.assist_ki_rate > 0:
+                limit = c.assist_w_max / c.assist_ki_rate
+                self.integral = clamp(self.integral + self.err * period, -limit, limit)
+            else:
+                self.integral = 0.0
+            self.w_corr = clamp(
+                c.assist_k_rate * self.err + c.assist_ki_rate * self.integral,
+                -c.assist_w_max,
+                c.assist_w_max,
+            )
+            return
+        if self.ref is None:
+            after_turn = self.mode in ('rate', 'settling')
+            if after_turn:
+                if self._released_at is None:
+                    self._released_at = t
+                if t - self._released_at + 1e-3 < c.assist_settle:
+                    self.mode = 'settling'  # let the rotation die out first
+                    self.w_corr = 0.0
+                    return
+            self.ref = o.heading
+            self.integral = 0.0
+        self.mode = 'hold'
+        self.err = self.ref - o.heading
+        e = self.err if abs(self.err) > math.radians(c.assist_deadband_deg) else 0.0
+        if c.assist_ki > 0:
+            limit = c.assist_w_max / c.assist_ki
+            self.integral = clamp(self.integral + e * period, -limit, limit)
+        else:
+            self.integral = 0.0
+        self.w_corr = clamp(
+            c.assist_k * e + c.assist_ki * self.integral, -c.assist_w_max, c.assist_w_max
+        )
+
+    def snapshot(self) -> dict:
+        unit = 'deg' if self.mode == 'hold' else 'deg/s'
+        return {
+            'mode': self.mode,
+            'ref_deg': None if self.ref is None else math.degrees(self.ref),
+            'err': math.degrees(self.err),
+            'err_unit': unit,
+            'w_corr': self.w_corr,
+        }
+
+
+class Gimbal:
+    """Camera pan-tilt with the UGV firmware's absolute command T:133.
+
+    The firmware does not report the servo angles, so this keeps the commanded ones. Held
+    ZQSD keys set a rate (-1, 0 or 1 per axis); the angles are integrated here and sent at
+    most `gimbal_hz` times per second, only when they changed.
+    """
+
+    def __init__(self, cfg: Config) -> None:
+        self.cfg = cfg
+        self.pan = 0.0  # deg, + = right
+        self.tilt = 0.0  # deg, + = up
+        self._rate = (0.0, 0.0)
+        self._rate_t = 0.0
+        self._sent: tuple[float, float] | None = None
+        self._next_send = 0.0
+
+    def set_rate(self, pan_rate: float, tilt_rate: float, t: float) -> None:
+        self._rate = (clamp(pan_rate, -1.0, 1.0), clamp(tilt_rate, -1.0, 1.0))
+        self._rate_t = t
+
+    def set_angles(self, pan: float, tilt: float) -> None:
+        c = self.cfg
+        self._rate = (0.0, 0.0)
+        self.pan = clamp(pan, c.pan_min, c.pan_max)
+        self.tilt = clamp(tilt, c.tilt_min, c.tilt_max)
+
+    def resend(self) -> None:
+        """Send the angles again at the next step (e.g. after the ESP32 rebooted)."""
+        self._sent = None
+
+    def step(self, t: float, dt: float) -> dict | None:
+        """The T:133 command to send now, or None."""
+        c = self.cfg
+        pr, tr = self._rate
+        if t - self._rate_t > c.manual_timeout:  # keys released or connection lost
+            pr = tr = 0.0
+            self._rate = (0.0, 0.0)
+        if pr or tr:
+            self.pan = clamp(self.pan + pr * c.gimbal_speed * dt, c.pan_min, c.pan_max)
+            self.tilt = clamp(self.tilt + tr * c.gimbal_speed * dt, c.tilt_min, c.tilt_max)
+        target = (round(self.pan, 1), round(self.tilt, 1))
+        if target == self._sent or t < self._next_send:
+            return None
+        self._sent = target
+        self._next_send = t + 1.0 / clamp(c.gimbal_hz, 0.5, 50.0)
+        return {
+            'T': 133,
+            'X': round(target[0] * c.pan_sign, 1),
+            'Y': round(target[1] * c.tilt_sign, 1),
+            'SPD': c.gimbal_spd,
+            'ACC': c.gimbal_acc,
+        }
+
+    def snapshot(self) -> dict:
+        return {'pan': self.pan, 'tilt': self.tilt, 'moving': self._rate != (0.0, 0.0)}
+
+
 class Controller:
     """Turns manual commands and move/turn steps into (v, w) for the ESP32.
 
@@ -288,6 +473,7 @@ class Controller:
         self._task: dict = {}
         self._settle_until = 0.0
         self._pending_result: dict | None = None
+        self.assist = SteeringAssist(cfg, odom)
 
     # -- commands -------------------------------------------------------------------
 
@@ -326,6 +512,7 @@ class Controller:
                 v, w = 0.0, 0.0
             else:
                 v, w = self._manual
+                w = self.assist.apply(v, w, t)
         elif self.mode == 'settle':
             v, w = 0.0, 0.0
             if t >= self._settle_until:
@@ -340,6 +527,9 @@ class Controller:
                     self.mode = 'idle'
         else:
             v, w = 0.0, 0.0
+
+        if self.mode != 'manual' and self.assist.mode not in ('idle', 'off'):
+            self.assist.reset()
 
         if self.mode == 'idle' and self.queue:
             self._start(self.queue.popleft(), t)
@@ -493,6 +683,7 @@ class Controller:
             'queued': [dataclasses.asdict(s) for s in self.queue],
             'v_cmd': self.v_cmd,
             'w_cmd': self.w_cmd,
+            'assist': self.assist.snapshot(),
             'history': list(self.history),
         }
 
@@ -706,6 +897,8 @@ class Rover:
         self.chassis: dict = {}  # last T:1001
         self.imu: dict = {}  # last T:1002
         self._gyro_in_feedback = False  # UGV firmware: gz comes with T:1001
+        self.gimbal = Gimbal(cfg)
+        self._was_connected = False
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name='rover-loop', daemon=True)
 
@@ -742,6 +935,15 @@ class Rover:
         with self.lock:
             self.odom.recalibrate_gyro()
 
+    def gimbal_rate(self, pan_rate: float, tilt_rate: float) -> None:
+        """Move the camera while repeated (like the arrow keys): -1, 0 or 1 per axis."""
+        with self.lock:
+            self.gimbal.set_rate(pan_rate, tilt_rate, time.monotonic())
+
+    def gimbal_set(self, pan: float, tilt: float) -> None:
+        with self.lock:
+            self.gimbal.set_angles(pan, tilt)
+
     def raw(self, msg: dict) -> None:
         """Forward a raw JSON command to the ESP32 (e.g. OLED text)."""
         self.link.send(msg)
@@ -769,11 +971,18 @@ class Rover:
         nxt = time.monotonic()
         while not self._stop.is_set():
             t = time.monotonic()
+            connected = self.link.connected
             with self.lock:
                 v, w = self.ctrl.step(t)
                 self.odom.commanded = abs(v) > 1e-4 or abs(w) > 1e-4
+                if connected and not self._was_connected:
+                    self.gimbal.resend()  # the ESP32 (re)booted: put the camera back
+                gimbal_cmd = self.gimbal.step(t, period) if connected else None
+            self._was_connected = connected
             # Sent every tick: also the heartbeat (the ESP32 stops the motors after 3 s).
             self.link.send({'T': 13, 'X': round(v, 4), 'Z': round(w, 4)})
+            if gimbal_cmd is not None:
+                self.link.send(gimbal_cmd)
             if not self._gyro_in_feedback:  # older firmwares: ask for the IMU (T:1002)
                 self.link.send({'T': 126})
             nxt += period
@@ -796,6 +1005,7 @@ class Rover:
                 'battery_v': battery_volts(self.chassis.get('v')),
                 **tilt_deg(self.chassis),
                 'counters_cm': self.odom.counters,
+                'gimbal': self.gimbal.snapshot(),
                 'odom': self.odom.snapshot(now),
                 'ctrl': self.ctrl.snapshot(),
             }

@@ -16,6 +16,7 @@ from rover_core import (  # noqa: E402
     Config,
     Controller,
     Esp32Link,
+    Gimbal,
     Odometry,
     Rover,
     Step,
@@ -66,6 +67,13 @@ class Sim:
 
     def start(self, *steps: Step) -> None:
         self.ctrl.run(list(steps), self.t)
+
+    def drive(self, v: float, w: float, seconds: float) -> None:
+        """Hold a manual command, repeated every 0.1 s like the web page does."""
+        end = self.t + seconds
+        while self.t < end:
+            self.ctrl.manual(v, w, self.t)
+            self.run(0.1)
 
 
 @pytest.fixture
@@ -278,5 +286,121 @@ def test_rover_waits_for_boot_then_drives() -> None:
             time.sleep(0.05)
         assert rover.ctrl.history[0]['status'] == 'done'
         assert board.x == pytest.approx(0.1 * board.ground_ratio, abs=0.02)
+    finally:
+        rover.close()
+
+
+# -- gyro steering assist ---------------------------------------------------------------
+
+
+def calibrated(assist: bool, **board) -> Sim:
+    s = Sim(Config(assist=int(assist)), **board)
+    s.run(2.5)
+    assert s.odom.bias_ready
+    return s
+
+
+def test_assist_keeps_straight_despite_drift() -> None:
+    """A slope that turns the rover by itself at 0.15 rad/s (8.6 deg/s)."""
+    free = calibrated(False, yaw_drift=0.15)
+    free.drive(0.2, 0.0, 4.0)
+    helped = calibrated(True, yaw_drift=0.15)
+    helped.drive(0.2, 0.0, 4.0)
+    assert abs(math.degrees(free.board.yaw)) > 25
+    assert abs(math.degrees(helped.board.yaw)) < 3
+    assert helped.ctrl.assist.mode == 'hold'
+    assert abs(helped.board.y) < 0.05  # stayed on the line it started on
+
+
+def test_assist_does_nothing_without_drift() -> None:
+    s = calibrated(True)
+    s.drive(0.2, 0.0, 3.0)
+    assert abs(math.degrees(s.board.yaw)) < 1.5
+    assert abs(s.ctrl.assist.w_corr) < 0.1
+
+
+def test_assist_makes_turns_follow_the_input() -> None:
+    """The rover skids: it turns at 75 % of the asked rate without help."""
+
+    def mean_rate(sim: Sim) -> float:
+        sim.drive(0.0, 1.0, 1.0)  # get going
+        yaw0, t0 = sim.board.yaw, sim.t
+        sim.drive(0.0, 1.0, 2.0)
+        return (sim.board.yaw - yaw0) / (sim.t - t0)
+
+    assert mean_rate(calibrated(False)) == pytest.approx(0.75, abs=0.05)
+    assert mean_rate(calibrated(True)) == pytest.approx(1.0, abs=0.08)
+
+
+def test_assist_holds_the_heading_reached_after_a_turn() -> None:
+    s = calibrated(True, yaw_drift=0.1)
+    s.drive(0.15, 1.0, 1.2)
+    s.drive(0.15, 0.0, 0.4)  # the turn input ended: settle, then hold
+    held = s.ctrl.assist.ref
+    assert held is not None
+    yaw_at_hold = s.board.yaw
+    s.drive(0.15, 0.0, 3.0)
+    assert math.degrees(abs(s.board.yaw - yaw_at_hold)) < 3
+
+
+def test_assist_off_when_disabled_or_stopped() -> None:
+    s = calibrated(True)
+    s.drive(0.0, 0.0, 0.5)
+    assert s.ctrl.assist.mode == 'idle'
+    s.cfg.assist = 0
+    s.drive(0.2, 0.0, 0.5)
+    assert s.ctrl.assist.mode == 'off' and s.ctrl.w_cmd == 0.0
+
+
+# -- camera pan-tilt ----------------------------------------------------------------------
+
+
+def test_gimbal_moves_while_held_and_respects_limits() -> None:
+    cfg = Config(gimbal_speed=90.0, gimbal_hz=10.0)
+    g = Gimbal(cfg)
+    sent = []
+    t = 0.0
+    while t < 1.0:  # pan right, tilt up, key repeated every 0.1 s
+        if round(t * 100) % 10 == 0:
+            g.set_rate(1, 1, t)
+        cmd = g.step(t, 0.05)
+        if cmd:
+            sent.append((t, cmd))
+        t = round(t + 0.05, 3)
+    assert g.pan == pytest.approx(90, abs=5) and g.tilt == pytest.approx(90, abs=5)
+    assert all(c['T'] == 133 for _, c in sent)
+    assert len(sent) <= 11  # at most gimbal_hz commands per second
+    # The key is released: the camera stops, nothing more is sent.
+    for _ in range(20):
+        t += 0.05
+        cmd = g.step(t, 0.05)
+    assert cmd is None
+    g.set_angles(500, -100)
+    assert (g.pan, g.tilt) == (cfg.pan_max, cfg.tilt_min)
+
+
+def test_gimbal_sign_and_resend() -> None:
+    g = Gimbal(Config(pan_sign=-1))
+    g.set_angles(30, 10)
+    cmd = g.step(0.0, 0.05)
+    assert cmd['X'] == -30 and cmd['Y'] == 10
+    assert g.step(1.0, 0.05) is None  # unchanged: not sent again
+    g.resend()
+    assert g.step(2.0, 0.05)['X'] == -30
+
+
+def test_rover_sends_gimbal_commands_to_the_board() -> None:
+    import time
+
+    board = FakeEsp32()
+    rover = Rover(Config(), lambda: FakeSerial(board, boot_time=0.3))
+    rover.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not rover.link.connected:
+            time.sleep(0.05)
+        rover.gimbal_set(-45, 20)
+        time.sleep(0.4)
+        assert (board.pan, board.tilt) == (-45, 20)
     finally:
         rover.close()
