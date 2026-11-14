@@ -1,0 +1,77 @@
+# Parameters of the overhead-camera nodes. Lengths are metres, angles radians.
+#
+# Default setup: no markers anywhere. The camera looks straight down from a known height, and
+# the rover is recognised by its size. The map origin is the bottom-left corner of the image,
+# x to the right and y up.
+#
+# Marker setup (test rig, or a tilted camera): set calib_node `mode: markers`,
+# global_map_node `rover_detection: marker` and rover_pose_node `detection: marker`.
+
+calib_node:
+  ros__parameters:
+    # camera_height: scale from the height and the lens. markers: ArUco markers on the floor.
+    mode: camera_height
+    camera_height: 1.9
+    # 35 mm equivalent focal length and the full, uncropped image size it refers to. These are
+    # for an iPhone 12 Pro Max main camera photo. Video and resized streams differ.
+    focal_length_35mm: 26.0
+    sensor_width_px: 4032
+    sensor_height_px: 3024
+    # markers mode only: floor markers and the map position of each marker's centre.
+    dictionary: DICT_4X4_50
+    marker_ids: [0, 1, 2, 3]
+    marker_x: [0.0, 2.0, 2.0, 0.0]
+    marker_y: [0.0, 0.0, 1.5, 1.5]
+    update_period: 1.0
+
+global_map_node:
+  ros__parameters:
+    frame_id: map
+    # Area covered by the occupancy grid. Cells the image does not cover are unknown (-1).
+    x_min: 0.0
+    y_min: 0.0
+    x_max: 2.0
+    y_max: 2.0
+    # Resolution that obstacles are detected at, finer than the published grid.
+    resolution: 0.005
+    # Colour distance from the floor (Lab units) above which a pixel is an obstacle.
+    color_threshold: 25.0
+    # Below 1, a change in brightness (a shadow) counts less than a change in hue.
+    lightness_weight: 0.7
+    # Width of the neighbourhood the floor colour is estimated over, so it follows uneven
+    # lighting. Keep it wider than twice the largest obstacle. 0 uses one colour for the whole map.
+    floor_window: 1.0
+    # Blobs smaller than this (m^2) are dropped.
+    min_obstacle_area: 0.0005
+    # Cell size of the grid published on /map; a whole multiple of `resolution`. A cell that an
+    # obstacle touches anywhere is occupied (100).
+    cell_size: 0.025
+    # Free cells within this distance of an occupied cell, rounded up to whole cells, are marked
+    # as margin (99). Off for now. Half the rover's width (0.115) lets a planner treat the rover
+    # as a point; with 2.5 cm cells that rounds up to 5 cells = 12.5 cm.
+    margin: 0.0
+    # size: the blob matching rover_size is the rover. marker: an ArUco marker on its top.
+    rover_detection: size
+    # The rover as it appears from above, cables and shadow included. Measured on photos; the
+    # chassis itself is 0.17 x 0.18.
+    rover_size: [0.20, 0.23]
+    # A blob is the rover when both of its sides are within this fraction of rover_size.
+    rover_size_tolerance: 0.2
+    position_std: 0.03
+    # marker mode only.
+    dictionary: DICT_4X4_50
+    rover_marker_id: 10
+    rover_radius: 0.20
+    update_period: 1.0
+
+rover_pose_node:
+  ros__parameters:
+    # size: idle, global_map_node publishes the pose. marker: ArUco marker on the rover's top.
+    detection: size
+    dictionary: DICT_4X4_50
+    frame_id: map
+    rover_marker_id: 10
+    # Added to the yaw when the marker's top edge does not face the rover's front.
+    yaw_offset: 0.0
+    position_std: 0.03
+    yaw_std: 0.05

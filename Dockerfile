@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-jazzy-navigation2 \
         ros-jazzy-robot-localization \
         ros-jazzy-cv-bridge \
+        ros-jazzy-image-publisher \
         python3-opencv \
         python3-pip \
         python3-pytest \
