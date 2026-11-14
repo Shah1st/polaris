@@ -1,0 +1,3 @@
+# The rover code runs on the RDK X5 (Ubuntu 22.04, Python 3.10), not in the ROS 2 Jazzy container.
+extend = "../ruff.toml"
+target-version = "py310"
