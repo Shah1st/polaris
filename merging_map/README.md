@@ -5,13 +5,54 @@ and decides what to do when the rover is blocked.
 
 | File | What it is |
 |---|---|
-| `fusion_carte.py` | The module: tile storage, fusion, A*, blocking decisions |
-| `demo_fusion.py` | Demo on a simulated world (needs `numpy` and `matplotlib`) |
+| `fusion_carte.py` | The map: tile storage, fusion, A*, blocking decisions |
+| `cerveau.py` | The brain: the mission loop (decide, drive, look, handle link losses) |
+| `robot.py` | The interface between the brain and a rover, plus shared odometry bookkeeping |
+| `demo_fusion.py` | Simulated world and `Simu`, the simulated robot (needs `numpy` and `matplotlib`) |
+| `rover_reel.py` | `RaspRoverReel`, the real RaspRover (**not yet tested on the robot**) |
 | `demo_fusion.png` | Output of the demo |
-| `test_fusion_carte.py` | pytest tests (fusion rules, tile cutting, planning, decisions) |
-| `test_demo_simulation.py` | pytest tests of the simulated camera and of a full mission |
-| `conftest.py` | Lets pytest import `fusion_carte` from this folder |
+| `test_*.py` | pytest tests (map, simulation, real-rover adapter against a fake rover) |
+| `conftest.py` | Lets pytest import the modules from this folder |
 | `dashboard/` | Replay dashboard (see below) |
+
+## Architecture: one brain, two robots
+
+```
+                 cerveau.mission(robot, carte, ...)        <- runs on the ground computer
+                         |   robot.Robot interface
+           +-------------+--------------+
+           |                            |
+   demo_fusion.Simu              rover_reel.RaspRoverReel
+   (simulated world,             (ESP32 JSON commands through the Pi web app,
+    tests, dashboard)             odometry, drone position, camera, drone zooms)
+```
+
+The brain only uses the `robot.Robot` interface: `position()`, `incertitude()`,
+`deplacer(cible)`, `observer()`, `demander_zoom(tuile)`, `drone_disponible()`,
+`rover_joignable()`, `attendre()`, `recaler()`… The same mission code therefore drives the
+simulation and the real robot.
+
+```python
+from cerveau import mission
+from fusion_carte import CarteFusion
+from rover_reel import RaspRoverReel, envoyeur_http
+
+carte = CarteFusion()
+rover = RaspRoverReel(
+    carte,
+    envoyer=envoyeur_http('http://192.168.50.5:5000'),  # the Pi web app
+    lire_odometrie=...,   # -> (odl, odr) in metres, from T:1001 (small script on the Pi)
+    position_drone=...,   # -> (x, y, heading) of the rover's ArUco marker, or None
+    percevoir=...,        # -> (matrix -1/0/1, x0, y0): what the rover camera sees
+    drone=...,            # object with disponible() and zoomer(tile) -> list of tiles
+)
+mission(rover, carte, depart=(3.0, 3.0), victime=(8.0, 20.0))
+```
+
+`RaspRoverReel` already handles the motor commands (`T:13` at 5 Hz, stop `T:1`, pan-tilt
+`T:133`), wheel odometry, segment following and bump detection. What remains to plug in is
+listed at the top of `rover_reel.py`: drone position, odometry reading, camera perception,
+drone control, and the on-board safety program for rover link losses.
 
 ```bash
 cd merging_map

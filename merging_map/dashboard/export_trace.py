@@ -17,12 +17,11 @@ import numpy as np
 ICI = Path(__file__).resolve().parent
 sys.path.insert(0, str(ICI.parent))
 
+from cerveau import BUDGET_INCERTITUDE, longueur  # noqa: E402
 from demo_fusion import (  # noqa: E402
-    BUDGET_INCERTITUDE,
     PORTEE_ROVER,
     ZONE,
     ZONE_M,
-    longueur,
     mission,
     monde_1,
     monde_2,
