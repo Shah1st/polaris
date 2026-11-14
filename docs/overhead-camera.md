@@ -111,11 +111,21 @@ workspace) and have `opencv-contrib-python` and `numpy` installed.
 
 1. **Use the adapter**: feed `camera.tiles()` at the start, and pass `position_drone`, `drone`
    and `zone` as in the snippet above.
-2. **Decide about the rover's heading.** `RaspRoverReel` assigns the heading from
-   `position_drone()` without checking it. Either the rover carries an ArUco marker (id 10,
-   `DICT_4X4_50`, top edge facing forward), which this pipeline already reads, or
-   `RaspRoverReel` accepts a position with no heading and keeps its odometry heading. Without
-   one of the two, `position_drone` returns None and the rover is treated as unseen.
+2. **Accept a rover position with or without a heading.** The rover has no marker for now, so
+   this pipeline knows where the rover is but not which way it faces. `RaspRoverReel` counts
+   the drone as available only when `position_drone()` returns a position, and it assigns the
+   heading from it without checking. So today the adapter returns None, and the mission runs
+   in "drone lost" mode the whole time: half speed, position from wheel odometry only and
+   never corrected by the camera, and a return-and-wait once the uncertainty passes 60 cm.
+   Both cases should work:
+   - **No heading (now).** Take `(x, y, None)`, correct the position, and keep the odometry
+     heading. `OverheadDrone.rover_pose()` already returns this.
+   - **With a heading (later).** Take `(x, y, heading)` as today. It will come from an ArUco
+     marker on the rover (id 10, `DICT_4X4_50`, top edge facing forward), which this pipeline
+     already reads, or from the rover's motion between frames, which is not built.
+
+   Once `RaspRoverReel` handles a None heading, `position_drone=camera.rover_pose` is the only
+   change in the snippet above.
 3. **Planner settings for our small area**, all arguments that exist already. On photo
    IMG_4099 the defaults block 45% of the floor (10 cm planning cells, 15 cm radius rounded up
    to 20 cm) and count a goal as reached 50 cm away. Proposed until a test drive gives real
@@ -127,6 +137,12 @@ workspace) and have `opencv-contrib-python` and `numpy` installed.
 5. **The demo test and matplotlib.** Without matplotlib installed, a plain `pytest` in the
    container collected nothing at all once `merging_map` was in `testpaths`. The Dockerfile
    on this branch now installs it; the image has to be rebuilt.
+6. **ROS, since the team wants it.** The adapter above works without ROS. To join the ROS
+   side, `merging_map` needs a node around it, for example in the placeholder
+   `guidance_supervisor` package, that subscribes to `/map` and `/rover/pose_overhead` and
+   calls the same module. `/map` becomes tiles with `segmentation.grid_to_fusion` and
+   `drone.cut_tiles`. This pipeline's side of it is done: both topics are published. Who
+   writes the node is not decided.
 
 ## Setting it up
 
