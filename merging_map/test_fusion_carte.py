@@ -11,6 +11,7 @@ from fusion_carte import (
     CarteFusion,
     decouper,
     dilater,
+    gonfler,
     reduire,
 )
 
@@ -46,6 +47,96 @@ def test_dilater_grows_by_radius() -> None:
     assert d[3, 1] and d[3, 5] and d[1, 3] and d[5, 3]
     assert not d[1, 1]  # corner is outside the disc
     assert d.sum() == 13
+
+
+def ecart_au_carre(res: float, di: int, dj: int) -> float:
+    """Distance (m) du centre d'une case, decalee de (di, dj) cases, au carre de la case 0."""
+    return res * float(np.hypot(max(abs(di) - 0.5, 0.0), max(abs(dj) - 0.5, 0.0)))
+
+
+@pytest.mark.parametrize('res', [0.05, 0.1, 0.2, 0.4])
+@pytest.mark.parametrize('rayon', [0.12, 0.15, 0.25, 0.5])
+def test_gonfler_keeps_the_robot_radius_clear(res: float, rayon: float) -> None:
+    """Le robot est un point : une case libre apres gonflage est TOUJOURS a au moins `rayon`
+    de l'obstacle, et une case bloquee l'est toujours a raison (ni trop, ni trop peu)."""
+    n = 41
+    c = n // 2
+    m = np.zeros((n, n), bool)
+    m[c, c] = True
+    bloque = gonfler(m, rayon, res)
+    for i in range(n):
+        for j in range(n):
+            ecart = ecart_au_carre(res, i - c, j - c)
+            if bloque[i, j]:
+                assert ecart <= rayon + 1e-9, f'case ({i},{j}) bloquee a tort'
+            else:
+                assert ecart > rayon, f'case ({i},{j}) trop pres : {ecart:.3f} m < {rayon} m'
+
+
+def test_gonfler_beats_dilater_on_coarse_cells() -> None:
+    """Regression : dilater(ceil(r / res)) laissait passer le rover a 14 cm d'un coin avec
+    des cases de 20 cm et un rayon de 15 cm (diagonale)."""
+    m = np.zeros((9, 9), bool)
+    m[4, 4] = True
+    assert not dilater(m, 1)[5, 5]  # ancien comportement : diagonale libre, a 14,1 cm
+    assert gonfler(m, 0.15, 0.2)[5, 5]  # maintenant : bloquee
+
+
+def test_gonfler_does_not_close_passages_for_nothing() -> None:
+    """Avec des cases de 40 cm, ceil(0.15 / 0.4) = 1 case gonflait de 28 cm : le passage entre
+    deux obstacles distants de 3 cases (1,2 m) disparaissait pour un rover de 15 cm."""
+    m = np.zeros((1, 9), bool)
+    m[0, 1] = m[0, 7] = True
+    libre = ~gonfler(m, 0.15, 0.4)
+    assert libre[0, 3:6].all()  # le couloir du milieu reste ouvert, au centre
+
+
+def test_gonfler_zero_radius_is_identity() -> None:
+    m = np.zeros((5, 5), bool)
+    m[2, 2] = True
+    assert (gonfler(m, 0.0, 0.1) == m).all()
+
+
+def test_astar_keeps_clearance_from_inflated_obstacles() -> None:
+    """Chemin d'un robot-point : toutes ses cases sont a au moins rayon_effectif de l'obstacle."""
+    carte = CarteFusion(
+        n=16,
+        res_fine=0.1,
+        zmax=2,
+        niveau_plan=2,
+        niveau_zoom=1,
+        rayon_robot=0.1,
+        marge_securite=0.1,
+    )
+    sol = np.zeros((16, 16), np.int8)
+    sol[4:12, 7] = OBSTACLE  # mur vertical
+    carte.recevoir({'source': 'rover', 't': 0, 'z': 2, 'x': 0, 'y': 0, 'data': sol})
+    dec = carte.decider((0.25, 0.8), (1.35, 0.8), zone=(0, 0, 1.6, 1.6), tolerance=0.1)
+    assert dec['action'] == 'SUIVRE'
+    # le mur occupe x dans [0.7, 0.8] et y dans [0.4, 1.2] : distance d'un point a ce rectangle
+    for x, y in dec['chemin']:
+        pres = float(np.hypot(max(0.7 - x, x - 0.8, 0.0), max(0.4 - y, y - 1.2, 0.0)))
+        assert pres >= carte.rayon_effectif - 1e-9, f'({x:.2f},{y:.2f}) a {pres:.3f} m du mur'
+
+
+def test_marge_securite_widens_blocked_area() -> None:
+    sol = np.zeros((16, 16), np.int8)
+    sol[8, 8] = OBSTACLE
+    bloques = []
+    for marge in (0.0, 0.2):
+        carte = CarteFusion(
+            n=16,
+            res_fine=0.1,
+            zmax=2,
+            niveau_plan=2,
+            niveau_zoom=1,
+            rayon_robot=0.1,
+            marge_securite=marge,
+        )
+        carte.recevoir({'source': 'rover', 't': 0, 'z': 2, 'x': 0, 'y': 0, 'data': sol})
+        plan = carte.grille_plan(carte.grille(0, 0, 1.6, 1.6))
+        bloques.append(int(plan.bloque.sum()))
+    assert bloques[1] > bloques[0]
 
 
 # ----------------------------------------------------------------------------
