@@ -1,12 +1,14 @@
 """
-export_trace.py - Rejoue les deux scenarios de la demo et enregistre tout ce qui se passe
-(tuiles recues, decisions, chemins, position du rover) dans trace.js, lu par index.html.
+export_trace.py - Rejoue les scenarios de la demo et enregistre tout ce qui se passe
+(tuiles recues, decisions, chemins, positions estimee et reelle, liaison avec le drone) dans
+trace.js, lu par index.html.
+
+La mission est celle de demo_fusion.mission : ce script ne fait que l'ecouter.
 
 Lancer depuis n'importe ou :  python merging_map/dashboard/export_trace.py
 """
 
 import json
-import math
 import sys
 from pathlib import Path
 
@@ -16,16 +18,19 @@ ICI = Path(__file__).resolve().parent
 sys.path.insert(0, str(ICI.parent))
 
 from demo_fusion import (  # noqa: E402
-    PAS,
+    BUDGET_INCERTITUDE,
     PORTEE_ROVER,
     ZONE,
     ZONE_M,
-    avancer,
+    longueur,
+    mission,
     monde_1,
     monde_2,
     monde_3,
+    monde_4,
+    monde_5,
 )
-from fusion_carte import INCONNU, LIBRE, OBSTACLE, SRC_ROVER, decouper  # noqa: E402
+from fusion_carte import INCONNU, LIBRE, OBSTACLE, SRC_ROVER  # noqa: E402
 
 
 # ----------------------------------------------------------------------------
@@ -64,26 +69,169 @@ def simplifier(chemin):
     return [[round(x, 3), round(y, 3)] for x, y in pts]
 
 
-def longueur(chemin):
-    return sum(math.dist(chemin[k], chemin[k + 1]) for k in range(len(chemin) - 1))
+def r3(p):
+    return [round(float(p[0]), 3), round(float(p[1]), 3)]
 
 
-def premier_point_bloque(carte, chemin, horizon=3.0):
-    """Meme test que CarteFusion.chemin_valide, mais renvoie le point bloque."""
-    return carte.premier_point_bloque(chemin, ZONE, horizon)
+def cm(v):
+    return f'{v * 100:.0f} cm'
+
+
+# ----------------------------------------------------------------------------
+# Textes affiches pour chaque etape
+# ----------------------------------------------------------------------------
+def textes(type_, simu, carte, infos, distance):
+    if type_ == 'avance':
+        return 'Le rover avance', ''
+    if type_ == 'survol':
+        return 'Premier survol du drone', (
+            f'Le drone survole toute la zone en altitude, avec des cases de {cm(carte.res(0))}. '
+            'Il voit les gros obstacles, mais un passage étroit ou un tronc sous les arbres peut '
+            'lui échapper.'
+        )
+    if type_ == 'capteur':
+        return 'Le rover regarde autour de lui', (
+            f'Le rover envoie ce que voit sa caméra (champ de {simu.champ}°, portée '
+            f'{PORTEE_ROVER:.0f} m), en cases de {cm(carte.res_fine)}. '
+            "Ce qu'il voit l'emporte sur le drone."
+        )
+    if type_ == 'blocage':
+        return 'Bloqué : aucun chemin', (
+            'Sur la carte fusionnée, aucun chemin ne mène à la victime. Le module se demande : '
+            '« si les obstacles vus seulement de loin par le drone étaient franchissables, par '
+            'où passerais-je ? » (pointillés). Il demande au drone de zoomer sur les tuiles que '
+            'ce chemin traverse.'
+        )
+    if type_ == 'zoom':
+        z = infos['tuiles'][0][0]
+        return 'Le drone zoome', (
+            f'Le drone descend et renvoie {len(infos["tuiles"])} tuile(s) en cases de '
+            f'{cm(carte.res(z))}. Dans ces tuiles, la vue fine remplace la vue grossière.'
+        )
+    if type_ == 'verifier':
+        return 'Chemin par une zone inconnue', (
+            "Le meilleur chemin traverse une zone que personne n'a vue. Avant de s'y engager, "
+            "le module demande au drone d'y jeter un œil."
+        )
+    if type_ == 'suivre':
+        marge = ''
+        if carte.marge_drone > 0:
+            marge = (
+                f', et de {cm(carte.marge_drone)} de plus pour ceux du drone situés loin de ce '
+                'que le rover a vu lui-même'
+            )
+        return 'Chemin trouvé' if infos.get('premier') else 'Nouveau chemin', (
+            f'Le A* trouve un chemin de {longueur(infos["chemin"]):.1f} m sur la carte fusionnée '
+            f'(obstacles gonflés de {cm(carte.rayon_robot)} pour la largeur du robot{marge}). '
+            "Le rover le suit et continue d'observer à chaque pas."
+        )
+    if type_ == 'replan':
+        return 'Obstacle découvert : replanification', (
+            'La caméra du rover voit un obstacle sur le chemin prévu (cercle). Le chemin '
+            "n'est plus valide : le module replanifie sur la carte fusionnée."
+        )
+    if type_ == 'choc':
+        return 'Choc : obstacle pas vu', (
+            'Le rover a touché un obstacle qui était hors de son champ de vision. Ses roues '
+            "patinent (les encodeurs ne montrent plus d'avance) : il recule de 5 cm, marque "
+            "l'obstacle sur la carte (cercle) et replanifie."
+        )
+    if type_ == 'degrade':
+        if simu.connecte():
+            return 'Aucun passage : objectif dégradé', (
+                'Le drone a vérifié toutes les zones douteuses : la victime est inaccessible. '
+                'Le rover va au point accessible le plus proche, à '
+                f"{infos['restant']:.1f} m d'elle, et alerte les secours."
+            )
+        return 'Aucun passage trouvé par le rover', (
+            "Le rover a inspecté tout ce qu'il pouvait atteindre sans trouver de passage. Il "
+            f'va au point accessible le plus proche, à {infos["restant"]:.1f} m de la victime, '
+            "et y attendra le drone : sans lui, ce n'est pas une conclusion définitive."
+        )
+    if type_ == 'fin':
+        return 'Arrivé au point le plus proche', (
+            f"Le rover s'arrête à {infos['restant']:.1f} m de la victime et transmet sa position "
+            'et la carte aux secours.'
+        )
+    if type_ == 'arrivee':
+        texte = (
+            f'Le rover est à {infos["distance"]:.1f} m de la victime, après {distance:.1f} m '
+            'parcourus.'
+        )
+        if not simu.connecte():
+            texte += (
+                f" Sans drone, il n'est sûr de sa position qu'à ±{cm(simu.sigma)} près : il reste "
+                'sur place et signale sa présence (LED, synthèse vocale).'
+            )
+        return 'Arrivé près de la victime', texte
+    if type_ == 'coupure':
+        return 'Liaison avec le drone perdue', (
+            "L'ordinateur ne reçoit plus rien du drone : plus de nouvelles tuiles, plus de zoom, "
+            'et surtout plus de position absolue du rover. Le rover continue avec la carte '
+            'figée et sa caméra, deux fois plus lentement. Sa position ne vient plus que de '
+            "l'odométrie, qui dérive : l'incertitude grandit avec la distance (cercle rouge)."
+        )
+    if type_ == 'inspecter':
+        return 'Reconnaissance par le rover', (
+            'Aucun chemin, et le drone ne répond pas. Le module cherche où un passage pourrait '
+            'se cacher sous un obstacle vu seulement de loin (pointillés) et envoie le rover '
+            "regarder lui-même : il s'approche à environ 1 m de la cible (cercle violet), en "
+            'restant hors de la marge de sécurité.'
+        )
+    if type_ == 'analyse':
+        return "Analyse de l'obstacle", (
+            "Arrivé au point d'observation, le rover fait un tour d'horizon avec sa caméra "
+            "(tourelle pan-tilt). Ce qu'il voit remplace la vue grossière du drone. Ce secteur "
+            'est noté comme inspecté : si rien ne passe, la recherche continue plus loin.'
+        )
+    if type_ == 'retour':
+        return "Trop d'incertitude : retour", (
+            f"Sans drone, l'incertitude sur la position du rover atteint {cm(infos['sigma'])}, "
+            f'au-delà de la limite de {cm(BUDGET_INCERTITUDE)}. Il rebrousse chemin sur sa '
+            "propre trace (le seul chemin dont on sait qu'il passe) jusqu'au dernier point où "
+            "le drone l'a vu."
+        )
+    if type_ == 'poursuite':
+        return 'Incertitude élevée, mais on continue', (
+            f"L'incertitude atteint {cm(infos['sigma'])}, au-delà de la limite de "
+            f'{cm(BUDGET_INCERTITUDE)}. Mais la victime est plus proche que le dernier point vu '
+            'par le drone : revenir serait plus risqué que finir. Le rover continue prudemment.'
+        )
+    if type_ == 'attente':
+        return 'En attente du drone', (
+            "Le rover s'arrête, LED allumées, et attend que le drone revienne recaler sa "
+            'position et vérifier la zone.'
+        )
+    if type_ == 'reconnexion':
+        return 'Drone retrouvé : position recalée', (
+            "Le drone revoit le marqueur du rover. L'erreur de position accumulée était de "
+            f'{cm(infos["erreur"])}. La position est recalée, et tout ce que le rover a vu '
+            "pendant la coupure est réécrit au bon endroit (l'erreur est répartie le long du "
+            'trajet) : les obstacles fantômes disparaissent.'
+        )
+    if type_ == 'abandon':
+        return 'Drone toujours absent', (
+            "Après 5 minutes sans drone, le rover reste à l'arrêt en lieu sûr et l'ordinateur "
+            "alerte l'équipe."
+        )
+    raise ValueError(type_)
 
 
 # ----------------------------------------------------------------------------
 # Enregistreur
 # ----------------------------------------------------------------------------
 class Traceur:
-    def __init__(self, carte, simu, depart):
+    """Ecoute la mission et la carte : chaque tuile recue devient un message, chaque
+    evenement de la mission une etape (frame)."""
+
+    def __init__(self, carte, simu):
         self.carte, self.simu = carte, simu
-        self.msgs, self.frames, self.chemins = [], [], []
-        self.attente = []
-        self.pos, self.cap, self.traj = depart, simu.cap, [depart]
+        self.msgs, self.frames, self.chemins, self.attente = [], [], [], []
+        self.traj, self.traj_vraie = [], []
         self.chemin_id = None
         recevoir = carte.recevoir
+        instantane = carte.instantane_rover
+        restaurer = carte.restaurer_rover
 
         def tracer(msg):
             recevoir(msg)
@@ -91,225 +239,59 @@ class Traceur:
             source = 0 if msg['source'] == 'drone' else 1
             self.msgs.append([source, msg['z'], msg['x'], msg['y'], encoder(msg['data'])])
 
+        def tracer_instantane():
+            self.attente.append(len(self.msgs))
+            self.msgs.append([-1])  # la page copie la couche rover
+            return instantane()
+
+        def tracer_restauration(inst):
+            restaurer(inst)
+            self.attente.append(len(self.msgs))
+            self.msgs.append([-2])  # la page remet cette copie
+
         carte.recevoir = tracer
+        carte.instantane_rover = tracer_instantane
+        carte.restaurer_rover = tracer_restauration
 
     def ajouter_chemin(self, chemin):
         self.chemins.append(simplifier(chemin))
         return len(self.chemins) - 1
 
-    def deplacer(self, pos, cap):
-        self.cap = cap
-        self.pos = pos
-        self.traj.append(pos)
-
-    def frame(self, type_, titre, texte, action=None, **extra):
+    def evenement(self, type_, action=None, **infos):
+        simu = self.simu
+        est, vraie = r3(simu.est), r3(simu.vraie)
+        if not self.traj or self.traj[-1] != est or self.traj_vraie[-1] != vraie:
+            self.traj.append(est)
+            self.traj_vraie.append(vraie)
+        titre, texte = textes(type_, simu, self.carte, infos, longueur(self.traj))
+        if infos.get('chemin'):
+            self.chemin_id = self.ajouter_chemin(infos['chemin'])
         f = {
             'type': type_,
             'titre': titre,
             'texte': texte,
             'action': action,
             'msgs': self.attente,
-            'pos': [round(self.pos[0], 3), round(self.pos[1], 3)],
-            'cap': round(self.cap, 3),
-            't': round(self.simu.t, 1),
+            'pos': est,
+            'vraie': vraie,
+            'sigma': round(simu.sigma, 3),
+            'liaison': simu.connecte(),
+            'cap': round(simu.cap, 3),
+            't': round(simu.t, 1),
             'chemin': self.chemin_id,
             'traj': len(self.traj),
         }
-        f.update(extra)
+        if infos.get('optimiste'):
+            f['optimiste'] = self.ajouter_chemin(infos['optimiste'])
+        for cle in ('obstacle', 'point', 'cible', 'point_de_vue'):
+            if infos.get(cle) is not None:
+                f[cle] = r3(infos[cle])
+        if 'tuiles' in infos:
+            f['tuiles'] = [list(t) for t in infos['tuiles']]
+        if 'restant' in infos:
+            f['restant'] = round(infos['restant'], 2)
         self.frames.append(f)
         self.attente = []
-
-
-def un_pas(tr, chemin):
-    """Avance d'un pas de PAS m. Renvoie (chemin restant, point d'impact ou None)."""
-    simu, carte = tr.simu, tr.carte
-    avant = tr.pos
-    pos, chemin = avancer(avant, chemin, PAS)
-    simu.t += 1.0
-    cap = math.atan2(pos[1] - avant[1], pos[0] - avant[0]) if pos != avant else tr.cap
-    choc = simu.contact(avant, pos)
-    impact = None
-    if choc:
-        pos, impact = choc
-    tr.deplacer(pos, cap)
-    simu.capteur_rover(*pos, cap)
-    if impact:
-        # meme effet que carte.signaler_obstacle, mais envoye comme une tuile rover
-        r = carte.res_fine
-        i0, j0 = math.floor((impact[1] - 0.1) / r), math.floor((impact[0] - 0.1) / r)
-        m = np.full((6, 6), INCONNU, np.int8)
-        for a in range(6):
-            for b in range(6):
-                if math.dist(((j0 + b + 0.5) * r, (i0 + a + 0.5) * r), impact) <= 0.1:
-                    m[a, b] = OBSTACLE
-        for msg in decouper(m, j0 * r, i0 * r, carte.zmax, carte, 'rover', simu.t):
-            carte.recevoir(msg)
-    return chemin, impact
-
-
-def frame_choc(tr, impact, action):
-    tr.frame(
-        'choc',
-        'Choc : obstacle pas vu',
-        'Le rover a touché un obstacle qui était hors de son champ de vision. Ses roues '
-        "patinent (les encodeurs ne montrent plus d'avance) : il recule de 5 cm, marque "
-        "l'obstacle sur la carte (cercle) et replanifie.",
-        action,
-        obstacle=[round(impact[0], 3), round(impact[1], 3)],
-    )
-
-
-def mission_tracee(carte, simu, depart, victime, tolerance=0.5, max_tours=600):
-    tr = Traceur(carte, simu, depart)
-    simu.survol_initial(z=0)
-    tr.frame(
-        'survol',
-        'Premier survol du drone',
-        f'Le drone survole toute la zone en altitude, avec des cases de '
-        f'{carte.res(0) * 100:.0f} cm. Il voit les gros obstacles, mais un passage étroit '
-        f'ou un tronc sous les arbres peut lui échapper.',
-    )
-    simu.capteur_rover(*tr.pos, tr.cap)
-    tr.frame(
-        'capteur',
-        'Le rover regarde autour de lui',
-        f'Le rover envoie ce que voit sa caméra (champ de {simu.champ}°, portée '
-        f'{PORTEE_ROVER:.0f} m), en cases de {carte.res_fine * 100:.0f} cm. '
-        "Ce qu'il voit l'emporte sur le drone.",
-    )
-    dec = carte.decider(tr.pos, victime, zone=ZONE, tolerance=tolerance)
-    premier = True
-    for _ in range(max_tours):
-        action = dec['action']
-
-        if action == 'DEMANDER_DRONE':
-            optimiste = tr.ajouter_chemin(dec['chemin_optimiste'])
-            tuiles = [list(k) for k in dec['tuiles']]
-            tr.frame(
-                'blocage',
-                'Bloqué : aucun chemin',
-                'Sur la carte fusionnée, aucun chemin ne mène à la victime. Le module se demande '
-                ': '
-                '« si les obstacles vus seulement de loin par le drone étaient franchissables, '
-                'par où passerais-je ? » (pointillés). Il demande au drone de zoomer sur les '
-                'tuiles que ce chemin traverse.',
-                action,
-                tuiles=tuiles,
-                optimiste=optimiste,
-            )
-            for k in dec['tuiles']:
-                simu.zoom_drone(k)
-            res_zoom = carte.res(dec['tuiles'][0][0]) * 100
-            tr.frame(
-                'zoom',
-                'Le drone zoome',
-                f'Le drone descend et renvoie {len(tuiles)} tuile(s) en cases de '
-                f'{res_zoom:.0f} cm. Dans ces tuiles, la vue fine remplace la vue grossière.',
-                action,
-                tuiles=tuiles,
-            )
-            dec = carte.decider(tr.pos, victime, zone=ZONE, tolerance=tolerance)
-            continue
-
-        if action == 'OBJECTIF_DEGRADE':
-            tr.chemin_id = tr.ajouter_chemin(dec['chemin'])
-            point = [round(dec['point'][0], 3), round(dec['point'][1], 3)]
-            tr.frame(
-                'degrade',
-                'Aucun passage : objectif dégradé',
-                'Le drone a vérifié toutes les zones douteuses : la victime est inaccessible. '
-                f'Le rover va au point accessible le plus proche, à '
-                f"{dec['distance_restante']:.1f} m d'elle, et alerte les secours.",
-                action,
-                point=point,
-                restant=round(dec['distance_restante'], 2),
-            )
-            chemin = list(dec['chemin'])
-            impact = None
-            while chemin and not impact:
-                chemin, impact = un_pas(tr, chemin)
-                if impact:
-                    frame_choc(tr, impact, action)
-                else:
-                    tr.frame('avance', 'Le rover avance', '', action, point=point)
-            if impact:
-                dec = carte.decider(tr.pos, victime, zone=ZONE, tolerance=tolerance)
-                continue
-            tr.frame(
-                'fin',
-                'Arrivé au point le plus proche',
-                f"Le rover s'arrête à {dec['distance_restante']:.1f} m de la victime et transmet "
-                'sa position et la carte aux secours.',
-                action,
-                point=point,
-            )
-            break
-
-        # SUIVRE
-        tr.chemin_id = tr.ajouter_chemin(dec['chemin'])
-        if dec['a_verifier']:
-            tuiles = [list(k) for k in dec['a_verifier']]
-            tr.frame(
-                'verifier',
-                'Chemin par une zone inconnue',
-                "Le meilleur chemin traverse une zone que personne n'a vue. Avant de s'y "
-                "engager, le module demande au drone d'y jeter un œil.",
-                'DEMANDER_DRONE',
-                tuiles=tuiles,
-            )
-            carte.demandes.update(dec['a_verifier'])
-            for k in dec['a_verifier']:
-                simu.zoom_drone(k)
-            tr.frame(
-                'zoom',
-                'Le drone zoome',
-                'Le drone renvoie la zone inconnue.',
-                'DEMANDER_DRONE',
-                tuiles=tuiles,
-            )
-            dec = carte.decider(tr.pos, victime, zone=ZONE, tolerance=tolerance)
-            continue
-
-        tr.frame(
-            'suivre',
-            'Chemin trouvé' if premier else 'Nouveau chemin',
-            f'Le A* trouve un chemin de {longueur(dec["chemin"]):.1f} m sur la carte fusionnée '
-            '(obstacles gonflés de 15 cm pour la largeur du robot). Le rover le suit et continue '
-            "d'observer à chaque pas.",
-            action,
-        )
-        premier = False
-        chemin = list(dec['chemin'])
-        while True:
-            chemin, impact = un_pas(tr, chemin)
-            pos = tr.pos
-            if impact:
-                frame_choc(tr, impact, action)
-                break
-            if math.dist(pos, victime) <= tolerance or not chemin:
-                tr.frame(
-                    'arrivee',
-                    'Arrivé près de la victime',
-                    f'Le rover est à {math.dist(pos, victime):.1f} m de la victime, après '
-                    f'{longueur(tr.traj):.1f} m parcourus.',
-                    action,
-                )
-                return tr
-            bloque = premier_point_bloque(carte, [pos] + chemin)
-            if bloque:
-                tr.frame(
-                    'replan',
-                    'Obstacle découvert : replanification',
-                    'La caméra du rover voit un obstacle sur le chemin prévu (cercle), que le '
-                    "drone n'avait pas vu. Le chemin n'est plus valide : le module replanifie "
-                    'sur la carte fusionnée.',
-                    action,
-                    obstacle=[round(bloque[0], 3), round(bloque[1], 3)],
-                )
-                break
-            tr.frame('avance', 'Le rover avance', '', action)
-        dec = carte.decider(tr.pos, victime, zone=ZONE, tolerance=tolerance)
-    return tr
 
 
 def resume(tr):
@@ -318,6 +300,7 @@ def resume(tr):
         'replans': types.count('replan'),
         'chocs': types.count('choc'),
         'zooms': types.count('zoom'),
+        'analyses': types.count('analyse'),
         'distance': round(longueur(tr.traj), 1),
         'duree': tr.frames[-1]['t'],
         'issue': tr.frames[-1]['type'],
@@ -327,8 +310,13 @@ def resume(tr):
 def exporter(terrain, monde, champ, occlusion=True):
     carte, simu, depart, victime = monde()
     simu.occlusion, simu.champ = occlusion, champ
-    tr = mission_tracee(carte, simu, depart, victime)
+    tr = Traceur(carte, simu)
+    simu.placer(depart)
+    simu.survol_initial(z=0)
+    tr.evenement('survol')
+    mission(simu, depart, victime, journal=lambda _: None, evenement=tr.evenement)
     g = carte.grille(*ZONE)
+    vu = round(float((g.src == SRC_ROVER).sum()) * carte.res_fine**2)
     return {
         'terrain': terrain,
         'champ': champ,
@@ -344,12 +332,10 @@ def exporter(terrain, monde, champ, occlusion=True):
         'verite': encoder(simu.verite),
         'msgs': tr.msgs,
         'chemins': tr.chemins,
-        'traj': [[round(x, 3), round(y, 3)] for x, y in tr.traj],
+        'traj': tr.traj,
+        'traj_vraie': tr.traj_vraie,
         'frames': tr.frames,
-        'resume': {
-            **resume(tr),
-            'vu': round(float((g.src == SRC_ROVER).sum()) * carte.res_fine**2),
-        },
+        'resume': {**resume(tr), 'vu': vu},
         # pour verifier que la page refait la meme fusion que Python
         'controle': {
             'obstacle': int((g.val == OBSTACLE).sum()),
@@ -360,13 +346,15 @@ def exporter(terrain, monde, champ, occlusion=True):
     }
 
 
-CHAMPS = [60, 90, 120, 160, 240, 360]
+TOUS = [60, 90, 120, 160, 240, 360, 'X']  # 'X' = vision a rayons X, pour comparer
+SANS_DRONE = [90, 160, 360]
 TERRAINS = {
     'crete': {
         'nom': 'Crête et tronc caché',
         'description': 'Une crête barre la route, avec un passage de 70 cm que le drone ne voit '
         'pas de haut. Un tronc couché sous les arbres est invisible depuis le ciel.',
         'monde': monde_1,
+        'champs': TOUS,
     },
     'foret': {
         'nom': 'Forêt',
@@ -374,12 +362,37 @@ TERRAINS = {
         'arbres : un slalom de troncs couchés et des rochers. Le rover doit tout découvrir '
         'avec sa caméra.',
         'monde': monde_3,
+        'champs': TOUS,
     },
     'cratere': {
         'nom': 'Cratère fermé',
         'description': "La victime est au fond d'un cratère complètement fermé. Aucun chemin "
         "n'existe : le rover doit s'approcher au plus près.",
         'monde': monde_2,
+        'champs': TOUS,
+    },
+    'coupure': {
+        'nom': 'Drone perdu 110 s',
+        'description': 'Même crête, mais la liaison avec le drone est coupée juste après son '
+        "premier survol, et ne revient qu'au bout de 110 s. Le rover fait la reconnaissance "
+        'lui-même, prudemment, puis le drone recale sa position.',
+        'monde': monde_4,
+        'champs': SANS_DRONE,
+    },
+    'perdu': {
+        'nom': 'Drone perdu pour toujours',
+        'description': 'Même crête, et le drone ne revient jamais. Le rover longe la crête et '
+        "l'inspecte lui-même jusqu'à trouver le passage, alors que l'incertitude sur sa "
+        'position ne cesse de grandir.',
+        'monde': lambda: monde_4(((0.0, None),)),
+        'champs': SANS_DRONE,
+    },
+    'passage': {
+        'nom': 'Sans drone, passage proche',
+        'description': 'Le passage dans la crête est plus près (x = 9,3 à 10 m), toujours '
+        'invisible depuis le ciel, et le drone ne revient jamais.',
+        'monde': monde_5,
+        'champs': SANS_DRONE,
     },
 }
 
@@ -387,17 +400,18 @@ TERRAINS = {
 def main():
     scenarios = []
     for cle, t in TERRAINS.items():
-        for champ in CHAMPS:
-            scenarios.append(exporter(cle, t['monde'], champ))
+        for champ in t['champs']:
+            if champ == 'X':
+                scenarios.append(exporter(cle, t['monde'], 360, occlusion=False))
+            else:
+                scenarios.append(exporter(cle, t['monde'], champ))
             print(cle, champ, scenarios[-1]['resume'], flush=True)
-        scenarios.append(exporter(cle, t['monde'], 360, occlusion=False))
-        print(cle, 'rayons X', scenarios[-1]['resume'], flush=True)
     terrains = {k: {'nom': t['nom'], 'description': t['description']} for k, t in TERRAINS.items()}
-    trace = {'terrains': terrains, 'champs': CHAMPS, 'scenarios': scenarios}
+    trace = {'terrains': terrains, 'scenarios': scenarios}
     sortie = ICI / 'trace.js'
     texte = 'window.TRACE = ' + json.dumps(trace, ensure_ascii=False, separators=(',', ':'))
     sortie.write_text(texte + ';' + chr(10), encoding='utf-8', newline=chr(10))
-    print(f'{sortie} : {sortie.stat().st_size / 1e6:.2f} Mo')
+    print(f'{len(scenarios)} simulations -> {sortie} : {sortie.stat().st_size / 1e6:.2f} Mo')
 
 
 if __name__ == '__main__':

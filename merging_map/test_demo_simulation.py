@@ -75,16 +75,62 @@ def test_contact_stops_the_rover_before_an_unseen_obstacle() -> None:
         (demo.monde_1, True, 60),
         (demo.monde_2, True, 360),
         (demo.monde_3, True, 60),
+        (demo.monde_4, True, 160),  # drone lost for 110 s
+        (demo.monde_5, True, 160),  # drone lost for good, hidden gap closer
     ],
 )
 def test_rover_never_drives_through_a_real_obstacle(monde, occlusion: bool, champ: int) -> None:
-    """Even with a narrow camera, the rover never ends up inside an obstacle: it either sees
-    it in time, or bumps into it, stops before it and replans."""
+    """Even with a narrow camera or without the drone (drifting odometry), the rover never
+    ends up inside an obstacle: it sees it in time, or bumps into it, stops and replans.
+    The check uses the REAL trajectory, not the one the rover believes it followed."""
     _, simu, depart, victime = monde()
     simu.occlusion, simu.champ = occlusion, champ
     simu.survol_initial(z=0)
-    traj = demo.mission(simu, depart, victime, journal=lambda _: None)['fin']['traj']
+    traj = demo.mission(simu, depart, victime, journal=lambda _: None)['fin']['traj_vraie']
     for (x0, y0), (x1, y1) in zip(traj, traj[1:], strict=False):
         for s in np.linspace(0.0, 1.0, 40):
             x, y = x0 + (x1 - x0) * s, y0 + (y1 - y0) * s
             assert simu.verite[int(y / demo.RES), int(x / demo.RES)] != OBSTACLE, (x, y)
+
+
+@pytest.mark.parametrize('monde', [demo.monde_4, demo.monde_5])
+def test_rover_reaches_the_victim_without_the_drone(monde) -> None:
+    lignes = []
+    _, simu, depart, victime = monde()
+    simu.champ = 160
+    simu.survol_initial(z=0)
+    demo.mission(simu, depart, victime, journal=lignes.append)
+    texte = '\n'.join(lignes)
+    assert 'LIAISON DRONE PERDUE' in texte
+    assert "tour d'horizon" in texte  # it inspected obstacles by itself
+    assert 'ARRIVE pres de la victime' in texte
+    assert abs(complex(*simu.vraie) - complex(*victime)) < 0.8  # really there, not just believed
+
+
+def test_odometry_drifts_only_without_the_drone() -> None:
+    _, simu, _, _ = demo.monde_4(((5.0, None),))
+    simu.placer((3.0, 3.0))
+    avant = simu.vraie
+    assert simu.deplacement_reel((3.0, 3.0), (3.0, 4.0), avant) == (3.0, 4.0)  # t=0: drone OK
+    simu.t = 10.0
+    reel = simu.deplacement_reel((3.0, 3.0), (3.0, 4.0), avant)
+    assert reel != (3.0, 4.0)  # slip and heading drift
+    assert abs(complex(*reel) - complex(3.0, 4.0)) < 0.05
+
+
+def test_relocalisation_moves_provisional_observations() -> None:
+    """Observations made without the drone are rewritten at their corrected place."""
+    carte = CarteFusion()
+    verite = np.zeros((demo.NC, demo.NC), np.int8)
+    demo.rect(verite, 5.0, 5.0, 5.2, 7.0)  # a wall
+    simu = demo.Simu(carte, verite, verite.copy(), coupures=((0.0, 10.0),))
+    simu.placer((4.0, 6.0))
+    simu.est = (4.0, 5.5)  # the rover believes it is 50 cm south of where it really is
+    simu.dist_fix = 1.0
+    simu.observer(tour_complet=True)
+    # the wall really starts at y = 5.0, but it was written 50 cm too low: a ghost at y = 4.6
+    assert carte.grille(5.0, 4.6, 5.05, 4.65).val[0, 0] == OBSTACLE
+    simu.t = 10.0  # the drone is back and sees the rover where it really is
+    simu.recaler()
+    assert carte.grille(5.0, 4.55, 5.2, 4.95).val.max() < OBSTACLE  # ghost gone
+    assert (carte.grille(5.0, 5.05, 5.05, 6.95).val == OBSTACLE).all()  # wall at its place

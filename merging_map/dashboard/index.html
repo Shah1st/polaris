@@ -253,7 +253,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     <div class="comparaison">
       <table>
         <caption>Même terrain, même drone : seul le champ de vision change. Cliquez une ligne pour la rejouer.</caption>
-        <thead><tr><th>Champ</th><th>Résultat</th><th>Surface vue</th><th>Replanif.</th><th>Chocs</th><th>Zooms drone</th><th>Distance</th><th>Durée</th></tr></thead>
+        <thead><tr><th>Champ</th><th>Résultat</th><th>Surface vue</th><th>Replanif.</th><th>Chocs</th><th>Zooms / analyses</th><th>Distance</th><th>Durée</th></tr></thead>
         <tbody id="v-table"></tbody>
       </table>
     </div>
@@ -266,6 +266,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       <button class="btn" id="b-suiv" type="button" aria-label="Étape suivante">▶</button>
       <button class="btn" id="b-decision" type="button">Décision suivante ⏭</button>
       <span class="etape" id="etape"></span>
+      <span class="pastille good" id="liaison">Drone connecté</span>
       <div class="options">
         <label for="vitesse">Vitesse
           <select id="vitesse">
@@ -346,6 +347,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
         <li><span class="trait" style="border-top-color: var(--rover); border-top-width: 2px"></span>Trajet parcouru</li>
         <li><span class="sw" style="border: 2px dashed var(--zoom); background: transparent"></span>Tuile zoomée par le drone</li>
         <li><span class="sw" style="background: var(--map-truth); opacity: .5"></span>Terrain réel, pas encore connu</li>
+        <li><span class="sw" style="border: 2px dashed var(--crit); border-radius: 50%; background: transparent"></span>Incertitude de position (drone perdu)</li>
+        <li><span class="trait" style="border-top: 2px dotted var(--crit)"></span>Position et trajet réels, inconnus du robot</li>
+        <li><span class="sw" style="border: 2px solid var(--zoom); border-radius: 50%; background: transparent"></span>Cible inspectée par le rover</li>
       </ul>
     </div>
     <div class="panneau">
@@ -419,7 +423,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       return d;
     }
     appliquer(k) {
-      const [src, z, tx, ty] = this.sc.msgs[k];
+      const m = this.sc.msgs[k];
+      if (m[0] === -1) { this.copie = [this.rv.slice(), this.rz.slice()]; return; }
+      if (m[0] === -2) { if (this.copie) { this.rv.set(this.copie[0]); this.rz.set(this.copie[1]); } return; }
+      const [src, z, tx, ty] = m;
       const n = this.sc.n, nc = this.nc;
       const f = 2 ** (this.sc.zmax - z), cote = n * f;
       const val = src === 0 ? this.dv : this.rv;
@@ -467,22 +474,40 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     degrade: { pastille: 'Objectif dégradé', k: 'crit' },
     fin: { pastille: 'Alerte secours', k: 'crit' },
     arrivee: { pastille: 'Arrivé', k: 'good' },
+    coupure: { pastille: 'Liaison perdue', k: 'crit' },
+    inspecter: { pastille: 'Reconnaissance', k: 'zoom' },
+    analyse: { pastille: 'Analyse', k: 'zoom' },
+    retour: { pastille: 'Retour', k: 'warn' },
+    poursuite: { pastille: 'On continue', k: 'warn' },
+    attente: { pastille: 'Attente du drone', k: 'warn' },
+    reconnexion: { pastille: 'Recalage', k: 'good' },
+    abandon: { pastille: 'Arrêt', k: 'crit' },
   };
   const ISSUES = { arrivee: 'Arrivé', fin: 'Point le plus proche' };
   const estCle = (f) => f.type !== 'avance';
 
   // ------------------------------------------------------------------ etat
-  const CHAMPS = T.champs, NV = CHAMPS.length + 1;
   const terrains = Object.keys(T.terrains);
   let terrain = terrains[0];
-  let vi = Math.max(0, CHAMPS.indexOf(160));
+  // les simulations d'un terrain, de la vision la plus etroite aux rayons X
+  const ordre = (s) => (s.rayons_x ? 1000 : s.champ);
+  const visions = (t) => T.scenarios.map((s, k) => k).filter((k) => T.scenarios[k].terrain === t)
+    .sort((a, b) => ordre(T.scenarios[a]) - ordre(T.scenarios[b]));
+  const nomScen = (s) => (s.rayons_x ? 'Rayons X' : `${s.champ}°`);
+  const visionPar = (t, champ, rx) => {
+    const v = visions(t);
+    let k = v.findIndex((i) => T.scenarios[i].champ === champ && T.scenarios[i].rayons_x === rx);
+    if (k < 0) k = v.findIndex((i) => T.scenarios[i].champ === 160 && !T.scenarios[i].rayons_x);
+    return Math.max(0, k);
+  };
+  let vi = visionPar(terrain, 160, false);
   let si = 0, fi = 1, survol = null, minuterie = null, epaissi = null;
   const opt = { grille: false, verite: false, pause: true, vitesse: 1, suivre: false };
   const vue = { cx: 0, cy: 0, taille: 0 };
   const rejeux = new Map();
   const rejeu = (k) => { if (!rejeux.has(k)) rejeux.set(k, new Rejeu(T.scenarios[k])); return rejeux.get(k); };
-  const indice = (t, v) => T.scenarios.findIndex((s) => s.terrain === t && (v === CHAMPS.length ? s.rayons_x : !s.rayons_x && s.champ === CHAMPS[v]));
-  const nomVision = (v) => (v === CHAMPS.length ? 'Rayons X' : `${CHAMPS[v]}°`);
+  const indice = (t, v) => visions(t)[v];
+  const nomVision = (v) => nomScen(T.scenarios[indice(terrain, v)]);
   const cartes = ['drone', 'rover', 'fusion'].map((nom) => {
     const off = document.createElement('canvas');
     return { nom, cv: $('c-' + nom), off, ctxOff: off.getContext('2d'), img: null };
@@ -496,7 +521,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     const rgb = (h) => { const x = h.replace('#', ''); return [0, 2, 4].map((i) => parseInt(x.slice(i, i + 2), 16)); };
     C = {};
     for (const n of ['map-free', 'map-unknown', 'map-unknown-2', 'map-obs', 'map-rover-obs', 'map-seen', 'map-fix', 'map-truth']) C[n] = rgb(lire(n));
-    for (const n of ['path', 'zoom', 'victim', 'rover', 'rover-fill', 'ink', 'surface', 'map-rover-obs', 'cone']) C['css-' + n] = lire(n);
+    for (const n of ['path', 'zoom', 'victim', 'rover', 'rover-fill', 'ink', 'surface', 'map-rover-obs', 'cone', 'crit']) C['css-' + n] = lire(n);
   }
 
   // ------------------------------------------------------------------ images de base
@@ -662,6 +687,43 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       ctx.restore();
     }
 
+    // drone perdu : incertitude de position, et position reelle (inconnue du robot)
+    if (nom !== 'drone' && F.vraie) {
+      if (F.sigma > 0) {
+        ctx.save();
+        ctx.strokeStyle = C['css-crit']; ctx.fillStyle = C['css-crit'];
+        ctx.lineWidth = 1.5 * dpr; ctx.setLineDash([4 * dpr, 3 * dpr]);
+        ctx.beginPath(); ctx.arc(X(F.pos[0]), Y(F.pos[1]), Math.max(F.sigma * k, 3 * dpr), 0, Math.PI * 2);
+        ctx.globalAlpha = 0.1; ctx.fill(); ctx.globalAlpha = 0.9; ctx.stroke();
+        ctx.restore();
+      }
+      if (Math.hypot(F.vraie[0] - F.pos[0], F.vraie[1] - F.pos[1]) > 0.01) {
+        trait(S.traj_vraie.slice(0, F.traj), C['css-crit'], 1.2, [2, 3]);
+        ctx.save();
+        ctx.strokeStyle = C['css-crit']; ctx.lineWidth = 1 * dpr;
+        ctx.beginPath(); ctx.moveTo(X(F.pos[0]), Y(F.pos[1])); ctx.lineTo(X(F.vraie[0]), Y(F.vraie[1])); ctx.stroke();
+        ctx.translate(X(F.vraie[0]), Y(F.vraie[1]));
+        ctx.rotate(-F.cap);
+        const s2 = 6 * dpr;
+        ctx.beginPath(); ctx.moveTo(s2 * 1.4, 0); ctx.lineTo(-s2, s2); ctx.lineTo(-s2 * 0.5, 0); ctx.lineTo(-s2, -s2); ctx.closePath();
+        ctx.lineWidth = 1.8 * dpr; ctx.stroke();
+        ctx.restore();
+      }
+    }
+    // reconnaissance par le rover : cible et point d'observation
+    if (nom === 'fusion' && F.cible) {
+      ctx.save();
+      ctx.strokeStyle = C['css-zoom']; ctx.fillStyle = C['css-zoom']; ctx.lineWidth = 2 * dpr;
+      ctx.beginPath(); ctx.arc(X(F.cible[0]), Y(F.cible[1]), 9 * dpr, 0, Math.PI * 2); ctx.stroke();
+      if (F.point_de_vue) {
+        const vx = X(F.point_de_vue[0]), vy = Y(F.point_de_vue[1]), q = 4 * dpr;
+        ctx.setLineDash([3 * dpr, 3 * dpr]);
+        ctx.beginPath(); ctx.moveTo(vx, vy); ctx.lineTo(X(F.cible[0]), Y(F.cible[1])); ctx.stroke();
+        ctx.fillRect(vx - q, vy - q, 2 * q, 2 * q);
+      }
+      ctx.restore();
+    }
+
     etoile(ctx, X(S.victime[0]), Y(S.victime[1]), 9 * dpr, C['css-victim'], C['css-surface'], dpr);
     ctx.save();
     ctx.translate(X(F.pos[0]), Y(F.pos[1]));
@@ -733,14 +795,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   function construireComparaison() {
     const tb = $('v-table');
     tb.innerHTML = '';
-    for (let v = 0; v < NV; v++) {
-      const k = indice(terrain, v);
-      if (k < 0) continue;
-      const r = T.scenarios[k].resume;
+    const vs = visions(terrain);
+    for (let v = 0; v < vs.length; v++) {
+      const r = T.scenarios[vs[v]].resume;
       const tr = document.createElement('tr');
       tr.dataset.v = v;
       tr.innerHTML = `<td>${nomVision(v)}</td><td>${ISSUES[r.issue] || r.issue}</td><td>${r.vu != null ? fr(r.vu, 0) + ' m²' : '–'}</td><td>${r.replans}</td>`
-        + `<td class="${r.chocs ? 'mauvais' : ''}">${r.chocs}</td><td>${r.zooms}</td>`
+        + `<td class="${r.chocs ? 'mauvais' : ''}">${r.chocs}</td><td>${r.zooms} / ${r.analyses || 0}</td>`
         + `<td>${fr(r.distance)} m</td><td>${fr(r.duree, 0)} s</td>`;
       tb.appendChild(tr);
     }
@@ -751,7 +812,19 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     const kc = derniereCle(S, fi), K = S.frames[kc];
     $('etape').textContent = `Étape ${fi + 1} / ${S.frames.length} · t = ${fr(F.t, 0)} s`;
     $('curseur').value = fi;
-    for (const li of $('echelle').children) li.classList.toggle('actif', li.dataset.a === F.action);
+    const sansDrone = F.liaison === false;
+    for (const li of $('echelle').children) {
+      const a = li.dataset.a;
+      li.classList.toggle('actif', a === F.action || (a === 'DEMANDER_DRONE' && F.action === 'INSPECTER'));
+    }
+    const etape2 = $('echelle').children[1];
+    etape2.querySelector('strong').textContent = sansDrone ? 'Reconnaissance par le rover' : 'Zoom du drone';
+    etape2.querySelector('span:last-child').textContent = sansDrone
+      ? 'Sans drone : le rover va regarder lui-même où un passage pourrait se cacher.'
+      : 'Pas de chemin, mais un passage peut se cacher dans un obstacle vu de loin.';
+    const pl = $('liaison');
+    pl.className = 'pastille ' + (sansDrone ? 'crit' : 'good');
+    pl.textContent = sansDrone ? `Drone perdu · position à ±${fr(F.sigma * 100, 0)} cm` : 'Drone connecté';
 
     const ty = TYPES[K.type] || TYPES.survol;
     const lignes = [];
@@ -765,6 +838,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     if (K.obstacle) lignes.push([K.type === 'choc' ? 'Point d\'impact' : 'Obstacle vu en', `x = ${fr(K.obstacle[0], 2)} m, y = ${fr(K.obstacle[1], 2)} m`]);
     if (K.restant != null) lignes.push(['Distance restante à la victime', `${fr(K.restant)} m`]);
     lignes.push(['Position du rover', `x = ${fr(F.pos[0], 2)} m, y = ${fr(F.pos[1], 2)} m`]);
+    if (sansDrone) {
+      lignes.push(['Incertitude de position', `±${fr(F.sigma * 100, 0)} cm (grandit de 2,5 cm par mètre)`]);
+      if (F.vraie) lignes.push(['Erreur réelle (simulation)', `${fr(Math.hypot(F.vraie[0] - F.pos[0], F.vraie[1] - F.pos[1]) * 100, 0)} cm`]);
+    }
     const enRoute = F.type === 'avance'
       ? `<p class="etat-route">En route depuis cette décision : ${fi - kc} pas de 30 cm. À chaque pas, le rover envoie ce que voit sa caméra et le module vérifie que les 3 prochains mètres restent libres.</p>`
       : '';
@@ -911,12 +988,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     arreter();
     const tAvant = garderTemps && T.scenarios[si] ? T.scenarios[si].frames[fi].t : 0;
     const nouveauTerrain = t !== terrain;
+    if (nouveauTerrain && T.scenarios[si]) v = visionPar(t, T.scenarios[si].champ, T.scenarios[si].rayons_x);
     terrain = t; vi = v;
     si = indice(terrain, vi);
     const S = T.scenarios[si];
     for (const b of $('onglets').children) b.setAttribute('aria-selected', String(b.dataset.t === terrain));
     $('scen-desc').textContent = T.terrains[terrain].description;
-    if (nouveauTerrain) { construireComparaison(); vueEntiere(); if (opt.suivre) vue.taille = 6.4; }
+    if (nouveauTerrain) { construireComparaison(); majCurseurVision(); vueEntiere(); if (opt.suivre) vue.taille = 6.4; }
     construireJournal();
     majVision();
     let k = 1;
@@ -940,9 +1018,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     b.addEventListener('click', () => choisir(t, vi, { garderTemps: false }));
     $('onglets').appendChild(b);
   }
-  $('v-curseur').max = NV - 1;
-  $('v-grad').style.gridTemplateColumns = `repeat(${NV}, minmax(0, 1fr))`;
-  $('v-grad').innerHTML = Array.from({ length: NV }, (_, v) => `<span>${nomVision(v)}</span>`).join('');
+  function majCurseurVision() {
+    const n = visions(terrain).length;
+    $('v-curseur').max = n - 1;
+    $('v-grad').style.gridTemplateColumns = `repeat(${n}, minmax(0, 1fr))`;
+    $('v-grad').innerHTML = Array.from({ length: n }, (_, v) => `<span>${nomVision(v)}</span>`).join('');
+  }
   $('v-curseur').addEventListener('input', (e) => choisir(terrain, +e.target.value));
   $('v-table').addEventListener('click', (e) => {
     const tr = e.target.closest('tr[data-v]');

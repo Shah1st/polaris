@@ -120,6 +120,30 @@ rover and the victim, so the rover does not wander off the map. Pass `zone=(x0, 
 * Typical timings on a laptop (25.6 m area): one A\* ≈ 0.12 s, a full decision ≈ 0.16 s,
   the path check after each step ≈ 1 ms. Expect a few times slower on a Raspberry Pi.
 
+## When the drone link is lost
+
+Everything runs on the ground computer, which sends orders to the drone and to the rover. If
+the computer stops hearing from the drone (`decider(..., drone_disponible=False)`):
+
+* **The rover keeps going, more carefully**: half speed, the drone map frozen as it was, its
+  position from odometry only (wheels + IMU), with an uncertainty that grows with distance
+  (2.5 cm per metre in the simulation). Drone obstacles get that much extra margin, except
+  where the rover has looked closely itself (`carte.marge_drone`).
+* **It does the drone's reconnaissance itself** (`action == 'INSPECTER'`): when no path exists,
+  the module asks where a passage could hide under an obstacle only seen from far away, and
+  sends the rover to look from about 1 m away (`cible`, `point_de_vue`). A 360° look with the
+  pan-tilt follows; the sector is then marked inspected and the search moves on.
+* **Too uncertain** (over 60 cm): if the victim is closer than the last point seen by the
+  drone, it carries on and stays with the victim; otherwise it goes back along its own trace
+  and waits for the drone. Without the drone, "no passage" is never final: it waits for it.
+* **When the drone comes back**, it sees the rover's marker: the position is corrected, and
+  everything the rover saw meanwhile is rewritten at the right place (error spread along the
+  path), which removes the "ghost" obstacles written at the wrong position
+  (`instantane_rover()` / `restaurer_rover()`).
+
+In the simulation: `Simu(..., coupures=[(t0, t1)])` cuts the link (`t1=None`: for good);
+`monde_4()` and `monde_5()` are the drone-loss scenarios.
+
 When no path exists, the module asks: "if the obstacles the drone only saw from far away were
 actually passable, where would I go?" It then asks the drone to zoom on exactly those tiles. If
 the drone confirms they are blocked, the rover goes to the closest reachable point and raises

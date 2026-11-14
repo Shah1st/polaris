@@ -138,6 +138,12 @@ class CarteFusion:
         self.tuiles = {s: {} for s in SOURCES}  # source -> {(z, x, y): matrice}
         self.maj = {s: {} for s in SOURCES}  # source -> {(z, x, y): t}
         self.demandes = set()  # tuiles deja demandees au drone
+        self.inspectees = set()  # tuiles deja inspectees par le rover lui-meme (sans drone)
+        # Marge en plus autour des obstacles DU DRONE (m). Sans drone, la position du rover
+        # n'est plus recalee : on la met a l'incertitude de position, pour rester prudent
+        # vis-a-vis de la carte du drone. Les obstacles que le rover voit lui-meme ne sont
+        # pas concernes : il les voit par rapport a lui.
+        self.marge_drone = 0.0
 
     # ---- geometrie --------------------------------------------------------
     def res(self, z):
@@ -180,20 +186,33 @@ class CarteFusion:
             store[k] = data.copy()
             self.maj[s][k] = t
 
+    def instantane_rover(self):
+        """Copie des tuiles du rover, pour pouvoir annuler plus tard des observations faites
+        avec une position douteuse (pendant une coupure du drone)."""
+        return {k: v.copy() for k, v in self.tuiles['rover'].items()}, dict(self.maj['rover'])
+
+    def restaurer_rover(self, instantane):
+        """Remet les tuiles du rover dans l'etat d'un instantane_rover()."""
+        tuiles, maj = instantane
+        self.tuiles['rover'] = {k: v.copy() for k, v in tuiles.items()}
+        self.maj['rover'] = dict(maj)
+
     def signaler_obstacle(self, x, y, rayon=0.1, t=0.0):
-        """Obstacle 'ressenti' par le rover (patinage, blocage, pente trop forte)."""
+        """Obstacle 'ressenti' par le rover (patinage, blocage, pente trop forte).
+        Envoye comme une tuile rover ordinaire, via recevoir()."""
         r = self.res_fine
+        tuiles = {}
         for i in range(math.floor((y - rayon) / r), math.floor((y + rayon) / r) + 1):
             for j in range(math.floor((x - rayon) / r), math.floor((x + rayon) / r) + 1):
                 cx, cy = (j + 0.5) * r, (i + 0.5) * r
                 if (cx - x) ** 2 + (cy - y) ** 2 > rayon**2:
                     continue
                 k = self.cle(cx, cy, self.zmax)
-                tu = self.tuiles['rover'].setdefault(
-                    k, np.full((self.n, self.n), INCONNU, np.int8)
-                )
+                tu = tuiles.setdefault(k, np.full((self.n, self.n), INCONNU, np.int8))
                 tu[i - k[2] * self.n, j - k[1] * self.n] = OBSTACLE
-                self.maj['rover'][k] = max(self.maj['rover'].get(k, t), t)
+        for (z, tx, ty), data in tuiles.items():
+            tk = max(t, self.maj['rover'].get((z, tx, ty), t))  # toujours prioritaire
+            self.recevoir({'source': 'rover', 't': tk, 'z': z, 'x': tx, 'y': ty, 'data': data})
 
     # ---- vue fusionnee ----------------------------------------------------
     def grille(self, x0, y0, x1, y1):
@@ -247,13 +266,28 @@ class CarteFusion:
         val = self._reduire_aligne(g, g.val)
         res = g.res * k
         r = math.ceil(self.rayon_robot / res)
-        bloque = dilater(val == OBSTACLE, r)
+        if self.marge_drone > 0:
+            # Marge elargie seulement pour les obstacles du drone situes loin de ce que le
+            # rover a vu lui-meme : la ou il vient de regarder de pres, on se fie a ses yeux.
+            obstacle = g.val == OBSTACLE
+            drone = self._reduire_aligne(g, (obstacle & (g.src == SRC_DRONE)).astype(np.int8))
+            rover = self._reduire_aligne(g, (obstacle & (g.src == SRC_ROVER)).astype(np.int8))
+            vu = self._reduire_aligne(g, (g.src == SRC_ROVER).astype(np.int8)) == 1
+            pres_du_vu = dilater(vu, math.ceil(0.5 / res))
+            r_drone = math.ceil((self.rayon_robot + self.marge_drone) / res)
+            bloque = (
+                dilater(rover == 1, r)
+                | dilater((drone == 1) & pres_du_vu, r)
+                | dilater((drone == 1) & ~pres_du_vu, r_drone)
+            )
+        else:
+            bloque = dilater(val == OBSTACLE, r)
         return GrillePlan(val, bloque, g.i0 // k, g.j0 // k, res)
 
     # ---- planification ----------------------------------------------------
     def _liberer_depart(self, plan, i, j):
         """Le robot doit pouvoir quitter sa case meme s'il frole un obstacle."""
-        r = math.ceil(self.rayon_robot / plan.res)
+        r = math.ceil((self.rayon_robot + self.marge_drone) / plan.res)
         bloque = plan.bloque.copy()
         for di in range(-r, r + 1):
             for dj in range(-r, r + 1):
@@ -358,7 +392,7 @@ class CarteFusion:
         if len(morceau) < 2:
             return None
         res_plan = self.res(self.niveau_plan)
-        marge = self.rayon_robot + 2 * res_plan
+        marge = self.rayon_robot + self.marge_drone + 2 * res_plan
         xs, ys = [p[0] for p in morceau], [p[1] for p in morceau]
         fenetre = [min(xs) - marge, min(ys) - marge, max(xs) + marge, max(ys) + marge]
         if zone is not None:  # rien n'est bloque hors de la zone de travail
@@ -371,7 +405,14 @@ class CarteFusion:
             if fenetre[0] >= fenetre[2] or fenetre[1] >= fenetre[3]:
                 return None
         plan = self.grille_plan(self.grille(*fenetre))
+        # Quand la marge du drone est elargie, le rover peut se retrouver dans cette marge :
+        # le A* l'autorise a en sortir (_liberer_depart), on ne bloque donc pas non plus les
+        # premiers centimetres du chemin, sinon il replanifierait en boucle sur place.
+        x0, y0 = morceau[0]
+        sortie = self.rayon_robot + self.marge_drone + res_plan if self.marge_drone > 0 else 0
         for x, y in morceau[1:]:
+            if math.hypot(x - x0, y - y0) <= sortie:
+                continue
             i, j = plan.ij(x, y)
             if plan.dedans(i, j) and plan.bloque[i, j]:
                 return x, y
@@ -392,14 +433,21 @@ class CarteFusion:
                     out.append(k)
         return out
 
-    def _candidats_zoom(self, g, depart, objectif, tolerance):
-        """Question posee : 'si les obstacles vus seulement de loin par le drone etaient en fait
-        franchissables, par ou passerais-je ?'. On les traite comme inconnus (mais chers),
-        on replanifie, et les tuiles de ces obstacles que le chemin traverse sont a zoomer.
-        Retourne la liste des tuiles (dans l'ordre du chemin) et le chemin 'optimiste'."""
-        douteux = (g.val == OBSTACLE) & (g.src == SRC_DRONE) & (g.zdrone < self.niveau_zoom)
+    def _chemin_optimiste(self, g, depart, objectif, tolerance, niveau_max, exclure=()):
+        """'Si les obstacles vus seulement de loin par le drone (niveau < niveau_max) etaient
+        en fait franchissables, par ou passerais-je ?' On les traite comme inconnus mais chers
+        et on replanifie. Renvoie (chemin, grille de plan, cases douteuses) ou (None, ...).
+        `exclure` : secteurs (tuiles du niveau le plus fin) deja inspectes, dont les obstacles
+        sont consideres comme confirmes."""
+        douteux = (g.val == OBSTACLE) & (g.src == SRC_DRONE) & (g.zdrone < niveau_max)
+        nh, nw = douteux.shape
+        for _, tx, ty in exclure:
+            i0, j0 = ty * self.n - g.i0, tx * self.n - g.j0
+            a0, a1, b0, b1 = max(0, i0), min(nh, i0 + self.n), max(0, j0), min(nw, j0 + self.n)
+            if a0 < a1 and b0 < b1:
+                douteux[a0:a1, b0:b1] = False
         if not douteux.any():
-            return [], None
+            return None, None, None
         g2 = Grille(
             np.where(douteux, INCONNU, g.val).astype(np.int8), g.src, g.zdrone, g.i0, g.j0, g.res
         )
@@ -407,6 +455,14 @@ class CarteFusion:
         douteux_plan = self._reduire_aligne(g, douteux.astype(np.int8)) == 1
         chemin = self.astar(
             plan2, depart, objectif, tolerance, cout_inconnu=max(10.0, self.cout_inconnu)
+        )
+        return chemin, plan2, douteux_plan
+
+    def _candidats_zoom(self, g, depart, objectif, tolerance):
+        """Tuiles a faire zoomer par le drone : celles des obstacles douteux que traverse le
+        chemin optimiste (dans l'ordre du chemin). Renvoie aussi ce chemin."""
+        chemin, plan2, douteux_plan = self._chemin_optimiste(
+            g, depart, objectif, tolerance, self.niveau_zoom
         )
         if not chemin:
             return [], None
@@ -418,6 +474,67 @@ class CarteFusion:
                 if k not in out:
                     out.append(k)
         return out, chemin
+
+    def _point_de_vue(self, plan, atteignable, cible, distance_max, distance_min=0.6):
+        """Case atteignable d'ou observer `cible` : la plus proche a au moins distance_min m
+        (pour ne pas finir dans la marge de securite de l'obstacle une fois vu de pres), sinon
+        la plus proche tout court ; jamais a plus de distance_max m."""
+        ii, jj = np.nonzero(atteignable)
+        if ii.size == 0:
+            return None
+        xs = (jj + plan.j0 + 0.5) * plan.res
+        ys = (ii + plan.i0 + 0.5) * plan.res
+        d = np.hypot(xs - cible[0], ys - cible[1])
+        if d.min() > distance_max:
+            return None
+        loin = np.where(d >= distance_min, d, np.inf)
+        k = int(np.argmin(loin)) if np.isfinite(loin.min()) else int(np.argmin(d))
+        if d[k] > distance_max:
+            k = int(np.argmin(d))
+        return float(xs[k]), float(ys[k])
+
+    def _reconnaissance(self, g, plan, depart, objectif, tolerance):
+        """Sans drone : au lieu de demander un zoom, le rover va voir lui-meme.
+
+        Meme question que pour le drone (par ou passerais-je si les obstacles vus seulement
+        de loin etaient franchissables ?), mais tous les obstacles du drone sont douteux pour
+        le rover, qui voit plus fin. Le premier point douteux du chemin optimiste devient la
+        cible ; le rover va a la case atteignable la plus proche (a moins de distance_max m)
+        pour l'observer, avec une reserve de 35 cm hors de la marge de securite (qui grandit
+        avec l'incertitude). Un secteur (tuile du niveau le plus fin) n'est inspecte qu'une
+        fois ; ensuite ses obstacles comptent comme confirmes et la recherche passe ailleurs."""
+        optimiste, plan2, douteux_plan = self._chemin_optimiste(
+            g, depart, objectif, tolerance, self.zmax + 1, exclure=self.inspectees
+        )
+        distance_min = self.rayon_robot + self.marge_drone + 0.35
+        distance_max = max(1.2, distance_min + 0.6)
+        if not optimiste:
+            return None
+        atteignable = None
+        for x, y in optimiste:
+            i, j = plan2.ij(x, y)
+            if not (plan2.dedans(i, j) and douteux_plan[i, j]):
+                continue
+            secteur = self.cle(x, y, self.zmax)
+            if secteur in self.inspectees:
+                continue
+            if atteignable is None:
+                atteignable = self.atteignable(plan, depart)
+            vue = self._point_de_vue(plan, atteignable, (x, y), distance_max, distance_min)
+            chemin = self.astar(plan, depart, vue, tolerance=plan.res) if vue else None
+            if not chemin:
+                self.inspectees.add(secteur)  # impossible de s'en approcher : on passe
+                continue
+            return {
+                'action': 'INSPECTER',
+                'secteur': secteur,
+                'cible': (x, y),
+                'point_de_vue': vue,
+                'chemin': chemin,
+                'chemin_optimiste': optimiste,
+                'grille': g,
+            }
+        return None
 
     def zone_survolee(self):
         """Rectangle (x0, y0, x1, y1) couvert par les tuiles du drone, ou None."""
@@ -447,14 +564,26 @@ class CarteFusion:
             max(zone[3], max(ys) + m),
         )
 
-    def decider(self, depart, objectif, zone=None, tolerance=0.5, marge=5.0, max_tuiles=2):
+    def decider(
+        self,
+        depart,
+        objectif,
+        zone=None,
+        tolerance=0.5,
+        marge=5.0,
+        max_tuiles=2,
+        drone_disponible=True,
+    ):
         """
         `zone` : rectangle (x0, y0, x1, y1) ou planifier. Par defaut, la zone survolee par le
         drone (voir zone_par_defaut).
+        `drone_disponible` : False quand la liaison avec le drone est coupee. Le rover fait
+        alors la reconnaissance lui-meme (INSPECTER) au lieu de demander un zoom.
 
         Retourne un dict :
           action = "SUIVRE"           -> chemin ; a_verifier = tuiles inconnues sur le chemin
                    "DEMANDER_DRONE"   -> tuiles (z, x, y) a survoler plus bas
+                   "INSPECTER"        -> sans drone : cible a observer, point_de_vue, chemin
                    "OBJECTIF_DEGRADE" -> point accessible le plus proche + chemin
         """
         if zone is None:
@@ -464,24 +593,30 @@ class CarteFusion:
 
         chemin = self.astar(plan, depart, objectif, tolerance)
         if chemin:
+            a_verifier = self._tuiles_inconnues_sur(plan, chemin) if drone_disponible else []
             return {
                 'action': 'SUIVRE',
                 'chemin': chemin,
-                'a_verifier': self._tuiles_inconnues_sur(plan, chemin)[:max_tuiles],
+                'a_verifier': a_verifier[:max_tuiles],
                 'grille': g,
             }
 
-        candidats, optimiste = self._candidats_zoom(g, depart, objectif, tolerance)
-        nouvelles = [c for c in candidats if c not in self.demandes][:max_tuiles]
-        if nouvelles:
-            self.demandes.update(nouvelles)
-            return {
-                'action': 'DEMANDER_DRONE',
-                'tuiles': nouvelles,
-                'grille': g,
-                'chemin_optimiste': optimiste,
-                'raison': 'aucun chemin ; un passage peut se cacher dans un obstacle vu de loin',
-            }
+        if drone_disponible:
+            candidats, optimiste = self._candidats_zoom(g, depart, objectif, tolerance)
+            nouvelles = [c for c in candidats if c not in self.demandes][:max_tuiles]
+            if nouvelles:
+                self.demandes.update(nouvelles)
+                return {
+                    'action': 'DEMANDER_DRONE',
+                    'tuiles': nouvelles,
+                    'grille': g,
+                    'chemin_optimiste': optimiste,
+                    'raison': 'aucun chemin ; passage possible sous un obstacle vu de loin',
+                }
+        else:
+            inspection = self._reconnaissance(g, plan, depart, objectif, tolerance)
+            if inspection:
+                return inspection
 
         # plus rien a verifier : on va au plus pres de la victime
         reach = self.atteignable(plan, depart)

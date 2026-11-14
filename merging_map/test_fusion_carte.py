@@ -272,3 +272,58 @@ def test_window_check_matches_a_full_map_check() -> None:
             break
     assert carte.premier_point_bloque(chemin, zone) == attendu
     assert carte.chemin_valide(chemin, zone) == (attendu is None)
+
+
+# ----------------------------------------------------------------------------
+# Without the drone
+# ----------------------------------------------------------------------------
+def test_without_drone_the_rover_inspects_instead_of_asking_the_drone() -> None:
+    carte = carte_mur()
+    dec = carte.decider(DEPART, VICTIME, zone=(0, 0, 6.4, 6.4), drone_disponible=False)
+    assert dec['action'] == 'INSPECTER'
+    assert carte.demandes == set()  # nothing asked to the drone
+    cx, cy = dec['cible']
+    vx, vy = dec['point_de_vue']
+    assert 3.2 <= cy < 3.6  # the target is on the wall
+    distance_min = carte.rayon_robot + 0.35  # outside the safety margin, with a reserve
+    assert vy < 3.2 and distance_min - 1e-9 <= np.hypot(cx - vx, cy - vy) <= 1.2
+    assert np.hypot(dec['chemin'][-1][0] - vx, dec['chemin'][-1][1] - vy) < 1e-9
+
+
+def test_inspected_sectors_move_the_search_elsewhere() -> None:
+    carte = carte_mur()
+    zone = (0, 0, 6.4, 6.4)
+    premier = carte.decider(DEPART, VICTIME, zone=zone, drone_disponible=False)
+    carte.inspectees.add(premier['secteur'])
+    second = carte.decider(DEPART, VICTIME, zone=zone, drone_disponible=False)
+    assert second['action'] == 'INSPECTER' and second['secteur'] != premier['secteur']
+
+
+def test_drone_margin_only_grows_drone_obstacles_far_from_rover_views() -> None:
+    carte = petite_carte()
+    carte.recevoir({'source': 'drone', 't': 0, 'z': 2, 'x': 0, 'y': 0, 'data': np.zeros((8, 8))})
+    d = np.zeros((8, 8))
+    d[4, 4] = OBSTACLE  # drone obstacle at (0.45, 0.45)
+    carte.recevoir({'source': 'drone', 't': 0, 'z': 2, 'x': 0, 'y': 0, 'data': d})
+    carte.rayon_robot = 0.1
+    normal = carte.grille_plan(carte.grille(0, 0, 0.8, 0.8)).bloque.sum()
+    carte.marge_drone = 0.2
+    elargi = carte.grille_plan(carte.grille(0, 0, 0.8, 0.8)).bloque.sum()
+    assert elargi > normal
+    # once the rover has looked around there itself, its own view is trusted again
+    r = np.full((8, 8), INCONNU)
+    r[2:7, 2:7] = LIBRE
+    r[4, 4] = INCONNU
+    carte.recevoir({'source': 'rover', 't': 1, 'z': 2, 'x': 0, 'y': 0, 'data': r})
+    assert carte.grille_plan(carte.grille(0, 0, 0.8, 0.8)).bloque.sum() == normal
+
+
+def test_rover_snapshot_and_restore() -> None:
+    carte = petite_carte()
+    carte.recevoir({'source': 'rover', 't': 0, 'z': 2, 'x': 0, 'y': 0, 'data': np.zeros((8, 8))})
+    instant = carte.instantane_rover()
+    carte.recevoir({'source': 'rover', 't': 1, 'z': 2, 'x': 0, 'y': 0, 'data': np.ones((8, 8))})
+    carte.recevoir({'source': 'rover', 't': 1, 'z': 2, 'x': 1, 'y': 0, 'data': np.ones((8, 8))})
+    carte.restaurer_rover(instant)
+    assert (carte.grille(0, 0, 0.8, 0.8).val == LIBRE).all()
+    assert (carte.grille(0.8, 0, 1.6, 0.8).val == INCONNU).all()
