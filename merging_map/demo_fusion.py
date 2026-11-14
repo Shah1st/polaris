@@ -262,8 +262,8 @@ def dessiner(
 
 
 # ----------------------------------------------------------------------------
-def scenario_1():
-    print('\n=== Scenario 1 : crete avec un passage etroit + tronc cache ===')
+def monde_1():
+    """Crete avec un passage de 70 cm + tronc invisible du drone."""
     verite = np.zeros((NC, NC), np.int8)
     rect(verite, 0, 12.0, ZONE_M, 12.6)  # crete
     rect(verite, 17.9, 12.0, 18.6, 12.6, LIBRE)  # passage de 70 cm
@@ -279,14 +279,11 @@ def scenario_1():
     rect(verite, 4, 6.0, 14, 6.5)  # tronc d'arbre sous les feuilles : invisible du drone
     carte = CarteFusion()
     simu = Simu(carte, verite, vu_drone, inconnu_drone=(9.6, 14.4, 14.4, 17.6))
-    simu.survol_initial(z=0)
-    print(f'  drone : 1er survol, cases de {carte.res(0) * 100:.0f} cm')
-    depart, victime = (3.0, 3.0), (8.0, 20.0)
-    return carte, depart, victime, mission(simu, depart, victime)
+    return carte, simu, (3.0, 3.0), (8.0, 20.0)
 
 
-def scenario_2():
-    print("\n=== Scenario 2 : victime au fond d'un cratere ferme ===")
+def monde_2():
+    """Victime au fond d'un cratere ferme."""
     verite = np.zeros((NC, NC), np.int8)
     disque(verite, 19, 19, 1.7)
     disque(verite, 19, 19, 1.2, LIBRE)
@@ -294,8 +291,21 @@ def scenario_2():
         disque(verite, cx, cy, r)
     carte = CarteFusion()
     simu = Simu(carte, verite, verite.copy())
+    return carte, simu, (3.0, 3.0), (19.0, 19.0)
+
+
+def scenario_1():
+    print('\n=== Scenario 1 : crete avec un passage etroit + tronc cache ===')
+    carte, simu, depart, victime = monde_1()
     simu.survol_initial(z=0)
-    depart, victime = (3.0, 3.0), (19.0, 19.0)
+    print(f'  drone : 1er survol, cases de {carte.res(0) * 100:.0f} cm')
+    return carte, depart, victime, mission(simu, depart, victime)
+
+
+def scenario_2():
+    print("\n=== Scenario 2 : victime au fond d'un cratere ferme ===")
+    carte, simu, depart, victime = monde_2()
+    simu.survol_initial(z=0)
     return carte, depart, victime, mission(simu, depart, victime)
 
 

@@ -1,0 +1,908 @@
+<meta charset="utf-8">
+<title>Fusion des cartes Polaris</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+/* Layout : barre de lecture en haut, trois cartes reliees par « + » et « = »,
+   puis decision courante + journal, puis legende et regle de fusion. */
+:root {
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --ink: #141a21;
+  --ink-2: #47515d;
+  --muted: #76808c;
+  --line: #dce1e7;
+  --accent: #2459c4;
+  --accent-ink: #ffffff;
+
+  --map-free: #fbfcfd;
+  --map-unknown: #d5dbe1;
+  --map-obs: #3f4650;
+  --map-rover-obs: #e65f2b;
+  --map-seen: #d2ebe1;
+  --map-fix: #12a26c;
+  --map-truth: #d93a4a;
+  --path: #2a78d6;
+  --zoom: #6a50d6;
+  --victim: #d93a4a;
+  --rover: #141a21;
+  --rover-fill: #ffffff;
+
+  --good: #12865b;
+  --warn: #b26a00;
+  --crit: #c4313f;
+  --replan: #d0541f;
+  --good-bg: #e2f4ec;
+  --warn-bg: #fbefd9;
+  --crit-bg: #fae3e5;
+  --replan-bg: #fce7dd;
+  --zoom-bg: #ebe7fb;
+  --neutral-bg: #e9edf1;
+
+  --f-display: 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
+  --f-body: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --f-data: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1317; --surface: #171c22; --ink: #e8ecf0; --ink-2: #b3bcc6; --muted: #8b95a0;
+    --line: #2a313a; --accent: #6b9cf2; --accent-ink: #0f1317;
+    --map-free: #1d232a; --map-unknown: #39414b; --map-obs: #cfd5dc; --map-rover-obs: #f27a45;
+    --map-seen: #1f3a33; --map-fix: #2fcf8f; --map-truth: #f0606c; --path: #5fa3f2;
+    --zoom: #a08ff2; --victim: #f0606c; --rover: #ffffff; --rover-fill: #0f1317;
+    --good: #45c993; --warn: #e6a640; --crit: #f0707a; --replan: #f2884f;
+    --good-bg: #183327; --warn-bg: #3a2c12; --crit-bg: #3c1c20; --replan-bg: #3b2216;
+    --zoom-bg: #2a2445; --neutral-bg: #232a32;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1317; --surface: #171c22; --ink: #e8ecf0; --ink-2: #b3bcc6; --muted: #8b95a0;
+  --line: #2a313a; --accent: #6b9cf2; --accent-ink: #0f1317;
+  --map-free: #1d232a; --map-unknown: #39414b; --map-obs: #cfd5dc; --map-rover-obs: #f27a45;
+  --map-seen: #1f3a33; --map-fix: #2fcf8f; --map-truth: #f0606c; --path: #5fa3f2;
+  --zoom: #a08ff2; --victim: #f0606c; --rover: #ffffff; --rover-fill: #0f1317;
+  --good: #45c993; --warn: #e6a640; --crit: #f0707a; --replan: #f2884f;
+  --good-bg: #183327; --warn-bg: #3a2c12; --crit-bg: #3c1c20; --replan-bg: #3b2216;
+  --zoom-bg: #2a2445; --neutral-bg: #232a32;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.page {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding-block: 20px 40px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid;
+  gap: 16px;
+}
+h1, h2, h3 { font-family: var(--f-display); margin: 0; text-wrap: balance; }
+h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 1.05rem; font-weight: 600; }
+h3 { font-size: 0.95rem; font-weight: 600; }
+p { margin: 0; }
+.eyebrow {
+  font-family: var(--f-data); font-size: 0.72rem; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--muted);
+}
+.num { font-family: var(--f-data); font-variant-numeric: tabular-nums; }
+
+/* --- en-tete --- */
+.top { display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: flex-end; justify-content: space-between; }
+.top .titre { display: grid; gap: 4px; min-width: 0; max-width: 62ch; }
+.sous { color: var(--ink-2); }
+.onglets { display: flex; gap: 4px; padding: 4px; background: var(--neutral-bg); border-radius: 999px; flex-wrap: wrap; }
+.onglets button {
+  border: 0; background: transparent; color: var(--ink-2); font: 500 0.9rem var(--f-body);
+  padding: 7px 14px; border-radius: 999px; cursor: pointer;
+}
+.onglets button[aria-selected="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgb(0 0 0 / 0.12); }
+.scen-desc { color: var(--ink-2); max-width: 90ch; }
+
+/* --- barre de lecture --- */
+.lecture {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 12px 14px; display: grid; gap: 10px;
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5;
+}
+body::before {
+  content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px);
+  z-index: 10; background: var(--bg);
+}
+.lecture .ligne { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.btn {
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  font: 500 0.88rem var(--f-body); padding: 6px 12px; border-radius: 8px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn:hover { border-color: var(--muted); }
+.btn.primaire { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); min-width: 96px; justify-content: center; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.etape { font-family: var(--f-data); font-size: 0.85rem; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.options { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-left: auto; align-items: center; color: var(--ink-2); font-size: 0.85rem; }
+.options label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.options select { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+.curseur { position: relative; padding-bottom: 10px; }
+.curseur input { width: 100%; margin: 0; accent-color: var(--accent); }
+.reperes { position: absolute; left: 8px; right: 8px; bottom: 0; height: 8px; }
+.reperes button {
+  position: absolute; top: 0; width: 6px; height: 8px; margin-left: -3px; padding: 0;
+  border: 0; border-radius: 2px; cursor: pointer; background: var(--muted);
+}
+
+/* --- cartes --- */
+.cartes { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr); gap: 10px; align-items: start; }
+.op { font: 600 1.6rem var(--f-display); color: var(--muted); align-self: center; padding-top: 30px; text-align: center; }
+.carte { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; display: grid; gap: 8px; min-width: 0; }
+.carte.fusion { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.carte figcaption { display: grid; gap: 2px; }
+.carte figcaption p { color: var(--muted); font-size: 0.8rem; }
+.carte canvas { width: 100%; aspect-ratio: 1; max-width: 100%; display: block; border-radius: 4px; cursor: crosshair; touch-action: none; }
+.chiffres { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.8rem; color: var(--ink-2); }
+.chiffres b { font-family: var(--f-data); font-weight: 500; color: var(--ink); font-variant-numeric: tabular-nums; }
+.inspecteur {
+  background: var(--surface); border: 1px dashed var(--line); border-radius: var(--radius);
+  padding: 10px 14px; font-size: 0.85rem; color: var(--ink-2); min-height: 44px;
+  display: flex; flex-wrap: wrap; gap: 4px 18px; align-items: center;
+}
+.inspecteur b { color: var(--ink); font-weight: 600; }
+.inspecteur .regle { color: var(--ink); }
+
+/* --- decision + journal --- */
+.bas { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.panneau { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: grid; gap: 14px; min-width: 0; }
+.echelle { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.echelle li { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: grid; gap: 2px; color: var(--muted); }
+.echelle li .n { font-family: var(--f-data); font-size: 0.72rem; }
+.echelle li strong { font-family: var(--f-display); font-weight: 600; font-size: 0.9rem; }
+.echelle li span:last-child { font-size: 0.78rem; }
+.echelle li.actif { color: var(--ink); border-width: 2px; padding: 7px 9px; }
+.echelle li.actif[data-a="SUIVRE"] { border-color: var(--good); background: var(--good-bg); }
+.echelle li.actif[data-a="DEMANDER_DRONE"] { border-color: var(--zoom); background: var(--zoom-bg); }
+.echelle li.actif[data-a="OBJECTIF_DEGRADE"] { border-color: var(--crit); background: var(--crit-bg); }
+.decision { display: grid; gap: 8px; }
+.decision .entete { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; }
+.pastille {
+  display: inline-flex; align-items: center; gap: 6px; font: 600 0.75rem var(--f-data);
+  letter-spacing: 0.04em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px;
+  background: var(--neutral-bg); color: var(--ink-2);
+}
+.pastille::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.pastille.good { background: var(--good-bg); color: var(--good); }
+.pastille.zoom { background: var(--zoom-bg); color: var(--zoom); }
+.pastille.warn { background: var(--warn-bg); color: var(--warn); }
+.pastille.crit { background: var(--crit-bg); color: var(--crit); }
+.pastille.replan { background: var(--replan-bg); color: var(--replan); }
+.decision h3 { font-size: 1.15rem; }
+.decision .texte { color: var(--ink-2); max-width: 70ch; }
+.details { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 14px; font-size: 0.85rem; margin: 0; }
+.details dt { color: var(--muted); }
+.details dd { margin: 0; font-family: var(--f-data); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.etat-route { font-size: 0.85rem; color: var(--ink-2); }
+.journal { max-height: 420px; overflow: auto; }
+.journal ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.journal button {
+  width: 100%; text-align: left; display: grid; grid-template-columns: 10px 64px minmax(0, 1fr);
+  gap: 8px; align-items: center; border: 0; background: transparent; color: var(--ink-2);
+  font: 400 0.85rem var(--f-body); padding: 6px 8px; border-radius: 6px; cursor: pointer;
+}
+.journal button:hover { background: var(--neutral-bg); }
+.journal button.courant { background: var(--neutral-bg); color: var(--ink); font-weight: 600; }
+.journal .t { font-family: var(--f-data); font-size: 0.78rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.point { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+[data-k="good"] { background: var(--good) !important; }
+[data-k="zoom"] { background: var(--zoom) !important; }
+[data-k="warn"] { background: var(--warn) !important; }
+[data-k="crit"] { background: var(--crit) !important; }
+[data-k="replan"] { background: var(--replan) !important; }
+
+/* --- legende --- */
+.legende { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.items { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 16px; font-size: 0.85rem; color: var(--ink-2); }
+.items li { display: flex; gap: 8px; align-items: center; }
+.sw { width: 16px; height: 16px; border-radius: 3px; flex: none; border: 1px solid var(--line); }
+.trait { width: 22px; height: 0; flex: none; border-top: 3px solid var(--path); }
+.regles { margin: 0; padding-left: 18px; display: grid; gap: 6px; color: var(--ink-2); }
+.regles strong { color: var(--ink); }
+.niveaux { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.niveaux th, .niveaux td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.niveaux th { color: var(--muted); font-weight: 500; }
+.niveaux td { font-family: var(--f-data); font-variant-numeric: tabular-nums; }
+.controle { font-size: 0.8rem; color: var(--muted); }
+.controle.ok { color: var(--good); }
+.controle.ko { color: var(--crit); }
+
+@media (max-width: 980px) {
+  .cartes { grid-template-columns: minmax(0, 1fr); }
+  .op { padding-top: 0; font-size: 1.3rem; }
+  .carte canvas { max-width: 560px; margin: 0 auto; }
+  .bas, .legende { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 560px) {
+  h1 { font-size: 1.4rem; }
+  .echelle { grid-template-columns: minmax(0, 1fr); }
+  .options { margin-left: 0; }
+  .lecture { position: static; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="page">
+  <header class="top">
+    <div class="titre">
+      <p class="eyebrow">Polaris · merging_map</p>
+      <h1>Fusion des cartes drone + rover</h1>
+      <p class="sous">Rejoue la simulation pas à pas : ce que voit le drone, ce que voit le rover, la carte fusionnée qui en sort, et la décision prise à chaque étape.</p>
+    </div>
+    <div class="onglets" role="tablist" aria-label="Scénario" id="onglets"></div>
+  </header>
+  <p class="scen-desc" id="scen-desc"></p>
+
+  <section class="lecture" aria-label="Lecture">
+    <div class="ligne">
+      <button class="btn primaire" id="b-jouer" type="button">▶ Lire</button>
+      <button class="btn" id="b-prec" type="button" aria-label="Étape précédente">◀</button>
+      <button class="btn" id="b-suiv" type="button" aria-label="Étape suivante">▶</button>
+      <button class="btn" id="b-decision" type="button">Décision suivante ⏭</button>
+      <span class="etape" id="etape"></span>
+      <div class="options">
+        <label for="vitesse">Vitesse
+          <select id="vitesse">
+            <option value="0.5">0,5×</option>
+            <option value="1" selected>1×</option>
+            <option value="2">2×</option>
+            <option value="4">4×</option>
+          </select>
+        </label>
+        <label for="o-pause"><input type="checkbox" id="o-pause" checked> Ralentir sur les décisions</label>
+        <label for="o-grille"><input type="checkbox" id="o-grille"> Grille des tuiles</label>
+        <label for="o-verite"><input type="checkbox" id="o-verite"> Montrer le terrain réel</label>
+      </div>
+    </div>
+    <div class="curseur">
+      <input type="range" id="curseur" min="0" max="1" value="0" step="1" aria-label="Étape de la simulation">
+      <div class="reperes" id="reperes"></div>
+    </div>
+  </section>
+
+  <section class="cartes" aria-label="Cartes">
+    <figure class="carte">
+      <figcaption>
+        <h2>Carte du drone</h2>
+        <p>Vue du ciel · cases de 80 cm, 20 cm là où il a zoomé</p>
+      </figcaption>
+      <canvas id="c-drone" aria-label="Carte du drone"></canvas>
+      <div class="chiffres" id="s-drone"></div>
+    </figure>
+    <div class="op" aria-hidden="true">+</div>
+    <figure class="carte">
+      <figcaption>
+        <h2>Carte du rover</h2>
+        <p>Caméra au sol · cases de 5 cm, portée 2 m</p>
+      </figcaption>
+      <canvas id="c-rover" aria-label="Carte du rover"></canvas>
+      <div class="chiffres" id="s-rover"></div>
+    </figure>
+    <div class="op" aria-hidden="true">=</div>
+    <figure class="carte fusion">
+      <figcaption>
+        <h2>Carte fusionnée</h2>
+        <p>Celle qu'utilise le robot pour décider</p>
+      </figcaption>
+      <canvas id="c-fusion" aria-label="Carte fusionnée"></canvas>
+      <div class="chiffres" id="s-fusion"></div>
+    </figure>
+  </section>
+  <div class="inspecteur" id="inspecteur" aria-live="polite">Survolez une carte pour voir, case par case, ce que dit le drone, ce que dit le rover et ce que garde la fusion.</div>
+
+  <section class="bas">
+    <div class="panneau">
+      <ol class="echelle" id="echelle">
+        <li data-a="SUIVRE"><span class="n">1</span><strong>Suivre le chemin</strong><span>Un chemin existe sur la carte fusionnée.</span></li>
+        <li data-a="DEMANDER_DRONE"><span class="n">2</span><strong>Zoom du drone</strong><span>Pas de chemin, mais un passage peut se cacher dans un obstacle vu de loin.</span></li>
+        <li data-a="OBJECTIF_DEGRADE"><span class="n">3</span><strong>Objectif dégradé</strong><span>Tout est vérifié : aller au plus près et alerter.</span></li>
+      </ol>
+      <div class="decision" id="decision"></div>
+    </div>
+    <div class="panneau journal">
+      <h3>Journal des décisions</h3>
+      <ol id="journal"></ol>
+    </div>
+  </section>
+
+  <section class="legende">
+    <div class="panneau">
+      <h3>Légende</h3>
+      <ul class="items">
+        <li><span class="sw" style="background: var(--map-free)"></span>Libre</li>
+        <li><span class="sw" style="background: var(--map-unknown)"></span>Inconnu : personne n'a vu (-1)</li>
+        <li><span class="sw" style="background: var(--map-obs)"></span>Obstacle vu par le drone</li>
+        <li><span class="sw" style="background: var(--map-seen)"></span>Libre, vu par le rover</li>
+        <li><span class="sw" style="background: var(--map-rover-obs)"></span>Obstacle vu par le rover</li>
+        <li><span class="sw" style="background: var(--map-fix)"></span>Corrigé par le rover : le drone croyait à un obstacle</li>
+        <li><span class="trait"></span>Chemin planifié (A*)</li>
+        <li><span class="trait" style="border-top-style: dotted"></span>Chemin « si le passage existait »</li>
+        <li><span class="trait" style="border-top-color: var(--rover); border-top-width: 2px"></span>Trajet parcouru</li>
+        <li><span class="sw" style="border: 2px dashed var(--zoom); background: transparent"></span>Tuile zoomée par le drone</li>
+        <li><span class="sw" style="background: var(--map-truth); opacity: .5"></span>Terrain réel, pas encore connu</li>
+      </ul>
+    </div>
+    <div class="panneau">
+      <h3>Règle de fusion, case par case</h3>
+      <ol class="regles">
+        <li><strong>Le rover a vu la case</strong> (0 ou 1) : sa valeur l'emporte, il la voit de près.</li>
+        <li><strong>Sinon</strong> : on garde le drone, au niveau le plus fin disponible.</li>
+        <li><strong>-1 (pas vu)</strong> ne change jamais rien. Les tuiles du drone ne sont jamais effacées.</li>
+      </ol>
+      <table class="niveaux">
+        <thead><tr><th>Niveau</th><th>Tuile</th><th>Case</th><th>Qui</th></tr></thead>
+        <tbody>
+          <tr><td>z0</td><td>25,6 m</td><td>80 cm</td><td>Drone, 1er survol</td></tr>
+          <tr><td>z2</td><td>6,4 m</td><td>20 cm</td><td>Drone, zoom</td></tr>
+          <tr><td>z3</td><td>3,2 m</td><td>10 cm</td><td>Planification A*</td></tr>
+          <tr><td>z4</td><td>1,6 m</td><td>5 cm</td><td>Rover</td></tr>
+        </tbody>
+      </table>
+      <p class="controle" id="controle"></p>
+    </div>
+  </section>
+</div>
+
+<script src="trace.js"></script>
+<script>
+(() => {
+  'use strict';
+  const TRACE = window.TRACE;
+  const $ = (id) => document.getElementById(id);
+  const fr = (v, d = 1) => v.toLocaleString('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+  if (!TRACE) {
+    $('decision').textContent = 'Les données de simulation (trace.js) sont introuvables. Lancez export_trace.py à côté de cette page.';
+    return;
+  }
+
+  // ------------------------------------------------------------------ rejeu
+  function decoder(txt, taille) {
+    const out = new Int8Array(taille);
+    const re = /([ulx])(\d*)/g;
+    let m, k = 0;
+    while ((m = re.exec(txt))) {
+      const v = m[1] === 'u' ? -1 : m[1] === 'l' ? 0 : 1;
+      const n = m[2] ? parseInt(m[2], 10) : 1;
+      out.fill(v, k, k + n);
+      k += n;
+    }
+    return out;
+  }
+
+  class Rejeu {
+    constructor(sc) {
+      this.sc = sc;
+      this.nc = Math.round(sc.zone / sc.res_fine);
+      this.cache = new Map();
+      this.verite = decoder(sc.verite, this.nc * this.nc);
+      this.reset();
+    }
+    reset() {
+      const t = this.nc * this.nc;
+      this.dv = new Int8Array(t).fill(-1);
+      this.dz = new Int8Array(t).fill(-1);
+      this.rv = new Int8Array(t).fill(-1);
+      this.rz = new Int8Array(t).fill(-1);
+      this.fait = -1;
+      this.nTuiles = [0, 0];
+      this.zooms = new Map();
+    }
+    tuile(k) {
+      let d = this.cache.get(k);
+      if (!d) { d = decoder(this.sc.msgs[k][4], this.sc.n * this.sc.n); this.cache.set(k, d); }
+      return d;
+    }
+    appliquer(k) {
+      const [src, z, tx, ty] = this.sc.msgs[k];
+      const n = this.sc.n, nc = this.nc;
+      const f = 2 ** (this.sc.zmax - z), cote = n * f;
+      const val = src === 0 ? this.dv : this.rv;
+      const zz = src === 0 ? this.dz : this.rz;
+      const d = this.tuile(k);
+      this.nTuiles[src]++;
+      if (src === 0 && z > 0) this.zooms.set(`${z},${tx},${ty}`, [z, tx, ty]);
+      for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) {
+          const v = d[i * n + j];
+          if (v === -1) continue;
+          const gi0 = ty * cote + i * f, gj0 = tx * cote + j * f;
+          for (let a = 0; a < f; a++) {
+            const gi = gi0 + a;
+            if (gi < 0 || gi >= nc) continue;
+            const base = gi * nc;
+            for (let b = 0; b < f; b++) {
+              const gj = gj0 + b;
+              if (gj < 0 || gj >= nc) continue;
+              const p = base + gj;
+              if (z >= zz[p]) { val[p] = v; zz[p] = z; }
+            }
+          }
+        }
+      }
+    }
+    aller(fi) {
+      if (fi < this.fait) this.reset();
+      for (let k = this.fait + 1; k <= fi; k++) {
+        for (const m of this.sc.frames[k].msgs) this.appliquer(m);
+      }
+      this.fait = fi;
+    }
+  }
+
+  // ------------------------------------------------------------------ libelles
+  const TYPES = {
+    survol: { pastille: 'Survol', k: '' },
+    capteur: { pastille: 'Observation', k: '' },
+    blocage: { pastille: 'Bloqué', k: 'warn' },
+    zoom: { pastille: 'Zoom drone', k: 'zoom' },
+    verifier: { pastille: 'Vérification', k: 'zoom' },
+    suivre: { pastille: 'Suivre', k: 'good' },
+    avance: { pastille: 'En route', k: 'good' },
+    replan: { pastille: 'Replanifier', k: 'replan' },
+    degrade: { pastille: 'Objectif dégradé', k: 'crit' },
+    fin: { pastille: 'Alerte secours', k: 'crit' },
+    arrivee: { pastille: 'Arrivé', k: 'good' },
+  };
+  const estCle = (f) => f.type !== 'avance';
+
+  // ------------------------------------------------------------------ etat
+  const scenarios = TRACE.scenarios;
+  const rejeux = scenarios.map((s) => new Rejeu(s));
+  let si = 0, fi = 1, survol = null, minuterie = null;
+  const opt = { grille: false, verite: false, pause: true, vitesse: 1 };
+  const cartes = ['drone', 'rover', 'fusion'].map((nom) => {
+    const off = document.createElement('canvas');
+    return { nom, cv: $('c-' + nom), off, ctxOff: off.getContext('2d'), img: null };
+  });
+
+  // ------------------------------------------------------------------ couleurs
+  let C = {};
+  function lireCouleurs() {
+    const st = getComputedStyle(document.documentElement);
+    const lire = (n) => st.getPropertyValue('--' + n).trim();
+    const rgb = (h) => {
+      const x = h.replace('#', '');
+      return [parseInt(x.slice(0, 2), 16), parseInt(x.slice(2, 4), 16), parseInt(x.slice(4, 6), 16)];
+    };
+    C = {};
+    for (const n of ['map-free', 'map-unknown', 'map-obs', 'map-rover-obs', 'map-seen', 'map-fix', 'map-truth']) C[n] = rgb(lire(n));
+    for (const n of ['path', 'zoom', 'victim', 'rover', 'rover-fill', 'ink', 'muted', 'line', 'map-rover-obs', 'crit', 'surface']) C['css-' + n] = lire(n);
+  }
+
+  // ------------------------------------------------------------------ images de base
+  let stats = {};
+  function construireImages() {
+    const R = rejeux[si], nc = R.nc;
+    for (const c of cartes) {
+      if (c.off.width !== nc) { c.off.width = nc; c.off.height = nc; c.img = null; }
+      if (!c.img) c.img = c.ctxOff.createImageData(nc, nc);
+    }
+    const [dI, rI, fI] = cartes.map((c) => c.img.data);
+    const { dv, rv, verite } = R;
+    const put = (arr, q, col, alpha) => {
+      if (alpha === undefined) { arr[q] = col[0]; arr[q + 1] = col[1]; arr[q + 2] = col[2]; }
+      else {
+        arr[q] = arr[q] * (1 - alpha) + col[0] * alpha;
+        arr[q + 1] = arr[q + 1] * (1 - alpha) + col[1] * alpha;
+        arr[q + 2] = arr[q + 2] * (1 - alpha) + col[2] * alpha;
+      }
+      arr[q + 3] = 255;
+    };
+    let dConnu = 0, rVu = 0, ajout = 0, corrige = 0, inconnu = 0;
+    for (let gi = 0; gi < nc; gi++) {
+      const ligne = (nc - 1 - gi) * nc;
+      for (let gj = 0; gj < nc; gj++) {
+        const p = gi * nc + gj, q = (ligne + gj) * 4;
+        const d = dv[p], r = rv[p];
+        put(dI, q, d === -1 ? C['map-unknown'] : d === 1 ? C['map-obs'] : C['map-free']);
+        put(rI, q, r === -1 ? C['map-unknown'] : r === 1 ? C['map-rover-obs'] : C['map-seen']);
+        let col;
+        if (r !== -1) {
+          rVu++;
+          if (r === 1) { col = C['map-rover-obs']; if (d !== 1) ajout++; }
+          else if (d === 1) { col = C['map-fix']; corrige++; }
+          else col = C['map-seen'];
+        } else col = d === -1 ? C['map-unknown'] : d === 1 ? C['map-obs'] : C['map-free'];
+        if (d !== -1) dConnu++;
+        const fv = r !== -1 ? r : d;
+        if (fv === -1) inconnu++;
+        put(fI, q, col);
+        if (opt.verite && verite[p] === 1 && fv !== 1) put(fI, q, C['map-truth'], 0.55);
+      }
+    }
+    for (const c of cartes) c.ctxOff.putImageData(c.img, 0, 0);
+    const a = R.sc.res_fine ** 2;
+    stats = { dConnu: dConnu / (nc * nc), rVu: rVu * a, ajout: ajout * a, corrige: corrige * a, inconnu: inconnu / (nc * nc) };
+  }
+
+  // ------------------------------------------------------------------ dessin
+  function dessiner() {
+    const S = scenarios[si], F = S.frames[fi], R = rejeux[si];
+    for (const c of cartes) {
+      const cv = c.cv, w = cv.width;
+      if (!w) continue;
+      const ctx = cv.getContext('2d');
+      ctx.imageSmoothingEnabled = false;
+      ctx.clearRect(0, 0, w, w);
+      ctx.drawImage(c.off, 0, 0, w, w);
+      surcouches(c.nom, ctx, w, S, F, R);
+    }
+  }
+
+  function surcouches(nom, ctx, w, S, F, R) {
+    const dpr = w / cartes[0].cv.clientWidth || 1;
+    const k = w / S.zone;
+    const X = (x) => x * k, Y = (y) => w - y * k;
+    const trait = (pts, couleur, larg, tirets) => {
+      if (!pts || pts.length < 2) return;
+      ctx.save();
+      ctx.strokeStyle = couleur; ctx.lineWidth = larg * dpr; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+      if (tirets) ctx.setLineDash(tirets.map((v) => v * dpr));
+      ctx.beginPath();
+      pts.forEach(([x, y], i) => (i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y))));
+      ctx.stroke();
+      ctx.restore();
+    };
+    const tuileRect = ([z, tx, ty]) => {
+      const cote = S.n * S.res_fine * 2 ** (S.zmax - z);
+      return [X(tx * cote), Y((ty + 1) * cote), cote * k, cote * k];
+    };
+
+    if (opt.grille) {
+      ctx.save();
+      for (const [pas, alpha, larg] of [[1.6, 0.18, 0.5], [6.4, 0.45, 1]]) {
+        ctx.strokeStyle = C['css-ink']; ctx.globalAlpha = alpha; ctx.lineWidth = larg * dpr;
+        ctx.beginPath();
+        for (let v = pas; v < S.zone - 1e-6; v += pas) {
+          ctx.moveTo(X(v), 0); ctx.lineTo(X(v), w); ctx.moveTo(0, Y(v)); ctx.lineTo(w, Y(v));
+        }
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // tuiles zoomees (drone et fusion)
+    if (nom !== 'rover') {
+      ctx.save();
+      ctx.strokeStyle = C['css-zoom']; ctx.lineWidth = 1.5 * dpr; ctx.setLineDash([5 * dpr, 4 * dpr]);
+      for (const t of R.zooms.values()) ctx.strokeRect(...tuileRect(t));
+      ctx.restore();
+    }
+    // tuiles demandees a cette etape
+    if (F.tuiles && nom !== 'rover') {
+      ctx.save();
+      for (const t of F.tuiles) {
+        const r = tuileRect(t);
+        ctx.fillStyle = C['css-zoom']; ctx.globalAlpha = 0.16; ctx.fillRect(...r);
+        ctx.globalAlpha = 1; ctx.strokeStyle = C['css-zoom']; ctx.lineWidth = 2.5 * dpr; ctx.strokeRect(...r);
+      }
+      ctx.restore();
+    }
+
+    const traj = S.traj.slice(0, F.traj);
+    if (nom === 'rover') {
+      trait(traj, C['css-rover'], 1.5);
+      ctx.save();
+      ctx.strokeStyle = C['css-rover']; ctx.globalAlpha = 0.6; ctx.lineWidth = 1 * dpr; ctx.setLineDash([3 * dpr, 3 * dpr]);
+      ctx.beginPath(); ctx.arc(X(F.pos[0]), Y(F.pos[1]), S.portee * k, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+    if (nom === 'fusion') {
+      if (F.optimiste != null) trait(S.chemins[F.optimiste], C['css-path'], 2.5, [1, 5]);
+      if (F.chemin != null && F.type !== 'blocage') trait(S.chemins[F.chemin], C['css-path'], 2.5);
+      trait(traj, C['css-rover'], 1.6);
+      if (F.obstacle) {
+        ctx.save();
+        ctx.strokeStyle = C['css-map-rover-obs']; ctx.lineWidth = 2.5 * dpr;
+        ctx.beginPath(); ctx.arc(X(F.obstacle[0]), Y(F.obstacle[1]), 9 * dpr, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+      }
+      if (F.point) {
+        ctx.save();
+        const px = X(F.point[0]), py = Y(F.point[1]), s = 7 * dpr;
+        ctx.fillStyle = C['css-path']; ctx.strokeStyle = C['css-surface']; ctx.lineWidth = 2 * dpr;
+        ctx.beginPath(); ctx.moveTo(px, py - s); ctx.lineTo(px + s, py); ctx.lineTo(px, py + s); ctx.lineTo(px - s, py); ctx.closePath();
+        ctx.fill(); ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    // victime
+    etoile(ctx, X(S.victime[0]), Y(S.victime[1]), 9 * dpr, C['css-victim'], C['css-surface'], dpr);
+    // rover
+    ctx.save();
+    ctx.translate(X(F.pos[0]), Y(F.pos[1]));
+    ctx.rotate(-F.cap);
+    const s = 7 * dpr;
+    ctx.beginPath(); ctx.moveTo(s * 1.4, 0); ctx.lineTo(-s, s); ctx.lineTo(-s * 0.5, 0); ctx.lineTo(-s, -s); ctx.closePath();
+    ctx.fillStyle = C['css-rover-fill']; ctx.strokeStyle = C['css-rover']; ctx.lineWidth = 2 * dpr;
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+
+    // case survolee
+    if (survol) {
+      const nc = R.nc, c = w / nc, m = Math.max(c, 6 * dpr);
+      const cx = (survol.gj + 0.5) * c, cy = w - (survol.gi + 0.5) * c;
+      ctx.save();
+      ctx.strokeStyle = C['css-ink']; ctx.lineWidth = 1.5 * dpr;
+      ctx.strokeRect(cx - m / 2, cy - m / 2, m, m);
+      ctx.globalAlpha = 0.35; ctx.lineWidth = 1 * dpr;
+      ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, cy - m); ctx.moveTo(cx, cy + m); ctx.lineTo(cx, w);
+      ctx.moveTo(0, cy); ctx.lineTo(cx - m, cy); ctx.moveTo(cx + m, cy); ctx.lineTo(w, cy); ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  function etoile(ctx, x, y, r, fond, bord, dpr) {
+    ctx.save();
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const a = -Math.PI / 2 + (i * Math.PI) / 5, rr = i % 2 ? r * 0.45 : r;
+      i ? ctx.lineTo(x + rr * Math.cos(a), y + rr * Math.sin(a)) : ctx.moveTo(x + rr * Math.cos(a), y + rr * Math.sin(a));
+    }
+    ctx.closePath();
+    ctx.fillStyle = fond; ctx.strokeStyle = bord; ctx.lineWidth = 1.5 * dpr;
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+
+  // ------------------------------------------------------------------ panneaux
+  const nomTuile = ([z, x, y]) => `z${z} · x${x} · y${y}`;
+  const etendue = (S, [z, x, y]) => {
+    const c = S.n * S.res_fine * 2 ** (S.zmax - z);
+    return `${fr(x * c)}–${fr((x + 1) * c)} m × ${fr(y * c)}–${fr((y + 1) * c)} m`;
+  };
+
+  function derniereCle(S, f) {
+    for (let k = f; k >= 0; k--) if (estCle(S.frames[k])) return k;
+    return 0;
+  }
+
+  function majPanneaux() {
+    const S = scenarios[si], F = S.frames[fi], R = rejeux[si];
+    const kc = derniereCle(S, fi), K = S.frames[kc];
+    $('etape').textContent = `Étape ${fi + 1} / ${S.frames.length} · t = ${fr(F.t, 0)} s`;
+    $('curseur').value = fi;
+
+    // echelle
+    for (const li of $('echelle').children) li.classList.toggle('actif', li.dataset.a === F.action);
+
+    // decision
+    const ty = TYPES[K.type] || TYPES.survol;
+    const lignes = [];
+    if (K.tuiles) lignes.push(['Tuiles demandées', K.tuiles.map((t) => `${nomTuile(t)} (${etendue(S, t)})`).join('<br>')]);
+    if (K.chemin != null && ['suivre', 'degrade'].includes(K.type)) {
+      const ch = S.chemins[K.chemin];
+      let L = 0;
+      for (let i = 1; i < ch.length; i++) L += Math.hypot(ch[i][0] - ch[i - 1][0], ch[i][1] - ch[i - 1][1]);
+      lignes.push(['Longueur du chemin', `${fr(L)} m`]);
+    }
+    if (K.obstacle) lignes.push(['Obstacle vu en', `x = ${fr(K.obstacle[0], 2)} m, y = ${fr(K.obstacle[1], 2)} m`]);
+    if (K.restant != null) lignes.push(['Distance restante à la victime', `${fr(K.restant)} m`]);
+    lignes.push(['Position du rover', `x = ${fr(F.pos[0], 2)} m, y = ${fr(F.pos[1], 2)} m`]);
+    const enRoute = F.type === 'avance'
+      ? `<p class="etat-route">En route depuis cette décision : ${fi - kc} pas de 30 cm. À chaque pas, le rover envoie ses tuiles et le module vérifie que les 3 prochains mètres restent libres.</p>`
+      : '';
+    $('decision').innerHTML = `
+      <div class="entete"><span class="pastille ${ty.k}">${ty.pastille}</span><span class="etape">t = ${fr(K.t, 0)} s</span></div>
+      <h3>${K.titre}</h3>
+      <p class="texte">${K.texte}</p>
+      ${enRoute}
+      <dl class="details">${lignes.map(([a, b]) => `<dt>${a}</dt><dd>${b}</dd>`).join('')}</dl>`;
+
+    // journal
+    for (const b of $('journal').querySelectorAll('button')) {
+      const actif = +b.dataset.f === kc;
+      b.classList.toggle('courant', actif);
+      if (actif) {
+        const box = $('journal').parentElement, top = b.offsetTop - box.offsetTop;
+        if (top < box.scrollTop || top > box.scrollTop + box.clientHeight - b.offsetHeight) box.scrollTop = top - box.clientHeight / 3;
+      }
+    }
+
+    // chiffres
+    const zooms = R.zooms.size;
+    $('s-drone').innerHTML = `<span>Tuiles reçues <b>${R.nTuiles[0]}</b></span><span>Zooms <b>${zooms}</b></span><span>Zone connue <b>${fr(stats.dConnu * 100, 0)} %</b></span>`;
+    $('s-rover').innerHTML = `<span>Tuiles envoyées <b>${R.nTuiles[1]}</b></span><span>Surface vue <b>${fr(stats.rVu, 0)} m²</b></span>`;
+    $('s-fusion').innerHTML = `<span>Obstacles ajoutés par le rover <b>${fr(stats.ajout, 1)} m²</b></span><span>Corrigés en libre <b>${fr(stats.corrige, 1)} m²</b></span><span>Inconnu <b>${fr(stats.inconnu * 100, 0)} %</b></span>`;
+  }
+
+  function construireJournal() {
+    const S = scenarios[si];
+    const ol = $('journal');
+    ol.innerHTML = '';
+    const rep = $('reperes');
+    rep.innerHTML = '';
+    S.frames.forEach((F, k) => {
+      if (!estCle(F)) return;
+      const ty = TYPES[F.type] || TYPES.survol;
+      const li = document.createElement('li');
+      li.innerHTML = `<button type="button" data-f="${k}"><span class="point" data-k="${ty.k}"></span><span class="t">t = ${fr(F.t, 0)} s</span><span>${F.titre}</span></button>`;
+      ol.appendChild(li);
+      const m = document.createElement('button');
+      m.type = 'button';
+      m.dataset.k = ty.k;
+      m.style.left = `${(k / (S.frames.length - 1)) * 100}%`;
+      m.title = `${F.titre} (t = ${fr(F.t, 0)} s)`;
+      m.setAttribute('aria-label', m.title);
+      m.addEventListener('click', () => aller(k));
+      rep.appendChild(m);
+    });
+    $('curseur').max = S.frames.length - 1;
+    $('scen-desc').textContent = S.description;
+  }
+
+  // ------------------------------------------------------------------ inspecteur
+  const libelle = (v) => (v === -1 ? 'pas vu' : v === 1 ? 'obstacle' : 'libre');
+  function majInspecteur() {
+    const el = $('inspecteur');
+    if (!survol) {
+      el.textContent = 'Survolez une carte pour voir, case par case, ce que dit le drone, ce que dit le rover et ce que garde la fusion.';
+      return;
+    }
+    const S = scenarios[si], R = rejeux[si], p = survol.gi * R.nc + survol.gj;
+    const d = R.dv[p], z = R.dz[p], r = R.rv[p];
+    const x = (survol.gj + 0.5) * S.res_fine, y = (survol.gi + 0.5) * S.res_fine;
+    const taille = z >= 0 ? `, niveau z${z}, case de ${fr(S.res_fine * 2 ** (S.zmax - z) * 100, 0)} cm` : '';
+    const f = r !== -1 ? r : d;
+    let regle;
+    if (r !== -1 && d === 1 && r === 0) regle = 'le rover a corrigé le drone : il a vu la case libre de près';
+    else if (r !== -1 && d !== 1 && r === 1) regle = 'le rover a ajouté un obstacle que le drone n\'avait pas vu';
+    else if (r !== -1) regle = 'le rover a vu la case : sa valeur l\'emporte';
+    else if (d !== -1) regle = 'le rover ne l\'a pas vue : on garde le drone';
+    else regle = 'personne ne l\'a vue';
+    const reel = opt.verite ? `<span>Terrain réel : <b>${R.verite[p] === 1 ? 'obstacle' : 'libre'}</b></span>` : '';
+    el.innerHTML = `<span class="num">x = ${fr(x, 2)} m · y = ${fr(y, 2)} m</span>
+      <span>Drone : <b>${libelle(d)}</b>${taille}</span>
+      <span>Rover : <b>${libelle(r)}</b></span>
+      <span>Fusion : <b>${libelle(f)}</b> <span class="regle">(${regle})</span></span>${reel}`;
+  }
+
+  // ------------------------------------------------------------------ navigation
+  function aller(k, { reconstruire = true } = {}) {
+    const S = scenarios[si];
+    fi = Math.max(0, Math.min(S.frames.length - 1, k));
+    rejeux[si].aller(fi);
+    if (reconstruire) construireImages();
+    dessiner();
+    majPanneaux();
+    if (survol) majInspecteur();
+  }
+
+  function arreter() {
+    clearTimeout(minuterie);
+    minuterie = null;
+    $('b-jouer').textContent = '▶ Lire';
+  }
+  function pas() {
+    const S = scenarios[si];
+    if (fi >= S.frames.length - 1) { arreter(); return; }
+    aller(fi + 1);
+    const cle = estCle(S.frames[fi]);
+    const delai = (140 / opt.vitesse) * (opt.pause && cle ? 14 : 1);
+    minuterie = setTimeout(pas, delai);
+  }
+  function jouer() {
+    if (minuterie) { arreter(); return; }
+    if (fi >= scenarios[si].frames.length - 1) aller(0);
+    $('b-jouer').textContent = '❚❚ Pause';
+    minuterie = setTimeout(pas, 60);
+  }
+
+  function choisirScenario(k) {
+    arreter();
+    si = k;
+    for (const b of $('onglets').children) b.setAttribute('aria-selected', String(+b.dataset.s === k));
+    construireJournal();
+    rejeux[si].reset();
+    aller(1);
+  }
+
+  // ------------------------------------------------------------------ evenements
+  scenarios.forEach((S, k) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('role', 'tab');
+    b.dataset.s = k;
+    b.textContent = S.nom;
+    b.addEventListener('click', () => choisirScenario(k));
+    $('onglets').appendChild(b);
+  });
+  $('b-jouer').addEventListener('click', jouer);
+  $('b-prec').addEventListener('click', () => { arreter(); aller(fi - 1); });
+  $('b-suiv').addEventListener('click', () => { arreter(); aller(fi + 1); });
+  $('b-decision').addEventListener('click', () => {
+    arreter();
+    const S = scenarios[si];
+    for (let k = fi + 1; k < S.frames.length; k++) if (estCle(S.frames[k])) { aller(k); return; }
+    aller(S.frames.length - 1);
+  });
+  $('curseur').addEventListener('input', (e) => { arreter(); aller(+e.target.value); });
+  $('journal').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-f]');
+    if (b) { arreter(); aller(+b.dataset.f); }
+  });
+  $('vitesse').addEventListener('change', (e) => { opt.vitesse = +e.target.value; });
+  $('o-pause').addEventListener('change', (e) => { opt.pause = e.target.checked; });
+  $('o-grille').addEventListener('change', (e) => { opt.grille = e.target.checked; dessiner(); });
+  $('o-verite').addEventListener('change', (e) => { opt.verite = e.target.checked; construireImages(); dessiner(); majInspecteur(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.target.closest('input, select, textarea')) return;
+    if (e.key === ' ') { e.preventDefault(); jouer(); }
+    else if (e.key === 'ArrowRight') { arreter(); aller(fi + 1); }
+    else if (e.key === 'ArrowLeft') { arreter(); aller(fi - 1); }
+  });
+
+  for (const c of cartes) {
+    c.cv.addEventListener('pointermove', (e) => {
+      const R = rejeux[si], rect = c.cv.getBoundingClientRect();
+      const gj = Math.floor(((e.clientX - rect.left) / rect.width) * R.nc);
+      const gi = R.nc - 1 - Math.floor(((e.clientY - rect.top) / rect.height) * R.nc);
+      if (gi < 0 || gj < 0 || gi >= R.nc || gj >= R.nc) return;
+      if (survol && survol.gi === gi && survol.gj === gj) return;
+      survol = { gi, gj };
+      dessiner();
+      majInspecteur();
+    });
+    c.cv.addEventListener('pointerleave', () => { survol = null; dessiner(); majInspecteur(); });
+  }
+
+  const ajuster = () => {
+    const dpr = window.devicePixelRatio || 1;
+    for (const c of cartes) {
+      const w = Math.round(c.cv.clientWidth * dpr);
+      if (w && c.cv.width !== w) { c.cv.width = w; c.cv.height = w; }
+    }
+    dessiner();
+  };
+  new ResizeObserver(ajuster).observe(document.querySelector('.cartes'));
+
+  const changerTheme = () => { lireCouleurs(); construireImages(); dessiner(); };
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', changerTheme);
+  new MutationObserver(changerTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+  // ------------------------------------------------------------------ controle Python <-> page
+  const ok = scenarios.every((S, k) => {
+    const R = rejeux[k];
+    R.aller(S.frames.length - 1);
+    const c = { obstacle: 0, libre: 0, inconnu: 0, rover: 0 };
+    for (let p = 0; p < R.dv.length; p++) {
+      const f = R.rv[p] !== -1 ? R.rv[p] : R.dv[p];
+      if (f === 1) c.obstacle++; else if (f === 0) c.libre++; else c.inconnu++;
+      if (R.rv[p] !== -1) c.rover++;
+    }
+    const egal = Object.keys(c).every((key) => c[key] === S.controle[key]);
+    if (!egal) console.warn('Écart avec le module Python', S.nom, c, S.controle);
+    R.reset();
+    return egal;
+  });
+  const ctl = $('controle');
+  ctl.textContent = ok
+    ? 'Contrôle : en fin de simulation, la fusion recalculée dans cette page est identique, case par case, à celle du module Python.'
+    : 'Contrôle : la fusion recalculée dans cette page diffère de celle du module Python (détails dans la console).';
+  ctl.className = 'controle ' + (ok ? 'ok' : 'ko');
+
+  // ------------------------------------------------------------------ demarrage
+  lireCouleurs();
+  choisirScenario(0);
+  ajuster();
+})();
+</script>
