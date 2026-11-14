@@ -9,18 +9,30 @@ and decides what to do when the rover is blocked.
 | `demo_fusion.py` | Demo on a simulated world (needs `numpy` and `matplotlib`) |
 | `demo_fusion.png` | Output of the demo |
 | `test_fusion_carte.py` | pytest tests (fusion rules, tile cutting, planning, decisions) |
+| `test_demo_simulation.py` | pytest tests of the simulated camera and of a full mission |
 | `conftest.py` | Lets pytest import `fusion_carte` from this folder |
+| `dashboard/` | Replay dashboard (see below) |
 
 ```bash
 cd merging_map
 python demo_fusion.py
 ```
 
-The simulated rover camera sees 2 m around the rover and **cannot see behind obstacles**
-(ray casting): hidden cells are sent as `-1`, exactly as the real rover must do.
-`Simu(..., occlusion=False)` brings back the unrealistic "X-ray" camera for comparison.
+The simulated rover camera:
 
-A replay dashboard (drone + rover = merged maps, decisions step by step) is in `dashboard/`:
+* sees up to 2 m, in a cone of `champ` degrees centred on the rover's heading
+  (`Simu(..., champ=160)`; 360 = all around, e.g. by turning the pan-tilt);
+* **cannot see behind obstacles** (ray casting, first hit on each ray): hidden cells are sent
+  as `-1`, exactly as the real rover must do. `occlusion=False` brings back the unrealistic
+  "X-ray" camera for comparison;
+* if the rover bumps into an obstacle it did not see, it stops 5 cm before it, reports it as
+  an obstacle (as the real robot would from wheel slip on the encoders) and replans.
+
+Three simulated terrains: `monde_1()` ridge with a hidden log, `monde_2()` closed crater,
+`monde_3()` forest where the drone sees nothing under the trees.
+
+A replay dashboard (drone + rover = merged maps, decisions step by step, field-of-view slider
+with a comparison table) is in `dashboard/`:
 
 ```bash
 python merging_map/dashboard/export_trace.py      # re-run after changing the module

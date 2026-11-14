@@ -50,10 +50,12 @@ def disque(m, cx, cy, r, v=OBSTACLE):
 
 
 class Simu:
-    def __init__(self, carte, verite, vu_par_drone, inconnu_drone=None, occlusion=True):
+    def __init__(self, carte, verite, vu_par_drone, inconnu_drone=None, occlusion=True, champ=360):
         self.carte, self.verite, self.vu_drone = carte, verite, vu_par_drone
         self.inconnu_drone = inconnu_drone  # zone que le drone n'a pas pu voir au 1er survol
         self.occlusion = occlusion  # False = le rover voit a travers les obstacles (irrealiste)
+        self.champ = champ  # angle de vue de la camera, en degres, centre sur le cap du rover
+        self.cap = math.pi / 2  # direction du rover (radians, 0 = est, pi/2 = nord)
         self.t = 0.0
 
     def vue_drone(self, z):
@@ -87,34 +89,67 @@ class Simu:
             }
         )
 
-    def capteur_rover(self, x, y):
-        """Ce que voit le rover : un disque de PORTEE_ROVER autour de lui.
-        Avec occlusion, une case cachee derriere un obstacle est envoyee en -1 (pas vue)."""
+    def capteur_rover(self, x, y, cap=None):
+        """Ce que voit le rover : PORTEE_ROVER autour de lui, dans un cone de `champ` degres
+        centre sur son cap. Avec occlusion, une case cachee derriere un obstacle est envoyee
+        en -1 (pas vue)."""
+        if cap is not None:
+            self.cap = cap
         i0, i1 = max(0, idx(y - PORTEE_ROVER)), min(NC, idx(y + PORTEE_ROVER))
         j0, j1 = max(0, idx(x - PORTEE_ROVER)), min(NC, idx(x + PORTEE_ROVER))
         loc = self.verite[i0:i1, j0:j1].copy()
         yy, xx = np.mgrid[i0:i1, j0:j1]
         hors = ((xx + 0.5) * RES - x) ** 2 + ((yy + 0.5) * RES - y) ** 2 > PORTEE_ROVER**2
-        if self.occlusion:
-            hors |= self.cache(x, y, yy, xx)
+        if self.occlusion or self.champ < 360:
+            hors |= ~self.visibles(x, y, i0, i1, j0, j1)
         loc[hors] = INCONNU
         for msg in decouper(loc, j0 * RES, i0 * RES, self.carte.zmax, self.carte, 'rover', self.t):
             self.carte.recevoir(msg)
 
-    def cache(self, x, y, yy, xx):
-        """Lancer de rayons : une case est cachee si la ligne rover -> case traverse un
-        obstacle avant de l'atteindre. La face avant d'un obstacle reste visible, pas ce qu'il
-        y a derriere."""
-        cx, cy = (xx + 0.5) * RES, (yy + 0.5) * RES
-        n_pas = int(math.ceil(PORTEE_ROVER / (RES / 2)))
-        s = np.arange(1, n_pas)[:, None, None] / n_pas  # fractions du rayon, sans les extremites
-        px, py = x + (cx - x) * s, y + (cy - y) * s
-        pi = np.clip(np.floor(py / RES).astype(int), 0, NC - 1)
-        pj = np.clip(np.floor(px / RES).astype(int), 0, NC - 1)
-        sur_la_case = (pi == yy) & (pj == xx)
-        depart = (pi == idx_floor(y)) & (pj == idx_floor(x))
-        bloque = (self.verite[pi, pj] == OBSTACLE) & ~sur_la_case & ~depart
-        return bloque.any(axis=0)
+    def visibles(self, x, y, i0, i1, j0, j1, n_rayons=1440):
+        """Lancer de rayons depuis le rover, comme un LiDAR virtuel : sur chaque rayon, les
+        cases sont vues jusqu'au premier obstacle inclus (sa face avant), et cachees au-dela.
+        Une face vue en biais reste donc visible. Seuls les rayons du cone de vue comptent."""
+        pas = RES / 4
+        r = np.arange(1, int(PORTEE_ROVER / pas) + 1) * pas
+        champ = math.radians(min(self.champ, 360))
+        n = max(2, int(round(n_rayons * champ / (2 * math.pi))))
+        a = self.cap - champ / 2 + np.arange(n) * (champ / n)
+        if self.champ < 360:
+            a = np.append(a, self.cap + champ / 2)  # le bord du cone est inclus
+        pi = np.floor((y + np.sin(a)[:, None] * r) / RES).astype(int)
+        pj = np.floor((x + np.cos(a)[:, None] * r) / RES).astype(int)
+        dedans = (pi >= 0) & (pi < NC) & (pj >= 0) & (pj < NC)
+        obstacle = np.zeros(pi.shape, bool)
+        if self.occlusion:
+            obstacle[dedans] = self.verite[pi[dedans], pj[dedans]] == OBSTACLE
+        premier = np.where(obstacle.any(axis=1), obstacle.argmax(axis=1), r.size)
+        vu = (np.arange(r.size)[None, :] <= premier[:, None]) & dedans
+        vu &= (pi >= i0) & (pi < i1) & (pj >= j0) & (pj < j1)
+        out = np.zeros((i1 - i0, j1 - j0), bool)
+        out[pi[vu] - i0, pj[vu] - j0] = True
+        ri, rj = idx_floor(y) - i0, idx_floor(x) - j0
+        if 0 <= ri < out.shape[0] and 0 <= rj < out.shape[1]:
+            out[ri, rj] = True  # la case du rover
+        return out
+
+    def contact(self, a, b, marge=0.05):
+        """Le deplacement a -> b touche-t-il un obstacle reel que le rover n'a pas vu ?
+        Si oui, renvoie (point ou il s'arrete, point d'impact) : en vrai, les encodeurs
+        montrent que les roues patinent sans que le robot avance."""
+        d = math.dist(a, b)
+        if d < 1e-9:
+            return None
+        n = int(d / 0.01) + 2
+        for k in range(1, n):
+            s = k / (n - 1)
+            x, y = a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s
+            i, j = idx_floor(y), idx_floor(x)
+            if 0 <= i < NC and 0 <= j < NC and self.verite[i, j] == OBSTACLE:
+                recul = max(0.0, s * d - marge) / d
+                arret = (a[0] + (b[0] - a[0]) * recul, a[1] + (b[1] - a[1]) * recul)
+                return arret, (x, y)
+        return None
 
 
 def avancer(pos, chemin, pas):
@@ -139,7 +174,8 @@ def mission(simu, depart, victime, tolerance=0.5, max_tours=400, journal=print):
     carte = simu.carte
     pos, traj, replans, demandees = depart, [depart], [], []
     instantanes = {}
-    simu.capteur_rover(*pos)
+    cap = simu.cap
+    simu.capteur_rover(*pos, cap)
     dec = carte.decider(pos, victime, zone=ZONE, tolerance=tolerance)
     chemin = None
     for _ in range(max_tours):
@@ -190,10 +226,23 @@ def mission(simu, depart, victime, tolerance=0.5, max_tours=400, journal=print):
             continue
         # rouler jusqu'a ce que le chemin devienne invalide ou qu'on arrive
         while True:
+            avant = pos
             pos, chemin = avancer(pos, chemin, PAS)
             simu.t += PAS / 0.3
+            if pos != avant:
+                cap = math.atan2(pos[1] - avant[1], pos[0] - avant[0])
+            choc = simu.contact(avant, pos)
+            if choc:
+                pos, impact = choc
             traj.append(pos)
-            simu.capteur_rover(*pos)
+            simu.capteur_rover(*pos, cap)
+            if choc:
+                carte.signaler_obstacle(*impact, rayon=0.1, t=simu.t)
+                journal(
+                    f'  t={simu.t:5.1f}s  CHOC contre un obstacle non vu -> signale, replanif.'
+                )
+                replans.append(pos)
+                break
             if math.hypot(pos[0] - victime[0], pos[1] - victime[1]) <= tolerance or not chemin:
                 journal(
                     f'  t={simu.t:5.1f}s  ARRIVE pres de la victime ({pos[0]:.1f}, {pos[1]:.1f})'
@@ -315,6 +364,24 @@ def monde_2():
     carte = CarteFusion()
     simu = Simu(carte, verite, verite.copy())
     return carte, simu, (3.0, 3.0), (19.0, 19.0)
+
+
+def monde_3():
+    """Foret : le drone voit les falaises qui la bordent, mais rien sous les arbres
+    (troncs couches et rochers). Le rover doit tout decouvrir avec sa camera."""
+    verite = np.zeros((NC, NC), np.int8)
+    rect(verite, 3.6, 5.0, 4.0, 21.0)  # falaise ouest, vue du drone
+    rect(verite, 22.0, 5.0, 22.4, 21.0)  # falaise est, vue du drone
+    vu_drone = verite.copy()
+    # sous les arbres, invisible du drone : un slalom de troncs + des rochers
+    rect(verite, 4.0, 9.0, 15.0, 9.4)
+    rect(verite, 11.0, 12.6, 22.0, 13.0)
+    rect(verite, 4.0, 16.2, 15.0, 16.6)
+    for cx, cy, r in [(17.2, 10.6, 0.45), (8.6, 14.3, 0.45), (17.0, 18.0, 0.5), (12.5, 7.2, 0.4)]:
+        disque(verite, cx, cy, r)
+    carte = CarteFusion()
+    simu = Simu(carte, verite, vu_drone)
+    return carte, simu, (13.0, 3.0), (13.0, 22.0)
 
 
 def scenario_1():

@@ -1,12 +1,13 @@
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Fusion des cartes Polaris</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap">
 <style>
-/* Layout : barre de lecture en haut, trois cartes reliees par « + » et « = »,
-   puis decision courante + journal, puis legende et regle de fusion. */
+/* Layout : terrain + barre de lecture, reglage du champ de vision et comparaison,
+   trois cartes reliees par « + » et « = », decision + journal, legende et regles. */
 :root {
   --bg: #f4f6f8;
   --surface: #ffffff;
@@ -16,9 +17,11 @@
   --line: #dce1e7;
   --accent: #2459c4;
   --accent-ink: #ffffff;
+  --accent-bg: #e6edfb;
 
   --map-free: #fbfcfd;
   --map-unknown: #d5dbe1;
+  --map-unknown-2: #c3cbd4;
   --map-obs: #3f4650;
   --map-rover-obs: #e65f2b;
   --map-seen: #d2ebe1;
@@ -29,6 +32,7 @@
   --victim: #d93a4a;
   --rover: #141a21;
   --rover-fill: #ffffff;
+  --cone: #2459c4;
 
   --good: #12865b;
   --warn: #b26a00;
@@ -49,10 +53,11 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0f1317; --surface: #171c22; --ink: #e8ecf0; --ink-2: #b3bcc6; --muted: #8b95a0;
-    --line: #2a313a; --accent: #6b9cf2; --accent-ink: #0f1317;
-    --map-free: #1d232a; --map-unknown: #39414b; --map-obs: #cfd5dc; --map-rover-obs: #f27a45;
-    --map-seen: #1f3a33; --map-fix: #2fcf8f; --map-truth: #f0606c; --path: #5fa3f2;
-    --zoom: #a08ff2; --victim: #f0606c; --rover: #ffffff; --rover-fill: #0f1317;
+    --line: #2a313a; --accent: #6b9cf2; --accent-ink: #0f1317; --accent-bg: #1c2a44;
+    --map-free: #1d232a; --map-unknown: #39414b; --map-unknown-2: #48515d; --map-obs: #cfd5dc;
+    --map-rover-obs: #f27a45; --map-seen: #1f3a33; --map-fix: #2fcf8f; --map-truth: #f0606c;
+    --path: #5fa3f2; --zoom: #a08ff2; --victim: #f0606c; --rover: #ffffff; --rover-fill: #0f1317;
+    --cone: #8fb4f5;
     --good: #45c993; --warn: #e6a640; --crit: #f0707a; --replan: #f2884f;
     --good-bg: #183327; --warn-bg: #3a2c12; --crit-bg: #3c1c20; --replan-bg: #3b2216;
     --zoom-bg: #2a2445; --neutral-bg: #232a32;
@@ -61,10 +66,11 @@
 }
 :root[data-theme="dark"] {
   --bg: #0f1317; --surface: #171c22; --ink: #e8ecf0; --ink-2: #b3bcc6; --muted: #8b95a0;
-  --line: #2a313a; --accent: #6b9cf2; --accent-ink: #0f1317;
-  --map-free: #1d232a; --map-unknown: #39414b; --map-obs: #cfd5dc; --map-rover-obs: #f27a45;
-  --map-seen: #1f3a33; --map-fix: #2fcf8f; --map-truth: #f0606c; --path: #5fa3f2;
-  --zoom: #a08ff2; --victim: #f0606c; --rover: #ffffff; --rover-fill: #0f1317;
+  --line: #2a313a; --accent: #6b9cf2; --accent-ink: #0f1317; --accent-bg: #1c2a44;
+  --map-free: #1d232a; --map-unknown: #39414b; --map-unknown-2: #48515d; --map-obs: #cfd5dc;
+  --map-rover-obs: #f27a45; --map-seen: #1f3a33; --map-fix: #2fcf8f; --map-truth: #f0606c;
+  --path: #5fa3f2; --zoom: #a08ff2; --victim: #f0606c; --rover: #ffffff; --rover-fill: #0f1317;
+  --cone: #8fb4f5;
   --good: #45c993; --warn: #e6a640; --crit: #f0707a; --replan: #f2884f;
   --good-bg: #183327; --warn-bg: #3a2c12; --crit-bg: #3c1c20; --replan-bg: #3b2216;
   --zoom-bg: #2a2445; --neutral-bg: #232a32;
@@ -72,77 +78,75 @@
 }
 
 * { box-sizing: border-box; }
-body {
-  background: var(--bg);
-  color: var(--ink);
-  font-family: var(--f-body);
-  font-size: 14px;
-  line-height: 1.5;
-}
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 14px; line-height: 1.5; }
 .page {
-  max-width: 1320px;
-  margin: 0 auto;
-  padding-block: 20px 40px;
+  max-width: 1320px; margin: 0 auto; padding-block: 20px 40px;
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
-  display: grid;
-  gap: 16px;
+  display: grid; gap: 16px;
 }
 h1, h2, h3 { font-family: var(--f-display); margin: 0; text-wrap: balance; }
 h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.01em; }
 h2 { font-size: 1.05rem; font-weight: 600; }
 h3 { font-size: 0.95rem; font-weight: 600; }
 p { margin: 0; }
-.eyebrow {
-  font-family: var(--f-data); font-size: 0.72rem; letter-spacing: 0.08em;
-  text-transform: uppercase; color: var(--muted);
-}
-.num { font-family: var(--f-data); font-variant-numeric: tabular-nums; }
+.eyebrow { font-family: var(--f-data); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
 
-/* --- en-tete --- */
 .top { display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: flex-end; justify-content: space-between; }
 .top .titre { display: grid; gap: 4px; min-width: 0; max-width: 62ch; }
 .sous { color: var(--ink-2); }
 .onglets { display: flex; gap: 4px; padding: 4px; background: var(--neutral-bg); border-radius: 999px; flex-wrap: wrap; }
-.onglets button {
-  border: 0; background: transparent; color: var(--ink-2); font: 500 0.9rem var(--f-body);
-  padding: 7px 14px; border-radius: 999px; cursor: pointer;
-}
+.onglets button { border: 0; background: transparent; color: var(--ink-2); font: 500 0.9rem var(--f-body); padding: 7px 14px; border-radius: 999px; cursor: pointer; }
 .onglets button[aria-selected="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgb(0 0 0 / 0.12); }
 .scen-desc { color: var(--ink-2); max-width: 90ch; }
 
-/* --- barre de lecture --- */
-.lecture {
-  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 12px 14px; display: grid; gap: 10px;
-  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5;
-}
-body::before {
-  content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px);
-  z-index: 10; background: var(--bg);
-}
-.lecture .ligne { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
-.btn {
-  border: 1px solid var(--line); background: var(--surface); color: var(--ink);
-  font: 500 0.88rem var(--f-body); padding: 6px 12px; border-radius: 8px; cursor: pointer;
-  display: inline-flex; align-items: center; gap: 6px;
-}
+.panneau { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: grid; gap: 12px; min-width: 0; }
+
+/* --- lecture --- */
+.lecture { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; display: grid; gap: 10px; position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+.ligne { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.btn { border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: 500 0.88rem var(--f-body); padding: 6px 12px; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
 .btn:hover { border-color: var(--muted); }
 .btn.primaire { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); min-width: 96px; justify-content: center; }
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .etape { font-family: var(--f-data); font-size: 0.85rem; color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .options { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-left: auto; align-items: center; color: var(--ink-2); font-size: 0.85rem; }
-.options label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.options label, .vue label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
 .options select { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
 .curseur { position: relative; padding-bottom: 10px; }
 .curseur input { width: 100%; margin: 0; accent-color: var(--accent); }
 .reperes { position: absolute; left: 8px; right: 8px; bottom: 0; height: 8px; }
-.reperes button {
-  position: absolute; top: 0; width: 6px; height: 8px; margin-left: -3px; padding: 0;
-  border: 0; border-radius: 2px; cursor: pointer; background: var(--muted);
-}
+.reperes button { position: absolute; top: 0; width: 6px; height: 8px; margin-left: -3px; padding: 0; border: 0; border-radius: 2px; cursor: pointer; background: var(--muted); }
+
+/* --- champ de vision --- */
+.vision { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 16px; align-items: start; }
+.reglage { display: grid; gap: 10px; }
+.reglage .valeur { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.reglage .valeur strong { font: 700 2rem var(--f-display); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.reglage .valeur span { color: var(--ink-2); }
+.reglage input { width: 100%; accent-color: var(--accent); margin: 0; }
+.graduations { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); font: 0.72rem var(--f-data); color: var(--muted); text-align: center; }
+.graduations span:first-child { text-align: left; }
+.graduations span:last-child { text-align: right; }
+.reglage p { color: var(--ink-2); font-size: 0.88rem; max-width: 60ch; }
+.comparaison { overflow-x: auto; }
+.comparaison table { width: 100%; border-collapse: collapse; font-size: 0.84rem; min-width: 540px; }
+.comparaison th, .comparaison td { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+.comparaison th:first-child, .comparaison td:first-child, .comparaison th:nth-child(2), .comparaison td:nth-child(2) { text-align: left; }
+.comparaison th { color: var(--muted); font-weight: 500; font-size: 0.78rem; }
+.comparaison td { font-family: var(--f-data); font-variant-numeric: tabular-nums; }
+.comparaison tbody tr { cursor: pointer; }
+.comparaison tbody tr:hover { background: var(--neutral-bg); }
+.comparaison tbody tr.courant { background: var(--accent-bg); }
+.comparaison tbody tr.courant td:first-child { font-weight: 600; color: var(--ink); }
+.comparaison .mauvais { color: var(--crit); font-weight: 600; }
+.comparaison caption { text-align: left; color: var(--muted); font-size: 0.78rem; padding-bottom: 6px; caption-side: top; }
 
 /* --- cartes --- */
+.vue { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; font-size: 0.85rem; color: var(--ink-2); }
+.vue .btn { padding: 3px 11px; }
+.vue .aide { color: var(--muted); }
 .cartes { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr); gap: 10px; align-items: start; }
 .op { font: 600 1.6rem var(--f-display); color: var(--muted); align-self: center; padding-top: 30px; text-align: center; }
 .carte { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; display: grid; gap: 8px; min-width: 0; }
@@ -150,19 +154,15 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .carte figcaption { display: grid; gap: 2px; }
 .carte figcaption p { color: var(--muted); font-size: 0.8rem; }
 .carte canvas { width: 100%; aspect-ratio: 1; max-width: 100%; display: block; border-radius: 4px; cursor: crosshair; touch-action: none; }
+.carte canvas.glisse { cursor: grabbing; }
 .chiffres { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.8rem; color: var(--ink-2); }
 .chiffres b { font-family: var(--f-data); font-weight: 500; color: var(--ink); font-variant-numeric: tabular-nums; }
-.inspecteur {
-  background: var(--surface); border: 1px dashed var(--line); border-radius: var(--radius);
-  padding: 10px 14px; font-size: 0.85rem; color: var(--ink-2); min-height: 44px;
-  display: flex; flex-wrap: wrap; gap: 4px 18px; align-items: center;
-}
+.inspecteur { background: var(--surface); border: 1px dashed var(--line); border-radius: var(--radius); padding: 10px 14px; font-size: 0.85rem; color: var(--ink-2); min-height: 44px; display: flex; flex-wrap: wrap; gap: 4px 18px; align-items: center; }
 .inspecteur b { color: var(--ink); font-weight: 600; }
-.inspecteur .regle { color: var(--ink); }
+.inspecteur .num { font-family: var(--f-data); font-variant-numeric: tabular-nums; }
 
 /* --- decision + journal --- */
 .bas { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; align-items: start; }
-.panneau { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: grid; gap: 14px; min-width: 0; }
 .echelle { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .echelle li { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: grid; gap: 2px; color: var(--muted); }
 .echelle li .n { font-family: var(--f-data); font-size: 0.72rem; }
@@ -174,11 +174,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .echelle li.actif[data-a="OBJECTIF_DEGRADE"] { border-color: var(--crit); background: var(--crit-bg); }
 .decision { display: grid; gap: 8px; }
 .decision .entete { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; }
-.pastille {
-  display: inline-flex; align-items: center; gap: 6px; font: 600 0.75rem var(--f-data);
-  letter-spacing: 0.04em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px;
-  background: var(--neutral-bg); color: var(--ink-2);
-}
+.pastille { display: inline-flex; align-items: center; gap: 6px; font: 600 0.75rem var(--f-data); letter-spacing: 0.04em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px; background: var(--neutral-bg); color: var(--ink-2); }
 .pastille::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .pastille.good { background: var(--good-bg); color: var(--good); }
 .pastille.zoom { background: var(--zoom-bg); color: var(--zoom); }
@@ -193,11 +189,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .etat-route { font-size: 0.85rem; color: var(--ink-2); }
 .journal { max-height: 420px; overflow: auto; }
 .journal ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
-.journal button {
-  width: 100%; text-align: left; display: grid; grid-template-columns: 10px 64px minmax(0, 1fr);
-  gap: 8px; align-items: center; border: 0; background: transparent; color: var(--ink-2);
-  font: 400 0.85rem var(--f-body); padding: 6px 8px; border-radius: 6px; cursor: pointer;
-}
+.journal button { width: 100%; text-align: left; display: grid; grid-template-columns: 10px 64px minmax(0, 1fr); gap: 8px; align-items: center; border: 0; background: transparent; color: var(--ink-2); font: 400 0.85rem var(--f-body); padding: 6px 8px; border-radius: 6px; cursor: pointer; }
 .journal button:hover { background: var(--neutral-bg); }
 .journal button.courant { background: var(--neutral-bg); color: var(--ink); font-weight: 600; }
 .journal .t { font-family: var(--f-data); font-size: 0.78rem; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -228,7 +220,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .cartes { grid-template-columns: minmax(0, 1fr); }
   .op { padding-top: 0; font-size: 1.3rem; }
   .carte canvas { max-width: 560px; margin: 0 auto; }
-  .bas, .legende { grid-template-columns: minmax(0, 1fr); }
+  .bas, .legende, .vision { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 560px) {
   h1 { font-size: 1.4rem; }
@@ -246,9 +238,26 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       <h1>Fusion des cartes drone + rover</h1>
       <p class="sous">Rejoue la simulation pas à pas : ce que voit le drone, ce que voit le rover, la carte fusionnée qui en sort, et la décision prise à chaque étape.</p>
     </div>
-    <div class="onglets" role="tablist" aria-label="Scénario" id="onglets"></div>
+    <div class="onglets" role="tablist" aria-label="Terrain" id="onglets"></div>
   </header>
   <p class="scen-desc" id="scen-desc"></p>
+
+  <section class="panneau vision" aria-label="Champ de vision du rover">
+    <div class="reglage">
+      <h2>Champ de vision du rover</h2>
+      <div class="valeur"><strong id="v-valeur">160°</strong><span id="v-sous"></span></div>
+      <input type="range" id="v-curseur" min="0" max="6" step="1" value="3" aria-label="Champ de vision du rover">
+      <div class="graduations" id="v-grad"></div>
+      <p id="v-texte"></p>
+    </div>
+    <div class="comparaison">
+      <table>
+        <caption>Même terrain, même drone : seul le champ de vision change. Cliquez une ligne pour la rejouer.</caption>
+        <thead><tr><th>Champ</th><th>Résultat</th><th>Surface vue</th><th>Replanif.</th><th>Chocs</th><th>Zooms drone</th><th>Distance</th><th>Durée</th></tr></thead>
+        <tbody id="v-table"></tbody>
+      </table>
+    </div>
+  </section>
 
   <section class="lecture" aria-label="Lecture">
     <div class="ligne">
@@ -277,35 +286,34 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     </div>
   </section>
 
+  <div class="vue" aria-label="Zoom des cartes">
+    <span>Zoom</span>
+    <button class="btn" id="z-moins" type="button" aria-label="Dézoomer">−</button>
+    <button class="btn" id="z-plus" type="button" aria-label="Zoomer">+</button>
+    <button class="btn" id="z-tout" type="button">Vue entière</button>
+    <label for="o-suivre"><input type="checkbox" id="o-suivre"> Suivre le rover de près</label>
+    <span class="aide">Molette pour zoomer, glisser pour déplacer : les trois cartes bougent ensemble.</span>
+  </div>
   <section class="cartes" aria-label="Cartes">
     <figure class="carte">
-      <figcaption>
-        <h2>Carte du drone</h2>
-        <p>Vue du ciel · cases de 80 cm, 20 cm là où il a zoomé</p>
-      </figcaption>
+      <figcaption><h2>Carte du drone</h2><p>Vue du ciel · cases de 80 cm, 20 cm là où il a zoomé</p></figcaption>
       <canvas id="c-drone" aria-label="Carte du drone"></canvas>
       <div class="chiffres" id="s-drone"></div>
     </figure>
     <div class="op" aria-hidden="true">+</div>
     <figure class="carte">
-      <figcaption>
-        <h2>Carte du rover</h2>
-        <p>Caméra au sol · cases de 5 cm, portée 2 m</p>
-      </figcaption>
+      <figcaption><h2>Carte du rover</h2><p id="cap-rover">Caméra au sol · cases de 5 cm, portée 2 m</p></figcaption>
       <canvas id="c-rover" aria-label="Carte du rover"></canvas>
       <div class="chiffres" id="s-rover"></div>
     </figure>
     <div class="op" aria-hidden="true">=</div>
     <figure class="carte fusion">
-      <figcaption>
-        <h2>Carte fusionnée</h2>
-        <p>Celle qu'utilise le robot pour décider</p>
-      </figcaption>
+      <figcaption><h2>Carte fusionnée</h2><p>Celle qu'utilise le robot pour décider</p></figcaption>
       <canvas id="c-fusion" aria-label="Carte fusionnée"></canvas>
       <div class="chiffres" id="s-fusion"></div>
     </figure>
   </section>
-  <div class="inspecteur" id="inspecteur" aria-live="polite">Survolez une carte pour voir, case par case, ce que dit le drone, ce que dit le rover et ce que garde la fusion.</div>
+  <div class="inspecteur" id="inspecteur" aria-live="polite"></div>
 
   <section class="bas">
     <div class="panneau">
@@ -327,11 +335,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       <h3>Légende</h3>
       <ul class="items">
         <li><span class="sw" style="background: var(--map-free)"></span>Libre</li>
-        <li><span class="sw" style="background: var(--map-unknown)"></span>Inconnu : personne n'a vu (-1)</li>
+        <li><span class="sw" style="background: repeating-linear-gradient(45deg, var(--map-unknown) 0 3px, var(--map-unknown-2) 3px 5px)"></span>Inconnu, hachuré : personne n'a vu (-1)</li>
         <li><span class="sw" style="background: var(--map-obs)"></span>Obstacle vu par le drone</li>
         <li><span class="sw" style="background: var(--map-seen)"></span>Libre, vu par le rover</li>
-        <li><span class="sw" style="background: var(--map-rover-obs)"></span>Obstacle vu par le rover</li>
+        <li><span class="sw" style="background: var(--map-rover-obs)"></span>Obstacle vu ou touché par le rover</li>
         <li><span class="sw" style="background: var(--map-fix)"></span>Corrigé par le rover : le drone croyait à un obstacle</li>
+        <li><span class="sw" style="background: var(--cone); opacity: .25"></span>Champ de vision de la caméra</li>
         <li><span class="trait"></span>Chemin planifié (A*)</li>
         <li><span class="trait" style="border-top-style: dotted"></span>Chemin « si le passage existait »</li>
         <li><span class="trait" style="border-top-color: var(--rover); border-top-width: 2px"></span>Trajet parcouru</li>
@@ -355,7 +364,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
           <tr><td>z4</td><td>1,6 m</td><td>5 cm</td><td>Rover</td></tr>
         </tbody>
       </table>
-      <p class="controle" id="controle"></p>
+      <p class="controle" id="controle">Contrôle en cours…</p>
     </div>
   </section>
 </div>
@@ -364,11 +373,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 <script>
 (() => {
   'use strict';
-  const TRACE = window.TRACE;
+  const T = window.TRACE;
   const $ = (id) => document.getElementById(id);
   const fr = (v, d = 1) => v.toLocaleString('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d });
-
-  if (!TRACE) {
+  if (!T || !T.scenarios) {
     $('decision').textContent = 'Les données de simulation (trace.js) sont introuvables. Lancez export_trace.py à côté de cette page.';
     return;
   }
@@ -440,9 +448,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     }
     aller(fi) {
       if (fi < this.fait) this.reset();
-      for (let k = this.fait + 1; k <= fi; k++) {
-        for (const m of this.sc.frames[k].msgs) this.appliquer(m);
-      }
+      for (let k = this.fait + 1; k <= fi; k++) for (const m of this.sc.frames[k].msgs) this.appliquer(m);
       this.fait = fi;
     }
   }
@@ -457,17 +463,26 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     suivre: { pastille: 'Suivre', k: 'good' },
     avance: { pastille: 'En route', k: 'good' },
     replan: { pastille: 'Replanifier', k: 'replan' },
+    choc: { pastille: 'Choc', k: 'crit' },
     degrade: { pastille: 'Objectif dégradé', k: 'crit' },
     fin: { pastille: 'Alerte secours', k: 'crit' },
     arrivee: { pastille: 'Arrivé', k: 'good' },
   };
+  const ISSUES = { arrivee: 'Arrivé', fin: 'Point le plus proche' };
   const estCle = (f) => f.type !== 'avance';
 
   // ------------------------------------------------------------------ etat
-  const scenarios = TRACE.scenarios;
-  const rejeux = scenarios.map((s) => new Rejeu(s));
-  let si = 0, fi = 1, survol = null, minuterie = null;
-  const opt = { grille: false, verite: false, pause: true, vitesse: 1 };
+  const CHAMPS = T.champs, NV = CHAMPS.length + 1;
+  const terrains = Object.keys(T.terrains);
+  let terrain = terrains[0];
+  let vi = Math.max(0, CHAMPS.indexOf(160));
+  let si = 0, fi = 1, survol = null, minuterie = null, epaissi = null;
+  const opt = { grille: false, verite: false, pause: true, vitesse: 1, suivre: false };
+  const vue = { cx: 0, cy: 0, taille: 0 };
+  const rejeux = new Map();
+  const rejeu = (k) => { if (!rejeux.has(k)) rejeux.set(k, new Rejeu(T.scenarios[k])); return rejeux.get(k); };
+  const indice = (t, v) => T.scenarios.findIndex((s) => s.terrain === t && (v === CHAMPS.length ? s.rayons_x : !s.rayons_x && s.champ === CHAMPS[v]));
+  const nomVision = (v) => (v === CHAMPS.length ? 'Rayons X' : `${CHAMPS[v]}°`);
   const cartes = ['drone', 'rover', 'fusion'].map((nom) => {
     const off = document.createElement('canvas');
     return { nom, cv: $('c-' + nom), off, ctxOff: off.getContext('2d'), img: null };
@@ -478,19 +493,16 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   function lireCouleurs() {
     const st = getComputedStyle(document.documentElement);
     const lire = (n) => st.getPropertyValue('--' + n).trim();
-    const rgb = (h) => {
-      const x = h.replace('#', '');
-      return [parseInt(x.slice(0, 2), 16), parseInt(x.slice(2, 4), 16), parseInt(x.slice(4, 6), 16)];
-    };
+    const rgb = (h) => { const x = h.replace('#', ''); return [0, 2, 4].map((i) => parseInt(x.slice(i, i + 2), 16)); };
     C = {};
-    for (const n of ['map-free', 'map-unknown', 'map-obs', 'map-rover-obs', 'map-seen', 'map-fix', 'map-truth']) C[n] = rgb(lire(n));
-    for (const n of ['path', 'zoom', 'victim', 'rover', 'rover-fill', 'ink', 'muted', 'line', 'map-rover-obs', 'crit', 'surface']) C['css-' + n] = lire(n);
+    for (const n of ['map-free', 'map-unknown', 'map-unknown-2', 'map-obs', 'map-rover-obs', 'map-seen', 'map-fix', 'map-truth']) C[n] = rgb(lire(n));
+    for (const n of ['path', 'zoom', 'victim', 'rover', 'rover-fill', 'ink', 'surface', 'map-rover-obs', 'cone']) C['css-' + n] = lire(n);
   }
 
   // ------------------------------------------------------------------ images de base
   let stats = {};
   function construireImages() {
-    const R = rejeux[si], nc = R.nc;
+    const R = rejeu(si), nc = R.nc;
     for (const c of cartes) {
       if (c.off.width !== nc) { c.off.width = nc; c.off.height = nc; c.img = null; }
       if (!c.img) c.img = c.ctxOff.createImageData(nc, nc);
@@ -499,33 +511,48 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     const { dv, rv, verite } = R;
     const put = (arr, q, col, alpha) => {
       if (alpha === undefined) { arr[q] = col[0]; arr[q + 1] = col[1]; arr[q + 2] = col[2]; }
-      else {
-        arr[q] = arr[q] * (1 - alpha) + col[0] * alpha;
-        arr[q + 1] = arr[q + 1] * (1 - alpha) + col[1] * alpha;
-        arr[q + 2] = arr[q + 2] * (1 - alpha) + col[2] * alpha;
-      }
+      else for (let i = 0; i < 3; i++) arr[q + i] = arr[q + i] * (1 - alpha) + col[i] * alpha;
       arr[q + 3] = 255;
     };
+    const inc = (gi, gj) => ((gi + gj) % 12 < 3 ? C['map-unknown-2'] : C['map-unknown']);
     let dConnu = 0, rVu = 0, ajout = 0, corrige = 0, inconnu = 0;
     for (let gi = 0; gi < nc; gi++) {
       const ligne = (nc - 1 - gi) * nc;
       for (let gj = 0; gj < nc; gj++) {
         const p = gi * nc + gj, q = (ligne + gj) * 4;
         const d = dv[p], r = rv[p];
-        put(dI, q, d === -1 ? C['map-unknown'] : d === 1 ? C['map-obs'] : C['map-free']);
-        put(rI, q, r === -1 ? C['map-unknown'] : r === 1 ? C['map-rover-obs'] : C['map-seen']);
+        put(dI, q, d === -1 ? inc(gi, gj) : d === 1 ? C['map-obs'] : C['map-free']);
+        put(rI, q, r === -1 ? inc(gi, gj) : r === 1 ? C['map-rover-obs'] : C['map-seen']);
         let col;
         if (r !== -1) {
           rVu++;
           if (r === 1) { col = C['map-rover-obs']; if (d !== 1) ajout++; }
           else if (d === 1) { col = C['map-fix']; corrige++; }
           else col = C['map-seen'];
-        } else col = d === -1 ? C['map-unknown'] : d === 1 ? C['map-obs'] : C['map-free'];
+        } else col = d === -1 ? inc(gi, gj) : d === 1 ? C['map-obs'] : C['map-free'];
         if (d !== -1) dConnu++;
         const fv = r !== -1 ? r : d;
         if (fv === -1) inconnu++;
         put(fI, q, col);
         if (opt.verite && verite[p] === 1 && fv !== 1) put(fI, q, C['map-truth'], 0.55);
+      }
+    }
+    // vue large : une case de 5 cm fait moins d'un pixel, on epaissit les obstacles du rover
+    epaissi = vue.taille > 9;
+    if (epaissi) {
+      for (let gi = 0; gi < nc; gi++) {
+        for (let gj = 0; gj < nc; gj++) {
+          if (rv[gi * nc + gj] !== 1) continue;
+          for (let a = -1; a <= 1; a++) {
+            for (let b = -1; b <= 1; b++) {
+              const i = gi + a, j = gj + b;
+              if (i < 0 || j < 0 || i >= nc || j >= nc) continue;
+              const q = ((nc - 1 - i) * nc + j) * 4;
+              put(rI, q, C['map-rover-obs']);
+              put(fI, q, C['map-rover-obs']);
+            }
+          }
+        }
       }
     }
     for (const c of cartes) c.ctxOff.putImageData(c.img, 0, 0);
@@ -535,22 +562,23 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 
   // ------------------------------------------------------------------ dessin
   function dessiner() {
-    const S = scenarios[si], F = S.frames[fi], R = rejeux[si];
+    const S = T.scenarios[si], F = S.frames[fi], R = rejeu(si);
+    const nc = R.nc, res = S.res_fine, x0 = vue.cx - vue.taille / 2, y0 = vue.cy - vue.taille / 2;
     for (const c of cartes) {
       const cv = c.cv, w = cv.width;
       if (!w) continue;
       const ctx = cv.getContext('2d');
       ctx.imageSmoothingEnabled = false;
       ctx.clearRect(0, 0, w, w);
-      ctx.drawImage(c.off, 0, 0, w, w);
+      ctx.drawImage(c.off, x0 / res, nc - (y0 + vue.taille) / res, vue.taille / res, vue.taille / res, 0, 0, w, w);
       surcouches(c.nom, ctx, w, S, F, R);
     }
   }
 
   function surcouches(nom, ctx, w, S, F, R) {
-    const dpr = w / cartes[0].cv.clientWidth || 1;
-    const k = w / S.zone;
-    const X = (x) => x * k, Y = (y) => w - y * k;
+    const dpr = w / (cartes[0].cv.clientWidth || w);
+    const k = w / vue.taille, x0 = vue.cx - vue.taille / 2, y0 = vue.cy - vue.taille / 2;
+    const X = (x) => (x - x0) * k, Y = (y) => w - (y - y0) * k;
     const trait = (pts, couleur, larg, tirets) => {
       if (!pts || pts.length < 2) return;
       ctx.save();
@@ -571,50 +599,53 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       for (const [pas, alpha, larg] of [[1.6, 0.18, 0.5], [6.4, 0.45, 1]]) {
         ctx.strokeStyle = C['css-ink']; ctx.globalAlpha = alpha; ctx.lineWidth = larg * dpr;
         ctx.beginPath();
-        for (let v = pas; v < S.zone - 1e-6; v += pas) {
-          ctx.moveTo(X(v), 0); ctx.lineTo(X(v), w); ctx.moveTo(0, Y(v)); ctx.lineTo(w, Y(v));
-        }
+        for (let v = pas; v < S.zone - 1e-6; v += pas) { ctx.moveTo(X(v), 0); ctx.lineTo(X(v), w); ctx.moveTo(0, Y(v)); ctx.lineTo(w, Y(v)); }
         ctx.stroke();
       }
       ctx.restore();
     }
 
-    // tuiles zoomees (drone et fusion)
     if (nom !== 'rover') {
       ctx.save();
       ctx.strokeStyle = C['css-zoom']; ctx.lineWidth = 1.5 * dpr; ctx.setLineDash([5 * dpr, 4 * dpr]);
       for (const t of R.zooms.values()) ctx.strokeRect(...tuileRect(t));
       ctx.restore();
-    }
-    // tuiles demandees a cette etape
-    if (F.tuiles && nom !== 'rover') {
-      ctx.save();
-      for (const t of F.tuiles) {
-        const r = tuileRect(t);
-        ctx.fillStyle = C['css-zoom']; ctx.globalAlpha = 0.16; ctx.fillRect(...r);
-        ctx.globalAlpha = 1; ctx.strokeStyle = C['css-zoom']; ctx.lineWidth = 2.5 * dpr; ctx.strokeRect(...r);
+      if (F.tuiles) {
+        ctx.save();
+        for (const t of F.tuiles) {
+          const r = tuileRect(t);
+          ctx.fillStyle = C['css-zoom']; ctx.globalAlpha = 0.16; ctx.fillRect(...r);
+          ctx.globalAlpha = 1; ctx.strokeStyle = C['css-zoom']; ctx.lineWidth = 2.5 * dpr; ctx.strokeRect(...r);
+        }
+        ctx.restore();
       }
+    }
+
+    // champ de vision de la camera
+    if (nom !== 'drone') {
+      const px = X(F.pos[0]), py = Y(F.pos[1]), rr = S.portee * k;
+      ctx.save();
+      ctx.fillStyle = C['css-cone']; ctx.strokeStyle = C['css-cone'];
+      ctx.lineWidth = 1 * dpr;
+      ctx.beginPath();
+      if (S.champ >= 360) ctx.arc(px, py, rr, 0, Math.PI * 2);
+      else {
+        const h = (S.champ * Math.PI) / 360;
+        ctx.moveTo(px, py);
+        ctx.arc(px, py, rr, -F.cap - h, -F.cap + h);
+        ctx.closePath();
+      }
+      ctx.globalAlpha = 0.14; ctx.fill();
+      ctx.globalAlpha = 0.7; ctx.setLineDash([3 * dpr, 3 * dpr]); ctx.stroke();
       ctx.restore();
     }
 
     const traj = S.traj.slice(0, F.traj);
-    if (nom === 'rover') {
-      trait(traj, C['css-rover'], 1.5);
-      ctx.save();
-      ctx.strokeStyle = C['css-rover']; ctx.globalAlpha = 0.6; ctx.lineWidth = 1 * dpr; ctx.setLineDash([3 * dpr, 3 * dpr]);
-      ctx.beginPath(); ctx.arc(X(F.pos[0]), Y(F.pos[1]), S.portee * k, 0, Math.PI * 2); ctx.stroke();
-      ctx.restore();
-    }
+    if (nom === 'rover') trait(traj, C['css-rover'], 1.5);
     if (nom === 'fusion') {
       if (F.optimiste != null) trait(S.chemins[F.optimiste], C['css-path'], 2.5, [1, 5]);
       if (F.chemin != null && F.type !== 'blocage') trait(S.chemins[F.chemin], C['css-path'], 2.5);
       trait(traj, C['css-rover'], 1.6);
-      if (F.obstacle) {
-        ctx.save();
-        ctx.strokeStyle = C['css-map-rover-obs']; ctx.lineWidth = 2.5 * dpr;
-        ctx.beginPath(); ctx.arc(X(F.obstacle[0]), Y(F.obstacle[1]), 9 * dpr, 0, Math.PI * 2); ctx.stroke();
-        ctx.restore();
-      }
       if (F.point) {
         ctx.save();
         const px = X(F.point[0]), py = Y(F.point[1]), s = 7 * dpr;
@@ -624,10 +655,14 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
         ctx.restore();
       }
     }
+    if (F.obstacle && nom !== 'drone') {
+      ctx.save();
+      ctx.strokeStyle = C['css-map-rover-obs']; ctx.lineWidth = 2.5 * dpr;
+      ctx.beginPath(); ctx.arc(X(F.obstacle[0]), Y(F.obstacle[1]), 10 * dpr, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
 
-    // victime
     etoile(ctx, X(S.victime[0]), Y(S.victime[1]), 9 * dpr, C['css-victim'], C['css-surface'], dpr);
-    // rover
     ctx.save();
     ctx.translate(X(F.pos[0]), Y(F.pos[1]));
     ctx.rotate(-F.cap);
@@ -637,10 +672,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     ctx.fill(); ctx.stroke();
     ctx.restore();
 
-    // case survolee
     if (survol) {
-      const nc = R.nc, c = w / nc, m = Math.max(c, 6 * dpr);
-      const cx = (survol.gj + 0.5) * c, cy = w - (survol.gi + 0.5) * c;
+      const c = S.res_fine * k, m = Math.max(c, 6 * dpr);
+      const cx = X((survol.gj + 0.5) * S.res_fine), cy = Y((survol.gi + 0.5) * S.res_fine);
       ctx.save();
       ctx.strokeStyle = C['css-ink']; ctx.lineWidth = 1.5 * dpr;
       ctx.strokeRect(cx - m / 2, cy - m / 2, m, m);
@@ -656,7 +690,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     ctx.beginPath();
     for (let i = 0; i < 10; i++) {
       const a = -Math.PI / 2 + (i * Math.PI) / 5, rr = i % 2 ? r * 0.45 : r;
-      i ? ctx.lineTo(x + rr * Math.cos(a), y + rr * Math.sin(a)) : ctx.moveTo(x + rr * Math.cos(a), y + rr * Math.sin(a));
+      const px = x + rr * Math.cos(a), py = y + rr * Math.sin(a);
+      if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
     }
     ctx.closePath();
     ctx.fillStyle = fond; ctx.strokeStyle = bord; ctx.lineWidth = 1.5 * dpr;
@@ -670,22 +705,54 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     const c = S.n * S.res_fine * 2 ** (S.zmax - z);
     return `${fr(x * c)}–${fr((x + 1) * c)} m × ${fr(y * c)}–${fr((y + 1) * c)} m`;
   };
-
   function derniereCle(S, f) {
     for (let k = f; k >= 0; k--) if (estCle(S.frames[k])) return k;
     return 0;
   }
 
+  function majVision() {
+    const S = T.scenarios[si];
+    $('v-curseur').value = vi;
+    $('v-valeur').textContent = nomVision(vi);
+    if (S.rayons_x) {
+      $('v-sous').textContent = 'irréaliste, pour comparer';
+      $('v-texte').textContent = 'Le rover voit tout autour de lui et à travers les obstacles : il en sait plus que ce qu\'une vraie caméra pourrait voir.';
+      $('cap-rover').textContent = 'Vision à rayons X · cases de 5 cm, portée 2 m';
+    } else if (S.champ >= 360) {
+      $('v-sous').textContent = 'tout autour du rover';
+      $('v-texte').textContent = 'La caméra voit dans toutes les directions (par exemple en tournant la tourelle pan-tilt), jusqu\'à 2 m, mais jamais derrière un obstacle.';
+      $('cap-rover').textContent = 'Caméra 360° · cases de 5 cm, portée 2 m';
+    } else {
+      $('v-sous').textContent = 'centré sur la direction du rover';
+      $('v-texte').textContent = `La caméra ne voit que dans un cône de ${S.champ}° devant le rover, jusqu'à 2 m, et jamais derrière un obstacle. Sur les côtés et derrière lui, il ne sait que ce que dit le drone.`;
+      $('cap-rover').textContent = `Caméra ${S.champ}° vers l'avant · cases de 5 cm, portée 2 m`;
+    }
+    for (const tr of $('v-table').children) tr.classList.toggle('courant', +tr.dataset.v === vi);
+  }
+
+  function construireComparaison() {
+    const tb = $('v-table');
+    tb.innerHTML = '';
+    for (let v = 0; v < NV; v++) {
+      const k = indice(terrain, v);
+      if (k < 0) continue;
+      const r = T.scenarios[k].resume;
+      const tr = document.createElement('tr');
+      tr.dataset.v = v;
+      tr.innerHTML = `<td>${nomVision(v)}</td><td>${ISSUES[r.issue] || r.issue}</td><td>${r.vu != null ? fr(r.vu, 0) + ' m²' : '–'}</td><td>${r.replans}</td>`
+        + `<td class="${r.chocs ? 'mauvais' : ''}">${r.chocs}</td><td>${r.zooms}</td>`
+        + `<td>${fr(r.distance)} m</td><td>${fr(r.duree, 0)} s</td>`;
+      tb.appendChild(tr);
+    }
+  }
+
   function majPanneaux() {
-    const S = scenarios[si], F = S.frames[fi], R = rejeux[si];
+    const S = T.scenarios[si], F = S.frames[fi], R = rejeu(si);
     const kc = derniereCle(S, fi), K = S.frames[kc];
     $('etape').textContent = `Étape ${fi + 1} / ${S.frames.length} · t = ${fr(F.t, 0)} s`;
     $('curseur').value = fi;
-
-    // echelle
     for (const li of $('echelle').children) li.classList.toggle('actif', li.dataset.a === F.action);
 
-    // decision
     const ty = TYPES[K.type] || TYPES.survol;
     const lignes = [];
     if (K.tuiles) lignes.push(['Tuiles demandées', K.tuiles.map((t) => `${nomTuile(t)} (${etendue(S, t)})`).join('<br>')]);
@@ -695,11 +762,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       for (let i = 1; i < ch.length; i++) L += Math.hypot(ch[i][0] - ch[i - 1][0], ch[i][1] - ch[i - 1][1]);
       lignes.push(['Longueur du chemin', `${fr(L)} m`]);
     }
-    if (K.obstacle) lignes.push(['Obstacle vu en', `x = ${fr(K.obstacle[0], 2)} m, y = ${fr(K.obstacle[1], 2)} m`]);
+    if (K.obstacle) lignes.push([K.type === 'choc' ? 'Point d\'impact' : 'Obstacle vu en', `x = ${fr(K.obstacle[0], 2)} m, y = ${fr(K.obstacle[1], 2)} m`]);
     if (K.restant != null) lignes.push(['Distance restante à la victime', `${fr(K.restant)} m`]);
     lignes.push(['Position du rover', `x = ${fr(F.pos[0], 2)} m, y = ${fr(F.pos[1], 2)} m`]);
     const enRoute = F.type === 'avance'
-      ? `<p class="etat-route">En route depuis cette décision : ${fi - kc} pas de 30 cm. À chaque pas, le rover envoie ses tuiles et le module vérifie que les 3 prochains mètres restent libres.</p>`
+      ? `<p class="etat-route">En route depuis cette décision : ${fi - kc} pas de 30 cm. À chaque pas, le rover envoie ce que voit sa caméra et le module vérifie que les 3 prochains mètres restent libres.</p>`
       : '';
     $('decision').innerHTML = `
       <div class="entete"><span class="pastille ${ty.k}">${ty.pastille}</span><span class="etape">t = ${fr(K.t, 0)} s</span></div>
@@ -708,7 +775,6 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       ${enRoute}
       <dl class="details">${lignes.map(([a, b]) => `<dt>${a}</dt><dd>${b}</dd>`).join('')}</dl>`;
 
-    // journal
     for (const b of $('journal').querySelectorAll('button')) {
       const actif = +b.dataset.f === kc;
       b.classList.toggle('courant', actif);
@@ -717,19 +783,15 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
         if (top < box.scrollTop || top > box.scrollTop + box.clientHeight - b.offsetHeight) box.scrollTop = top - box.clientHeight / 3;
       }
     }
-
-    // chiffres
-    const zooms = R.zooms.size;
-    $('s-drone').innerHTML = `<span>Tuiles reçues <b>${R.nTuiles[0]}</b></span><span>Zooms <b>${zooms}</b></span><span>Zone connue <b>${fr(stats.dConnu * 100, 0)} %</b></span>`;
+    $('s-drone').innerHTML = `<span>Tuiles reçues <b>${R.nTuiles[0]}</b></span><span>Zooms <b>${R.zooms.size}</b></span><span>Zone connue <b>${fr(stats.dConnu * 100, 0)} %</b></span>`;
     $('s-rover').innerHTML = `<span>Tuiles envoyées <b>${R.nTuiles[1]}</b></span><span>Surface vue <b>${fr(stats.rVu, 0)} m²</b></span>`;
     $('s-fusion').innerHTML = `<span>Obstacles ajoutés par le rover <b>${fr(stats.ajout, 1)} m²</b></span><span>Corrigés en libre <b>${fr(stats.corrige, 1)} m²</b></span><span>Inconnu <b>${fr(stats.inconnu * 100, 0)} %</b></span>`;
   }
 
   function construireJournal() {
-    const S = scenarios[si];
-    const ol = $('journal');
+    const S = T.scenarios[si];
+    const ol = $('journal'), rep = $('reperes');
     ol.innerHTML = '';
-    const rep = $('reperes');
     rep.innerHTML = '';
     S.frames.forEach((F, k) => {
       if (!estCle(F)) return;
@@ -743,11 +805,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       m.style.left = `${(k / (S.frames.length - 1)) * 100}%`;
       m.title = `${F.titre} (t = ${fr(F.t, 0)} s)`;
       m.setAttribute('aria-label', m.title);
-      m.addEventListener('click', () => aller(k));
+      m.addEventListener('click', () => { arreter(); aller(k); });
       rep.appendChild(m);
     });
     $('curseur').max = S.frames.length - 1;
-    $('scen-desc').textContent = S.description;
   }
 
   // ------------------------------------------------------------------ inspecteur
@@ -758,7 +819,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       el.textContent = 'Survolez une carte pour voir, case par case, ce que dit le drone, ce que dit le rover et ce que garde la fusion.';
       return;
     }
-    const S = scenarios[si], R = rejeux[si], p = survol.gi * R.nc + survol.gj;
+    const S = T.scenarios[si], R = rejeu(si), p = survol.gi * R.nc + survol.gj;
     const d = R.dv[p], z = R.dz[p], r = R.rv[p];
     const x = (survol.gj + 0.5) * S.res_fine, y = (survol.gi + 0.5) * S.res_fine;
     const taille = z >= 0 ? `, niveau z${z}, case de ${fr(S.res_fine * 2 ** (S.zmax - z) * 100, 0)} cm` : '';
@@ -773,65 +834,126 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     el.innerHTML = `<span class="num">x = ${fr(x, 2)} m · y = ${fr(y, 2)} m</span>
       <span>Drone : <b>${libelle(d)}</b>${taille}</span>
       <span>Rover : <b>${libelle(r)}</b></span>
-      <span>Fusion : <b>${libelle(f)}</b> <span class="regle">(${regle})</span></span>${reel}`;
+      <span>Fusion : <b>${libelle(f)}</b> (${regle})</span>${reel}`;
+  }
+
+  // ------------------------------------------------------------------ zoom
+  function borner() {
+    const z = T.scenarios[si].zone;
+    vue.taille = Math.min(z, Math.max(1.6, vue.taille));
+    const h = vue.taille / 2;
+    vue.cx = Math.min(z - h, Math.max(h, vue.cx));
+    vue.cy = Math.min(z - h, Math.max(h, vue.cy));
+  }
+  function vueEntiere() {
+    const z = T.scenarios[si].zone;
+    vue.cx = z / 2; vue.cy = z / 2; vue.taille = z;
+  }
+  function majVue() {
+    borner();
+    if ((vue.taille > 9) !== epaissi) construireImages();
+    dessiner();
+  }
+  function zoomer(f, x = vue.cx, y = vue.cy) {
+    const t = vue.taille, nt = t / f;
+    vue.cx = x + (vue.cx - x) * (nt / t);
+    vue.cy = y + (vue.cy - y) * (nt / t);
+    vue.taille = nt;
+    majVue();
+  }
+  function centrerRover() {
+    const S = T.scenarios[si], F = S.frames[fi];
+    if (vue.taille >= S.zone - 1e-6) vue.taille = 6.4;
+    vue.cx = F.pos[0]; vue.cy = F.pos[1];
+    borner();
+  }
+  function versMonde(c, e) {
+    const rect = c.cv.getBoundingClientRect();
+    return [
+      vue.cx - vue.taille / 2 + ((e.clientX - rect.left) / rect.width) * vue.taille,
+      vue.cy - vue.taille / 2 + (1 - (e.clientY - rect.top) / rect.height) * vue.taille,
+    ];
   }
 
   // ------------------------------------------------------------------ navigation
-  function aller(k, { reconstruire = true } = {}) {
-    const S = scenarios[si];
+  function aller(k) {
+    const S = T.scenarios[si];
     fi = Math.max(0, Math.min(S.frames.length - 1, k));
-    rejeux[si].aller(fi);
-    if (reconstruire) construireImages();
+    rejeu(si).aller(fi);
+    if (opt.suivre) centrerRover();
+    construireImages();
     dessiner();
     majPanneaux();
     if (survol) majInspecteur();
   }
-
   function arreter() {
     clearTimeout(minuterie);
     minuterie = null;
     $('b-jouer').textContent = '▶ Lire';
   }
   function pas() {
-    const S = scenarios[si];
+    const S = T.scenarios[si];
     if (fi >= S.frames.length - 1) { arreter(); return; }
     aller(fi + 1);
     const cle = estCle(S.frames[fi]);
-    const delai = (140 / opt.vitesse) * (opt.pause && cle ? 14 : 1);
-    minuterie = setTimeout(pas, delai);
+    minuterie = setTimeout(pas, (140 / opt.vitesse) * (opt.pause && cle ? 14 : 1));
   }
   function jouer() {
     if (minuterie) { arreter(); return; }
-    if (fi >= scenarios[si].frames.length - 1) aller(0);
+    if (fi >= T.scenarios[si].frames.length - 1) aller(0);
     $('b-jouer').textContent = '❚❚ Pause';
     minuterie = setTimeout(pas, 60);
   }
 
-  function choisirScenario(k) {
+  // change de simulation en gardant le meme instant t
+  function choisir(t, v, { garderTemps = true } = {}) {
+    const enCours = !!minuterie;
     arreter();
-    si = k;
-    for (const b of $('onglets').children) b.setAttribute('aria-selected', String(+b.dataset.s === k));
+    const tAvant = garderTemps && T.scenarios[si] ? T.scenarios[si].frames[fi].t : 0;
+    const nouveauTerrain = t !== terrain;
+    terrain = t; vi = v;
+    si = indice(terrain, vi);
+    const S = T.scenarios[si];
+    for (const b of $('onglets').children) b.setAttribute('aria-selected', String(b.dataset.t === terrain));
+    $('scen-desc').textContent = T.terrains[terrain].description;
+    if (nouveauTerrain) { construireComparaison(); vueEntiere(); if (opt.suivre) vue.taille = 6.4; }
     construireJournal();
-    rejeux[si].reset();
-    aller(1);
+    majVision();
+    let k = 1;
+    if (garderTemps && !nouveauTerrain) {
+      k = S.frames.findIndex((f) => f.t >= tAvant);
+      if (k < 0) k = S.frames.length - 1;
+      k = Math.max(1, k);
+    }
+    rejeu(si).reset();
+    aller(k);
+    if (enCours) jouer();
   }
 
   // ------------------------------------------------------------------ evenements
-  scenarios.forEach((S, k) => {
+  for (const t of terrains) {
     const b = document.createElement('button');
     b.type = 'button';
     b.setAttribute('role', 'tab');
-    b.dataset.s = k;
-    b.textContent = S.nom;
-    b.addEventListener('click', () => choisirScenario(k));
+    b.dataset.t = t;
+    b.textContent = T.terrains[t].nom;
+    b.addEventListener('click', () => choisir(t, vi, { garderTemps: false }));
     $('onglets').appendChild(b);
+  }
+  $('v-curseur').max = NV - 1;
+  $('v-grad').style.gridTemplateColumns = `repeat(${NV}, minmax(0, 1fr))`;
+  $('v-grad').innerHTML = Array.from({ length: NV }, (_, v) => `<span>${nomVision(v)}</span>`).join('');
+  $('v-curseur').addEventListener('input', (e) => choisir(terrain, +e.target.value));
+  $('v-table').addEventListener('click', (e) => {
+    const tr = e.target.closest('tr[data-v]');
+    if (tr) choisir(terrain, +tr.dataset.v);
   });
   $('b-jouer').addEventListener('click', jouer);
   $('b-prec').addEventListener('click', () => { arreter(); aller(fi - 1); });
   $('b-suiv').addEventListener('click', () => { arreter(); aller(fi + 1); });
   $('b-decision').addEventListener('click', () => {
     arreter();
-    const S = scenarios[si];
+    const S = T.scenarios[si];
     for (let k = fi + 1; k < S.frames.length; k++) if (estCle(S.frames[k])) { aller(k); return; }
     aller(S.frames.length - 1);
   });
@@ -844,6 +966,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   $('o-pause').addEventListener('change', (e) => { opt.pause = e.target.checked; });
   $('o-grille').addEventListener('change', (e) => { opt.grille = e.target.checked; dessiner(); });
   $('o-verite').addEventListener('change', (e) => { opt.verite = e.target.checked; construireImages(); dessiner(); majInspecteur(); });
+  $('z-plus').addEventListener('click', () => zoomer(1.6));
+  $('z-moins').addEventListener('click', () => zoomer(1 / 1.6));
+  $('z-tout').addEventListener('click', () => { opt.suivre = false; $('o-suivre').checked = false; vueEntiere(); majVue(); });
+  $('o-suivre').addEventListener('change', (e) => { opt.suivre = e.target.checked; if (opt.suivre) centrerRover(); majVue(); });
   document.addEventListener('keydown', (e) => {
     if (e.target.closest('input, select, textarea')) return;
     if (e.key === ' ') { e.preventDefault(); jouer(); }
@@ -851,18 +977,41 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     else if (e.key === 'ArrowLeft') { arreter(); aller(fi - 1); }
   });
 
+  let glisse = null;
   for (const c of cartes) {
+    c.cv.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const [x, y] = versMonde(c, e);
+      zoomer(e.deltaY < 0 ? 1.25 : 0.8, x, y);
+    }, { passive: false });
+    c.cv.addEventListener('pointerdown', (e) => {
+      if (vue.taille >= T.scenarios[si].zone - 1e-6) return;
+      glisse = { c, x: e.clientX, y: e.clientY, cx: vue.cx, cy: vue.cy, w: c.cv.getBoundingClientRect().width };
+      c.cv.setPointerCapture(e.pointerId);
+      c.cv.classList.add('glisse');
+    });
+    const finGlisse = () => { if (glisse) { glisse.c.cv.classList.remove('glisse'); glisse = null; } };
+    c.cv.addEventListener('pointerup', finGlisse);
+    c.cv.addEventListener('pointercancel', finGlisse);
     c.cv.addEventListener('pointermove', (e) => {
-      const R = rejeux[si], rect = c.cv.getBoundingClientRect();
-      const gj = Math.floor(((e.clientX - rect.left) / rect.width) * R.nc);
-      const gi = R.nc - 1 - Math.floor(((e.clientY - rect.top) / rect.height) * R.nc);
+      if (glisse) {
+        const m = vue.taille / glisse.w;
+        vue.cx = glisse.cx - (e.clientX - glisse.x) * m;
+        vue.cy = glisse.cy + (e.clientY - glisse.y) * m;
+        if (opt.suivre) { opt.suivre = false; $('o-suivre').checked = false; }
+        majVue();
+        return;
+      }
+      const R = rejeu(si), S = T.scenarios[si];
+      const [x, y] = versMonde(c, e);
+      const gj = Math.floor(x / S.res_fine), gi = Math.floor(y / S.res_fine);
       if (gi < 0 || gj < 0 || gi >= R.nc || gj >= R.nc) return;
       if (survol && survol.gi === gi && survol.gj === gj) return;
       survol = { gi, gj };
       dessiner();
       majInspecteur();
     });
-    c.cv.addEventListener('pointerleave', () => { survol = null; dessiner(); majInspecteur(); });
+    c.cv.addEventListener('pointerleave', () => { finGlisse(); survol = null; dessiner(); majInspecteur(); });
   }
 
   const ajuster = () => {
@@ -874,14 +1023,22 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     dessiner();
   };
   new ResizeObserver(ajuster).observe(document.querySelector('.cartes'));
-
   const changerTheme = () => { lireCouleurs(); construireImages(); dessiner(); };
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', changerTheme);
   new MutationObserver(changerTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
   // ------------------------------------------------------------------ controle Python <-> page
-  const ok = scenarios.every((S, k) => {
-    const R = rejeux[k];
+  function controler(k = 0, ok = 0) {
+    if (k >= T.scenarios.length) {
+      const tout = ok === T.scenarios.length;
+      const ctl = $('controle');
+      ctl.textContent = tout
+        ? `Contrôle : pour les ${ok} simulations, la fusion recalculée dans cette page est identique, case par case, à celle du module Python.`
+        : `Contrôle : ${T.scenarios.length - ok} simulation(s) sur ${T.scenarios.length} diffèrent du module Python (détails dans la console).`;
+      ctl.className = 'controle ' + (tout ? 'ok' : 'ko');
+      return;
+    }
+    const S = T.scenarios[k], R = new Rejeu(S);
     R.aller(S.frames.length - 1);
     const c = { obstacle: 0, libre: 0, inconnu: 0, rover: 0 };
     for (let p = 0; p < R.dv.length; p++) {
@@ -890,19 +1047,17 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       if (R.rv[p] !== -1) c.rover++;
     }
     const egal = Object.keys(c).every((key) => c[key] === S.controle[key]);
-    if (!egal) console.warn('Écart avec le module Python', S.nom, c, S.controle);
-    R.reset();
-    return egal;
-  });
-  const ctl = $('controle');
-  ctl.textContent = ok
-    ? 'Contrôle : en fin de simulation, la fusion recalculée dans cette page est identique, case par case, à celle du module Python.'
-    : 'Contrôle : la fusion recalculée dans cette page diffère de celle du module Python (détails dans la console).';
-  ctl.className = 'controle ' + (ok ? 'ok' : 'ko');
+    if (!egal) console.warn('Écart avec le module Python', S.terrain, S.champ, S.rayons_x, c, S.controle);
+    setTimeout(() => controler(k + 1, ok + (egal ? 1 : 0)), 30);
+  }
 
   // ------------------------------------------------------------------ demarrage
   lireCouleurs();
-  choisirScenario(0);
+  si = indice(terrain, vi);
+  vueEntiere();
+  terrain = null;
+  choisir(terrains[0], vi, { garderTemps: false });
   ajuster();
+  setTimeout(controler, 800);
 })();
 </script>

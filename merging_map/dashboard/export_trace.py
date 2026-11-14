@@ -15,8 +15,17 @@ import numpy as np
 ICI = Path(__file__).resolve().parent
 sys.path.insert(0, str(ICI.parent))
 
-from demo_fusion import PAS, PORTEE_ROVER, ZONE, ZONE_M, avancer, monde_1, monde_2  # noqa: E402
-from fusion_carte import INCONNU, LIBRE, OBSTACLE, SRC_ROVER  # noqa: E402
+from demo_fusion import (  # noqa: E402
+    PAS,
+    PORTEE_ROVER,
+    ZONE,
+    ZONE_M,
+    avancer,
+    monde_1,
+    monde_2,
+    monde_3,
+)
+from fusion_carte import INCONNU, LIBRE, OBSTACLE, SRC_ROVER, decouper  # noqa: E402
 
 
 # ----------------------------------------------------------------------------
@@ -82,7 +91,7 @@ class Traceur:
         self.carte, self.simu = carte, simu
         self.msgs, self.frames, self.chemins = [], [], []
         self.attente = []
-        self.pos, self.cap, self.traj = depart, math.pi / 2, [depart]
+        self.pos, self.cap, self.traj = depart, simu.cap, [depart]
         self.chemin_id = None
         recevoir = carte.recevoir
 
@@ -98,10 +107,8 @@ class Traceur:
         self.chemins.append(simplifier(chemin))
         return len(self.chemins) - 1
 
-    def deplacer(self, pos):
-        dx, dy = pos[0] - self.pos[0], pos[1] - self.pos[1]
-        if math.hypot(dx, dy) > 1e-6:
-            self.cap = math.atan2(dy, dx)
+    def deplacer(self, pos, cap):
+        self.cap = cap
         self.pos = pos
         self.traj.append(pos)
 
@@ -123,6 +130,45 @@ class Traceur:
         self.attente = []
 
 
+def un_pas(tr, chemin):
+    """Avance d'un pas de PAS m. Renvoie (chemin restant, point d'impact ou None)."""
+    simu, carte = tr.simu, tr.carte
+    avant = tr.pos
+    pos, chemin = avancer(avant, chemin, PAS)
+    simu.t += 1.0
+    cap = math.atan2(pos[1] - avant[1], pos[0] - avant[0]) if pos != avant else tr.cap
+    choc = simu.contact(avant, pos)
+    impact = None
+    if choc:
+        pos, impact = choc
+    tr.deplacer(pos, cap)
+    simu.capteur_rover(*pos, cap)
+    if impact:
+        # meme effet que carte.signaler_obstacle, mais envoye comme une tuile rover
+        r = carte.res_fine
+        i0, j0 = math.floor((impact[1] - 0.1) / r), math.floor((impact[0] - 0.1) / r)
+        m = np.full((6, 6), INCONNU, np.int8)
+        for a in range(6):
+            for b in range(6):
+                if math.dist(((j0 + b + 0.5) * r, (i0 + a + 0.5) * r), impact) <= 0.1:
+                    m[a, b] = OBSTACLE
+        for msg in decouper(m, j0 * r, i0 * r, carte.zmax, carte, 'rover', simu.t):
+            carte.recevoir(msg)
+    return chemin, impact
+
+
+def frame_choc(tr, impact, action):
+    tr.frame(
+        'choc',
+        'Choc : obstacle pas vu',
+        'Le rover a touché un obstacle qui était hors de son champ de vision. Ses roues '
+        "patinent (les encodeurs ne montrent plus d'avance) : il recule de 5 cm, marque "
+        "l'obstacle sur la carte (cercle) et replanifie.",
+        action,
+        obstacle=[round(impact[0], 3), round(impact[1], 3)],
+    )
+
+
 def mission_tracee(carte, simu, depart, victime, tolerance=0.5, max_tours=600):
     tr = Traceur(carte, simu, depart)
     simu.survol_initial(z=0)
@@ -133,12 +179,13 @@ def mission_tracee(carte, simu, depart, victime, tolerance=0.5, max_tours=600):
         f'{carte.res(0) * 100:.0f} cm. Il voit les gros obstacles, mais un passage étroit '
         f'ou un tronc sous les arbres peut lui échapper.',
     )
-    simu.capteur_rover(*tr.pos)
+    simu.capteur_rover(*tr.pos, tr.cap)
     tr.frame(
         'capteur',
         'Le rover regarde autour de lui',
-        f'Le rover envoie ce que voit sa caméra dans un rayon de {PORTEE_ROVER:.0f} m, '
-        f"en cases de {carte.res_fine * 100:.0f} cm. Ce qu'il voit l'emporte sur le drone.",
+        f'Le rover envoie ce que voit sa caméra (champ de {simu.champ}°, portée '
+        f'{PORTEE_ROVER:.0f} m), en cases de {carte.res_fine * 100:.0f} cm. '
+        "Ce qu'il voit l'emporte sur le drone.",
     )
     dec = carte.decider(tr.pos, victime, zone=ZONE, tolerance=tolerance)
     premier = True
@@ -188,12 +235,16 @@ def mission_tracee(carte, simu, depart, victime, tolerance=0.5, max_tours=600):
                 restant=round(dec['distance_restante'], 2),
             )
             chemin = list(dec['chemin'])
-            while chemin:
-                pos, chemin = avancer(tr.pos, chemin, PAS)
-                simu.t += 1.0
-                tr.deplacer(pos)
-                simu.capteur_rover(*pos)
-                tr.frame('avance', 'Le rover avance', '', action, point=point)
+            impact = None
+            while chemin and not impact:
+                chemin, impact = un_pas(tr, chemin)
+                if impact:
+                    frame_choc(tr, impact, action)
+                else:
+                    tr.frame('avance', 'Le rover avance', '', action, point=point)
+            if impact:
+                dec = carte.decider(tr.pos, victime, zone=ZONE, tolerance=tolerance)
+                continue
             tr.frame(
                 'fin',
                 'Arrivé au point le plus proche',
@@ -240,10 +291,11 @@ def mission_tracee(carte, simu, depart, victime, tolerance=0.5, max_tours=600):
         premier = False
         chemin = list(dec['chemin'])
         while True:
-            pos, chemin = avancer(tr.pos, chemin, PAS)
-            simu.t += 1.0
-            tr.deplacer(pos)
-            simu.capteur_rover(*pos)
+            chemin, impact = un_pas(tr, chemin)
+            pos = tr.pos
+            if impact:
+                frame_choc(tr, impact, action)
+                break
             if math.dist(pos, victime) <= tolerance or not chemin:
                 tr.frame(
                     'arrivee',
@@ -270,14 +322,27 @@ def mission_tracee(carte, simu, depart, victime, tolerance=0.5, max_tours=600):
     return tr
 
 
-def exporter(nom, description, monde, occlusion=True):
+def resume(tr):
+    types = [f['type'] for f in tr.frames]
+    return {
+        'replans': types.count('replan'),
+        'chocs': types.count('choc'),
+        'zooms': types.count('zoom'),
+        'distance': round(longueur(tr.traj), 1),
+        'duree': tr.frames[-1]['t'],
+        'issue': tr.frames[-1]['type'],
+    }
+
+
+def exporter(terrain, monde, champ, occlusion=True):
     carte, simu, depart, victime = monde()
-    simu.occlusion = occlusion
+    simu.occlusion, simu.champ = occlusion, champ
     tr = mission_tracee(carte, simu, depart, victime)
     g = carte.grille(*ZONE)
     return {
-        'nom': nom,
-        'description': description,
+        'terrain': terrain,
+        'champ': champ,
+        'rayons_x': not occlusion,
         'zone': ZONE_M,
         'n': carte.n,
         'zmax': carte.zmax,
@@ -291,6 +356,10 @@ def exporter(nom, description, monde, occlusion=True):
         'chemins': tr.chemins,
         'traj': [[round(x, 3), round(y, 3)] for x, y in tr.traj],
         'frames': tr.frames,
+        'resume': {
+            **resume(tr),
+            'vu': round(float((g.src == SRC_ROVER).sum()) * carte.res_fine**2),
+        },
         # pour verifier que la page refait la meme fusion que Python
         'controle': {
             'obstacle': int((g.val == OBSTACLE).sum()),
@@ -301,38 +370,43 @@ def exporter(nom, description, monde, occlusion=True):
     }
 
 
+CHAMPS = [60, 90, 120, 160, 240, 360]
+TERRAINS = {
+    'crete': {
+        'nom': 'Crête et tronc caché',
+        'description': 'Une crête barre la route, avec un passage de 70 cm que le drone ne voit '
+        'pas de haut. Un tronc couché sous les arbres est invisible depuis le ciel.',
+        'monde': monde_1,
+    },
+    'foret': {
+        'nom': 'Forêt',
+        'description': 'Le drone voit les falaises qui bordent la forêt, mais rien sous les '
+        'arbres : un slalom de troncs couchés et des rochers. Le rover doit tout découvrir '
+        'avec sa caméra.',
+        'monde': monde_3,
+    },
+    'cratere': {
+        'nom': 'Cratère fermé',
+        'description': "La victime est au fond d'un cratère complètement fermé. Aucun chemin "
+        "n'existe : le rover doit s'approcher au plus près.",
+        'monde': monde_2,
+    },
+}
+
+
 def main():
-    trace = {
-        'scenarios': [
-            exporter(
-                'Crête : caméra réaliste',
-                'Une crête barre la route, avec un passage de 70 cm que le drone ne voit pas '
-                'de haut. Un tronc couché sous les arbres est invisible depuis le ciel. La caméra '
-                'du rover ne voit pas derrière les obstacles : sur sa carte, les zones cachées '
-                'restent grises (-1).',
-                monde_1,
-            ),
-            exporter(
-                'Crête : vision à rayons X',
-                'Même terrain, mais le rover simulé voit à travers les obstacles, comme dans la '
-                'première version de la démo. À comparer avec la caméra réaliste : sa carte '
-                "n'a aucune ombre, il en sait plus que ce qu'un vrai rover pourrait voir.",
-                monde_1,
-                occlusion=False,
-            ),
-            exporter(
-                'Cratère fermé',
-                "La victime est au fond d'un cratère complètement fermé. Aucun chemin "
-                "n'existe : le rover doit s'approcher au plus près.",
-                monde_2,
-            ),
-        ]
-    }
+    scenarios = []
+    for cle, t in TERRAINS.items():
+        for champ in CHAMPS:
+            scenarios.append(exporter(cle, t['monde'], champ))
+            print(cle, champ, scenarios[-1]['resume'], flush=True)
+        scenarios.append(exporter(cle, t['monde'], 360, occlusion=False))
+        print(cle, 'rayons X', scenarios[-1]['resume'], flush=True)
+    terrains = {k: {'nom': t['nom'], 'description': t['description']} for k, t in TERRAINS.items()}
+    trace = {'terrains': terrains, 'champs': CHAMPS, 'scenarios': scenarios}
     sortie = ICI / 'trace.js'
     texte = 'window.TRACE = ' + json.dumps(trace, ensure_ascii=False, separators=(',', ':'))
-    sortie.write_text(texte + ';\n', encoding='utf-8')
-    for s in trace['scenarios']:
-        print(f'{s["nom"]} : {len(s["frames"])} etapes, {len(s["msgs"])} tuiles')
+    sortie.write_text(texte + ';' + chr(10), encoding='utf-8', newline=chr(10))
     print(f'{sortie} : {sortie.stat().st_size / 1e6:.2f} Mo')
 
 
