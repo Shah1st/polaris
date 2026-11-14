@@ -20,6 +20,7 @@ setup(
     entry_points={
         'console_scripts': [
             'calib_node = guidance_calib.calib_node:main',
+            'generate_markers = guidance_calib.generate_markers:main',
         ],
     },
 )
