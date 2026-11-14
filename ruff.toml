@@ -1,0 +1,31 @@
+line-length = 99
+target-version = "py312"
+extend-exclude = ["build", "install", "log"]
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "Q",   # flake8-quotes
+]
+
+[lint.flake8-quotes]
+inline-quotes = "single"
+
+[lint.isort]
+known-first-party = [
+    "guidance_bringup",
+    "guidance_calib",
+    "guidance_global_map",
+    "guidance_interfaces",
+    "guidance_rover_pose",
+    "guidance_supervisor",
+]
+
+[format]
+quote-style = "single"

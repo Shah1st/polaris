@@ -1,0 +1,31 @@
+{
+  "name": "polaris (ROS 2 Jazzy)",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": ".."
+  },
+  "remoteUser": "ubuntu",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/ws,type=bind",
+  "workspaceFolder": "/ws",
+  "containerEnv": {
+    "ROS_DOMAIN_ID": "42",
+    "RCUTILS_COLORIZED_OUTPUT": "1"
+  },
+  // TODO: camera passthrough, e.g. "runArgs": ["--device=/dev/video0"] on a Linux host.
+  "postCreateCommand": "rosdep update && rosdep install --from-paths src --ignore-src -y -r && bash -lc 'source /opt/ros/jazzy/setup.bash && colcon build --symlink-install'",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "redhat.vscode-xml"
+      ],
+      "settings": {
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        },
+        "python.testing.pytestEnabled": true
+      }
+    }
+  }
+}

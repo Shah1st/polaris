@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>guidance_supervisor</name>
+  <version>0.0.1</version>
+  <description>Mission supervisor: goals, mission state machine and health monitoring.</description>
+  <maintainer email="todo@example.com">TODO</maintainer>
+  <license>TODO</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <!-- TODO(supervisor): add as the logic lands: geometry_msgs, nav2_msgs, guidance_interfaces -->
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

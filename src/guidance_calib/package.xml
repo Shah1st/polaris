@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>guidance_calib</name>
+  <version>0.0.1</version>
+  <description>Overhead camera calibration: intrinsics and image-to-ground-plane mapping.</description>
+  <maintainer email="todo@example.com">TODO</maintainer>
+  <license>TODO</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <!-- TODO(calib): add as the logic lands: sensor_msgs, geometry_msgs, tf2_ros, cv_bridge, python3-opencv -->
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
