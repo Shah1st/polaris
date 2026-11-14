@@ -44,6 +44,9 @@ from rover_core import Config, Rover, Step, find_esp32_port, open_serial
 HERE = os.path.dirname(os.path.abspath(__file__))
 INDEX_HTML = os.path.join(HERE, 'web', 'index.html')
 CPU_TEMP = '/sys/class/thermal/thermal_zone1/temp'  # RDK X5 CPU (zone0 is the DDR)
+# Kernel send buffer for each video client. Small on purpose: on a slow Wi-Fi, frames must be
+# dropped here, not queued in the socket (a 1.5 MB queue is 1.5 s of delayed video).
+STREAM_SNDBUF = 48 * 1024
 
 try:
     import cv2
@@ -352,18 +355,36 @@ def make_handler(app: App):
 
         def _stream(self) -> None:
             boundary = b'frame'
+            query = self.path.partition('?')[2]
+            params = dict(kv.partition('=')[::2] for kv in query.split('&') if kv)
+            try:  # optional per-client frame rate limit: /video_feed?fps=10
+                min_period = 1.0 / float(params['fps']) if 'fps' in params else 0.0
+            except (ValueError, ZeroDivisionError):
+                min_period = 0.0
+            try:
+                self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, STREAM_SNDBUF)
+                self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
             self.send_response(200)
             self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
             self.send_header('Cache-Control', 'no-store')
             self.send_header('Connection', 'close')
             self.end_headers()
             last = -1
+            sent_at = 0.0
             try:
                 while True:
+                    # Always the newest frame: when the client is slow, the frames produced
+                    # while the previous write was blocked are skipped.
                     frame, fid = app.camera.wait_frame(last)
                     if frame is None or fid == last:
                         continue
+                    if min_period and time.monotonic() - sent_at < min_period:
+                        last = fid
+                        continue
                     last = fid
+                    sent_at = time.monotonic()
                     self.wfile.write(
                         b'--' + boundary + b'\r\nContent-Type: image/jpeg\r\n'
                         + f'Content-Length: {len(frame)}\r\n\r\n'.encode() + frame + b'\r\n'

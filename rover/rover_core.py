@@ -95,7 +95,11 @@ class Config:
 
     # Camera pan-tilt (UGV firmware T:133: pan -180 left .. 180 right, tilt -30 down .. 90 up)
     gimbal_speed: float = 90.0  # deg/s while a ZQSD key is held
-    gimbal_hz: float = 10.0  # at most this many pan-tilt commands per second
+    gimbal_hz: float = 20.0  # at most this many pan-tilt commands per second
+    # s without a key repeat before the camera stops. Longer than manual_timeout: a camera
+    # that keeps turning is harmless, while stopping on every late packet makes it stutter
+    # on a busy Wi-Fi.
+    gimbal_timeout: float = 1.0
     gimbal_spd: int = 0  # firmware servo speed (0 = fastest)
     gimbal_acc: int = 0  # firmware servo acceleration (0 = fastest)
     pan_min: float = -180.0
@@ -429,7 +433,7 @@ class Gimbal:
         """The T:133 command to send now, or None."""
         c = self.cfg
         pr, tr = self._rate
-        if t - self._rate_t > c.manual_timeout:  # keys released or connection lost
+        if t - self._rate_t > c.gimbal_timeout:  # key repeats stopped (connection lost)
             pr = tr = 0.0
             self._rate = (0.0, 0.0)
         if pr or tr:

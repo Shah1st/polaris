@@ -370,11 +370,27 @@ def test_gimbal_moves_while_held_and_respects_limits() -> None:
     assert g.pan == pytest.approx(90, abs=5) and g.tilt == pytest.approx(90, abs=5)
     assert all(c['T'] == 133 for _, c in sent)
     assert len(sent) <= 11  # at most gimbal_hz commands per second
-    # The key is released: the camera stops, nothing more is sent.
-    for _ in range(20):
+    # The key is released (rate 0 sent at once): the camera stops, nothing more is sent.
+    g.set_rate(0, 0, t)
+    pan = g.pan
+    for _ in range(5):
         t += 0.05
         cmd = g.step(t, 0.05)
-    assert cmd is None
+    assert cmd is None and g.pan == pan
+    # Key repeats lost (Wi-Fi): the camera stops after gimbal_timeout, not before.
+    g.set_rate(1, 0, t)
+    t0 = t
+    while t - t0 < cfg.gimbal_timeout - 0.1:
+        t += 0.05
+        g.step(t, 0.05)
+    assert g.pan > pan
+    for _ in range(10):
+        t += 0.05
+        g.step(t, 0.05)
+    stopped = g.pan
+    t += 0.5
+    g.step(t, 0.5)
+    assert g.pan == stopped
     g.set_angles(500, -100)
     assert (g.pan, g.tilt) == (cfg.pan_max, cfg.tilt_min)
 

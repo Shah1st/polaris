@@ -301,9 +301,10 @@ function refreshGpad() {
     b.classList.toggle('held', gheld.has(b.dataset.gkey)));
 }
 setInterval(() => {
+  // Keep-alive only: presses and releases are sent at once by the key handlers.
   if (gheld.size) { post('/gimbal', gimbalCommand()); wasPanning = true; }
   else if (wasPanning) { post('/gimbal', { pan_rate: 0, tilt_rate: 0 }); wasPanning = false; }
-}, 100);
+}, 250);
 document.addEventListener('keydown', (e) => {
   if (typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
   if (GKEYS.includes(e.code)) {
@@ -313,12 +314,14 @@ document.addEventListener('keydown', (e) => {
     post('/gimbal', { center: true });
   }
 });
-document.addEventListener('keyup', (e) => { if (gheld.delete(e.code)) refreshGpad(); });
+document.addEventListener('keyup', (e) => {
+  if (gheld.delete(e.code)) { refreshGpad(); post('/gimbal', gimbalCommand()); }
+});
 window.addEventListener('blur', () => { gheld.clear(); refreshGpad(); });
 document.querySelectorAll('#gpad button').forEach(b => {
   const on = (e) => { e.preventDefault(); b.setPointerCapture?.(e.pointerId);
                       gheld.add(b.dataset.gkey); refreshGpad(); post('/gimbal', gimbalCommand()); };
-  const off = () => { gheld.delete(b.dataset.gkey); refreshGpad(); };
+  const off = () => { if (gheld.delete(b.dataset.gkey)) { refreshGpad(); post('/gimbal', gimbalCommand()); } };
   b.addEventListener('pointerdown', on);
   b.addEventListener('pointerup', off);
   b.addEventListener('pointercancel', off);
