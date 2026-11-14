@@ -15,6 +15,9 @@ overhead camera ─┬─► guidance_global_map ─► /map ──────�
 
 rover depth camera ─► Nav2 local costmap ─► Nav2 controller ─► rover
 
+rover camera ─► rover mapper (host, GPU) ──TCP──► guidance_rover_vo ─┬─► /rover/vo/odom ─► robot_localization
+                                                                     └─► /rover/points ─► Nav2 local costmap
+
 guidance_supervisor: sends goals to Nav2, tracks mission state, watches health
 ```
 
@@ -26,11 +29,32 @@ guidance_supervisor: sends goals to Nav2, tracks mission state, watches health
 | `guidance_calib` | ament_python | Overhead camera calibration, image → ground plane mapping |
 | `guidance_global_map` | ament_python | Overhead image → `nav_msgs/OccupancyGrid` on `/map` |
 | `guidance_rover_pose` | ament_python | Rover pose in the map frame from the overhead camera |
+| `guidance_rover_vo` | ament_python | Bridge from the rover mapper: visual odometry and local 3D points |
 | `guidance_supervisor` | ament_python | Goals to Nav2, mission state machine, health checks |
 | `guidance_bringup` | ament_python | `guidance.launch.py` and `config/` for parameters |
 
 Local obstacle avoidance comes from Nav2 (controller + local costmap fed by the depth camera),
 set up in `guidance_bringup`, so it has no package of its own.
+
+## Rover mapper bridge (`guidance_rover_vo`)
+
+The rover mapper builds a live 3D map from the rover's single camera (Depth Anything 3) and shows
+the rover in third person. It needs the host GPU (Apple Metal), so it runs natively on the host,
+not in the container. It streams the rover state over TCP on port 7400; `rover_vo_bridge_node`
+connects to `host.docker.internal:7400` and publishes:
+
+| Topic / TF | Type | Frame | Content |
+|---|---|---|---|
+| `/rover/vo/odom` | `nav_msgs/Odometry` | `odom` → `base_link` | x, y, yaw of the rover body; not published while the mapper is lost |
+| `/rover/points` | `sensor_msgs/PointCloud2` | `base_link` | 3D points in front of the rover, people and other moving objects removed |
+| TF `odom → base_link` | | | only if `publish_tf` is true (default, until the EKF publishes it) |
+
+The mapper's `odom` frame is its own (x forward at start, y left, z up, metres, floor at z = 0);
+it never publishes `map`, which belongs to the overhead camera. Known limits: metric scale from
+the floor is only about ±15% accurate so far; the pose can jump once or twice in the first
+seconds while the mapper calibrates (logged); the cloud includes the floor, so set
+`min_obstacle_height` in the costmap. Parameters: `host`, `port`, `odom_frame`, `base_frame`,
+`publish_tf`. Wire format: `guidance_rover_vo/protocol.py`.
 
 ## Dev environment
 
@@ -44,7 +68,7 @@ cv_bridge, OpenCV, pytest and ruff.
 
 ```bash
 docker build -t polaris-dev .
-docker run -it --rm -v "$PWD":/ws polaris-dev bash
+docker run -it --rm --add-host=host.docker.internal:host-gateway -v "$PWD":/ws polaris-dev bash
 ```
 
 Camera passthrough is not set up yet. On a Linux host add `--device=/dev/video0` (see the TODO in

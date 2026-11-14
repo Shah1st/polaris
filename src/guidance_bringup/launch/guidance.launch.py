@@ -13,6 +13,7 @@ GUIDANCE_NODES = [
     ('guidance_calib', 'calib_node'),
     ('guidance_global_map', 'global_map_node'),
     ('guidance_rover_pose', 'rover_pose_node'),
+    ('guidance_rover_vo', 'rover_vo_bridge_node'),
     ('guidance_supervisor', 'supervisor_node'),
 ]
 
