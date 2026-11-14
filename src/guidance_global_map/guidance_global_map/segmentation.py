@@ -11,7 +11,8 @@ import numpy as np
 
 OCCUPIED = 100
 MARGIN = 99
-# Not a nav_msgs/OccupancyGrid value: marks the rover in grids saved for inspection.
+# The cells the rover itself stands on. Not a standard nav_msgs/OccupancyGrid meaning: a
+# planner must treat these cells as its start, not as a cost.
 ROVER = 50
 FREE = 0
 UNKNOWN = -1
@@ -224,8 +225,7 @@ def build_cell_grid(
     does not see at all are UNKNOWN (-1). Row 0 is minimum y, as in `nav_msgs/OccupancyGrid`.
 
     `obstacles` must not include the rover. With `rover` (the rover's mask), the cells it
-    touches are marked ROVER (50) unless an obstacle is in them too. That is for looking at
-    the grid; a planner needs those cells free, so the published map leaves it out.
+    touches are marked ROVER (50) unless an obstacle is in them too.
     """
     factor = int(round(cell_size / resolution))
     if factor < 1 or abs(factor * resolution - cell_size) > 1e-9:

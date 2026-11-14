@@ -4,8 +4,12 @@ Warps the overhead image onto the floor plane with the homography from guidance_
 obstacles by colour, and publishes a nav_msgs/OccupancyGrid on /map.
 
 With `rover_detection: size` the rover carries no marker: the obstacle blob whose size matches
-the rover is taken to be the rover, removed from the map, and its position is published on
-/rover/pose_overhead. Its heading is not known in this mode.
+the rover is taken to be the rover and its position is published on /rover/pose_overhead. Its
+heading is not known in this mode.
+
+Map cell values: 0 free, 100 obstacle, 50 the rover itself, 99 margin around obstacles (off by
+default), -1 not seen by the camera. The rover's value is not a standard occupancy value: a
+planner must treat those cells as its own start, not as a cost.
 """
 
 import numpy as np
@@ -110,26 +114,29 @@ class GlobalMapNode(Node):
     def _on_image(self, msg: Image) -> None:
         self._latest_image = msg
 
-    def _ignore_mask(self, image: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
-        """Mask of top-down pixels covered by the floor markers and the rover's marker."""
-        if self._rover_detection != 'marker':
-            return np.zeros(shape, dtype=bool)
+    def _marker_masks(
+        self, image: np.ndarray, shape: tuple[int, int]
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """Marker setup: top-down masks of the floor markers and of the rover (None if unseen)."""
         rover_id = self.get_parameter('rover_marker_id').value
         detections = detect_markers(image, self.get_parameter('dictionary').value)
-        ignore = np.zeros(shape, dtype=bool)
+        rover = None
         polygons = []
         for marker_id, corners in detections.items():
             in_map = pixels_to_map(self._homography, corners)
             in_top_down = map_to_top_down(in_map, self._bounds, self._resolution)
             if marker_id == rover_id:
                 radius = self.get_parameter('rover_radius').value / self._resolution
-                ignore |= disc_mask(shape, in_top_down.mean(axis=0), radius)
+                rover = disc_mask(shape, in_top_down.mean(axis=0), radius)
             else:
                 polygons.append(scale_polygon(in_top_down, MARKER_MASK_SCALE))
-        return ignore | polygons_mask(shape, polygons)
+        return polygons_mask(shape, polygons), rover
 
-    def _remove_rover_by_size(self, obstacles: np.ndarray, image_msg: Image) -> np.ndarray:
-        """Find the rover among the obstacle blobs, publish its position, drop it from the map."""
+    def _find_rover_by_size(self, obstacles: np.ndarray, image_msg: Image) -> np.ndarray | None:
+        """Find the rover among the obstacle blobs and publish its position.
+
+        Returns the rover's mask, or None when no blob has its size.
+        """
         rover = find_rover_blob(
             find_blobs(obstacles, self._resolution),
             tuple(self.get_parameter('rover_size').value),
@@ -137,7 +144,7 @@ class GlobalMapNode(Node):
         )
         if rover is None:
             self.get_logger().warn('no blob of the rover size in view', throttle_duration_sec=5.0)
-            return obstacles
+            return None
 
         pose_msg = PoseWithCovarianceStamped()
         pose_msg.header.stamp = image_msg.header.stamp
@@ -152,7 +159,7 @@ class GlobalMapNode(Node):
         covariance[35] = UNKNOWN_YAW_VARIANCE
         pose_msg.pose.covariance = covariance
         self._pose_publisher.publish(pose_msg)
-        return obstacles & ~rover.mask
+        return rover.mask
 
     def _update(self) -> None:
         if self._latest_image is None or self._homography is None:
@@ -162,7 +169,11 @@ class GlobalMapNode(Node):
         image = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
 
         top_down, valid = warp_to_top_down(image, self._homography, self._bounds, self._resolution)
-        ignore = self._ignore_mask(image, valid.shape)
+        ignore, rover = None, None
+        if self._rover_detection == 'marker':
+            ignore, rover = self._marker_masks(image, valid.shape)
+            if rover is not None:
+                ignore = ignore | rover
         min_area_px = self.get_parameter('min_obstacle_area').value / self._resolution**2
         obstacles = segment_obstacles(
             top_down,
@@ -176,10 +187,12 @@ class GlobalMapNode(Node):
             ),
         )
         if self._rover_detection == 'size':
-            obstacles = self._remove_rover_by_size(obstacles, msg)
+            rover = self._find_rover_by_size(obstacles, msg)
+            if rover is not None:
+                obstacles = obstacles & ~rover
         cell_size = self.get_parameter('cell_size').value
         margin = self.get_parameter('margin').value
-        grid = build_cell_grid(obstacles, valid, self._resolution, cell_size, margin)
+        grid = build_cell_grid(obstacles, valid, self._resolution, cell_size, margin, rover)
 
         grid_msg = OccupancyGrid()
         grid_msg.header.stamp = msg.header.stamp

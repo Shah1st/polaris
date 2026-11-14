@@ -77,7 +77,7 @@ The overhead camera is fixed and looks straight down at the floor. Its image arr
 | Node | Publishes | How |
 |---|---|---|
 | `calib_node` | `/overhead/image_to_map` (3x3 homography, row-major, latched) | Scale from the camera height and the lens. The map origin is the image's bottom-left corner, x right, y up. |
-| `global_map_node` | `/map` (`nav_msgs/OccupancyGrid`), `/rover/pose_overhead` (`geometry_msgs/PoseWithCovarianceStamped`), debug images `/overhead/debug/top_down` and `/overhead/debug/mask` | Resamples the image to a metric view at 5 mm. Pixels whose colour differs from the floor around them are obstacles. The obstacle blob that has the rover's size is the rover: it is left out of the map and its position is published. The map is a grid of 2.5 cm cells; a cell that an obstacle touches anywhere is occupied. |
+| `global_map_node` | `/map` (`nav_msgs/OccupancyGrid`), `/rover/pose_overhead` (`geometry_msgs/PoseWithCovarianceStamped`), debug images `/overhead/debug/top_down` and `/overhead/debug/mask` | Resamples the image to a metric view at 5 mm. Pixels whose colour differs from the floor around them are obstacles. The obstacle blob that has the rover's size is the rover: its cells are marked on the map and its position is published. The map is a grid of 2.5 cm cells; a cell that an obstacle touches anywhere is occupied. |
 | `rover_pose_node` | nothing in this setup | Only used with a marker on the rover (see below). |
 
 All parameters are in `src/guidance_bringup/config/overhead.yaml`. The ones to set for a new
@@ -92,7 +92,9 @@ setup:
 - `cell_size`: the size of a map cell. `margin`: extra blocked cells around obstacles, off by
   default.
 
-Map cell values: 0 free, 100 obstacle, 99 margin, -1 not seen by the camera.
+Map cell values: 0 free, 100 obstacle, 50 the rover itself, 99 margin, -1 not seen by the
+camera. The value 50 is not a standard occupancy value: a planner has to treat those cells as
+its own start, not as a cost.
 
 **Trying a photo without ROS**
 
@@ -105,8 +107,7 @@ python -m guidance_global_map.segment_image photo.jpg out/scene --camera-height 
 This writes `out/scene_overlay.jpg` (obstacles red, rover blue, each blob labelled with its size
 in centimetres), `out/scene_grid.png` (the map drawn cell by cell: white free, grey obstacle, blue rover)
 and the map as numbers in `out/scene_grid.csv` and `out/scene_grid.npy`, row 0 at y = 0.
-In these files the rover's cells have the value 50. The map published on `/map` leaves
-them free, since the planner starts from there.
+This is the same grid that `/map` carries.
 
 **Running a saved photo or video through the nodes**
 

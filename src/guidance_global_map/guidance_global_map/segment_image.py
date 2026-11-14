@@ -10,8 +10,7 @@ It writes, with the given prefix:
 - PREFIX_overlay.jpg: the view from above with obstacles red, the rover blue, margin cells
   orange (only with --margin), and every blob labelled with its size in centimetres;
 - PREFIX_grid.png: the occupancy grid the node would publish on /map, drawn cell by cell
-  (white free, grey obstacle, blue rover, black margin, light blue unknown), except that
-  the published map leaves the rover's cells free;
+  (white free, grey obstacle, blue rover, black margin, light blue unknown);
 - PREFIX_grid.csv and PREFIX_grid.npy: the same grid as numbers, one per cell (0 free,
   100 obstacle, 50 rover, 99 margin, -1 unknown), row 0 at y = 0.
 """
