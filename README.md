@@ -1,6 +1,6 @@
 # Polaris: drone/rover guidance POC
 
-Hackathon proof of concept for a guidance system. An overhead 2D camera (on a drone or a fixed
+Hackathon leukerbad proof of concept for a guidance system. An overhead 2D camera (on a drone or a fixed
 mount) sees the whole area and builds the global map, and the rover's position comes from the
 same camera. A rover with a 3D depth camera follows the planned path and avoids local obstacles
 on its own. Everything runs on one laptop with ROS 2 Jazzy.
