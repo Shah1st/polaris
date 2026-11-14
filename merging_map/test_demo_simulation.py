@@ -134,3 +134,27 @@ def test_relocalisation_moves_provisional_observations() -> None:
     simu.recaler()
     assert carte.grille(5.0, 4.55, 5.2, 4.95).val.max() < OBSTACLE  # ghost gone
     assert (carte.grille(5.0, 5.05, 5.05, 6.95).val == OBSTACLE).all()  # wall at its place
+
+
+def test_rover_link_loss_return_mark_and_replan() -> None:
+    """In a radio dead zone the rover goes back to where the link still worked, the zone is
+    marked as no-go, and a new path is found with the global map."""
+    lignes = []
+    carte, simu, depart, victime = demo.monde_6()
+    simu.champ = 160
+    simu.survol_initial(z=0)
+    fin = demo.mission(simu, depart, victime, journal=lignes.append)['fin']
+    texte = '\n'.join(lignes)
+    assert 'LIAISON ROVER PERDUE' in texte and 'liaison rover retrouvee' in texte
+    assert carte.zones_interdites  # the lost places are now no-go zones
+    assert 'ARRIVE pres de la victime' in texte
+    assert abs(complex(*simu.vraie) - complex(*victime)) < 0.6
+    # each loss costs at most one step inside the dead zone, then the rover backs out
+    dedans = [
+        (x, y)
+        for x, y in fin['traj_vraie']
+        for zx, zy, zr in simu.zones_blanches
+        if (x - zx) ** 2 + (y - zy) ** 2 <= zr * zr
+    ]
+    assert len(dedans) <= texte.count('LIAISON ROVER PERDUE')
+    assert simu.tampon is None  # what it saw during the cut was sent afterwards

@@ -31,6 +31,8 @@ PAS_PRUDENT = 0.15  # sans drone : deux fois plus lent
 INCERTITUDE_PAR_METRE = 0.025  # sans drone, l'erreur de position possible : +2,5 cm/m
 BUDGET_INCERTITUDE = 0.6  # au-dela (m), retour au dernier point vu par le drone
 ATTENTE_MAX = 300.0  # temps d'attente du drone au point de retour (s), puis arret
+RECUL_RESEAU = 0.5  # liaison rover perdue : retour jusqu'a 50 cm avant le dernier point connecte
+RAYON_ZONE = 1.5  # rayon de la zone marquee interdite, devant le point ou la liaison a lache
 
 
 # ----------------------------------------------------------------------------
@@ -64,6 +66,7 @@ class Simu:
         champ=360,
         coupures=(),
         graine=0,
+        zones_blanches=(),
     ):
         self.carte, self.verite, self.vu_drone = carte, verite, vu_par_drone
         self.inconnu_drone = inconnu_drone  # zone que le drone n'a pas pu voir au 1er survol
@@ -75,6 +78,9 @@ class Simu:
         # toujours. Sans drone, la position du rover vient de l'odometrie, qui derive : le cap
         # derive (biais + bruit) et les roues glissent un peu.
         self.coupures = list(coupures)
+        # zones blanches : ou la liaison ordinateur <-> rover ne passe pas (x, y, rayon)
+        self.zones_blanches = list(zones_blanches)
+        self.tampon = None  # liaison rover coupee : les tuiles vues sont gardees a bord
         self.rng = np.random.default_rng(graine)
         self.biais_cap = 0.0015  # rad par metre parcouru (gyroscope calibre : ~2 deg sur 20 m)
         self.bruit_cap = 0.005  # rad par racine de metre
@@ -87,6 +93,19 @@ class Simu:
         return not any(
             debut <= self.t < (math.inf if fin is None else fin) for debut, fin in self.coupures
         )
+
+    def rover_joignable(self):
+        """L'ordinateur peut-il parler au rover, la ou il est reellement ?"""
+        x, y = self.vraie
+        return not any(
+            (x - zx) ** 2 + (y - zy) ** 2 <= zr * zr for zx, zy, zr in self.zones_blanches
+        )
+
+    def vider_tampon(self):
+        """Liaison rover retrouvee : il envoie ce qu'il a vu pendant la coupure."""
+        for msg in self.tampon or []:
+            self.carte.recevoir(msg)
+        self.tampon = None
 
     def placer(self, pos):
         """Met le rover en `pos`, position connue (le drone vient de le voir)."""
@@ -217,7 +236,10 @@ class Simu:
         loc[hors] = INCONNU
         x0, y0 = j0 * RES + decalage[0], i0 * RES + decalage[1]
         for msg in decouper(loc, x0, y0, self.carte.zmax, self.carte, 'rover', self.t):
-            self.carte.recevoir(msg)
+            if self.tampon is not None:
+                self.tampon.append(msg)
+            else:
+                self.carte.recevoir(msg)
         return loc, x0, y0
 
     def visibles(self, x, y, i0, i1, j0, j1, cap=None, champ=None, n_rayons=1440):
@@ -308,6 +330,8 @@ RESUMES = {
     'arrivee': 'ARRIVE pres de la victime',
     'abandon': 'drone toujours absent -> arret et alerte',
     'poursuite': 'incertitude elevee, mais la victime est plus proche que le retour',
+    'perte_rover': 'LIAISON ROVER PERDUE -> retour au dernier point connecte',
+    'reprise_rover': 'liaison rover retrouvee -> zone interdite, replanification',
 }
 
 
@@ -360,7 +384,16 @@ def mission(simu, depart, victime, tolerance=0.5, max_tours=600, journal=print, 
             emettre('coupure')
         return True
 
-    def rouler(chemin, arrive, action, verifier=True, budget=True, finir_sur_place=True, **infos):
+    def rouler(
+        chemin,
+        arrive,
+        action,
+        verifier=True,
+        budget=True,
+        finir_sur_place=True,
+        surveiller_rover=True,
+        **infos,
+    ):
         """Suit le chemin pas a pas. Renvoie 'arrive', 'bloque', 'choc', 'budget' ou 'liaison'."""
         chemin = list(chemin)
         while chemin:
@@ -390,6 +423,11 @@ def mission(simu, depart, victime, tolerance=0.5, max_tours=600, journal=print, 
                 impact = (point[0] + est[0] - vraie[0], point[1] + est[1] - vraie[1])
             simu.maj_pose(est, vraie, cap)
             noter_position()
+            if surveiller_rover and not simu.rover_joignable():
+                simu.tampon = []  # l'ordinateur ne l'entend plus : il garde ce qu'il voit
+                simu.observer()
+                secours_rover()
+                return 'perte_rover'
             simu.observer()
             if impact:
                 carte.signaler_obstacle(*impact, rayon=0.1, t=simu.t)
@@ -435,6 +473,43 @@ def mission(simu, depart, victime, tolerance=0.5, max_tours=600, journal=print, 
             emettre('abandon', action, point=point)
             return 'abandon'
         return None
+
+    def secours_rover():
+        """Plus d'ordre de l'ordinateur depuis 1 s. Le programme de secours embarque sur le
+        rover enregistre l'instant et le dernier point ou la liaison marchait, puis le ramene
+        sur sa propre trace jusqu'a RECUL_RESEAU m avant ce point. La liaison revient : le
+        rover renvoie ce qu'il a vu, l'ordinateur marque la zone perdue comme interdite (une
+        zone de RAYON_ZONE m devant ce point) et replanifie avec la carte globale et le drone.
+        Pendant tout ce temps, le drone continue de voir le rover."""
+        instant = simu.t
+        dernier_ok = traj[-2] if len(traj) >= 2 else traj[-1]
+        dx, dy = simu.est[0] - dernier_ok[0], simu.est[1] - dernier_ok[1]
+        norme = math.hypot(dx, dy) or 1.0
+        emettre('perte_rover', 'SECOURS', point=dernier_ok, instant=instant)
+        points = list(reversed(traj[:-1]))
+        chemin, d = [points[0]], 0.0
+        for a, b in zip(points, points[1:], strict=False):
+            chemin.append(b)
+            d += math.dist(a, b)
+            if d >= RECUL_RESEAU:
+                break
+        rouler(
+            chemin,
+            lambda q: math.dist(q, chemin[-1]) < 0.02,
+            'SECOURS',
+            verifier=False,
+            budget=False,
+            surveiller_rover=False,
+            point=dernier_ok,
+        )
+        simu.vider_tampon()
+        zone = (
+            dernier_ok[0] + dx / norme * RAYON_ZONE,
+            dernier_ok[1] + dy / norme * RAYON_ZONE,
+            RAYON_ZONE,
+        )
+        carte.interdire_zone(*zone)
+        emettre('reprise_rover', 'SECOURS', point=dernier_ok, zone=zone, instant=instant)
 
     def fin():
         instantanes['fin'] = {
@@ -696,6 +771,14 @@ def monde_5(coupures=((0.0, None),)):
     rect(simu.vu_drone, 17.9, 12.0, 18.6, 12.6)
     rect(simu.vu_drone, 9.3, 12.0, 10.0, 12.6, LIBRE)
     simu.coupures = list(coupures)
+    return carte, simu, depart, victime
+
+
+def monde_6(zones_blanches=((15.2, 16.2, 1.6),)):
+    """Crete et tronc cache, avec une zone sans reseau (la liaison ordinateur <-> rover ne
+    passe pas) en plein sur le chemin normal, apres le passage."""
+    carte, simu, depart, victime = monde_1()
+    simu.zones_blanches = list(zones_blanches)
     return carte, simu, depart, victime
 
 

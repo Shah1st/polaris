@@ -327,3 +327,17 @@ def test_rover_snapshot_and_restore() -> None:
     carte.restaurer_rover(instant)
     assert (carte.grille(0, 0, 0.8, 0.8).val == LIBRE).all()
     assert (carte.grille(0.8, 0, 1.6, 0.8).val == INCONNU).all()
+
+
+def test_no_go_zone_is_avoided_like_an_obstacle() -> None:
+    carte = CarteFusion(n=16, res_fine=0.1, zmax=2, niveau_plan=2, niveau_zoom=1, rayon_robot=0.1)
+    for msg in decouper(np.zeros((16, 16)), 0, 0, 0, carte, 'drone'):
+        carte.recevoir(msg)
+    zone = (0, 0, 6.4, 6.4)
+    direct = carte.decider(DEPART, VICTIME, zone=zone)['chemin']
+    carte.interdire_zone(2.1, 3.2, 0.8)  # right on the straight path
+    dec = carte.decider(DEPART, VICTIME, zone=zone)
+    assert dec['action'] == 'SUIVRE' and dec['chemin'] != direct
+    assert all(np.hypot(x - 2.1, y - 3.2) > 0.8 for x, y in dec['chemin'])
+    # it is not an obstacle of the map: nothing is written in the tiles
+    assert (carte.grille(1.3, 2.4, 2.9, 4.0).val != OBSTACLE).all()

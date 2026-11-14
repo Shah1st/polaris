@@ -144,6 +144,28 @@ the computer stops hearing from the drone (`decider(..., drone_disponible=False)
 In the simulation: `Simu(..., coupures=[(t0, t1)])` cuts the link (`t1=None`: for good);
 `monde_4()` and `monde_5()` are the drone-loss scenarios.
 
+## When the rover link is lost
+
+If the computer can no longer talk to the rover (a radio dead zone), nobody sends it orders
+any more, so the way back has to be done **by the rover itself**: a small safety program on
+the Pi, not the whole module. The drone keeps seeing the rover meanwhile, so the computer
+still knows where it is.
+
+1. No order from the computer for 1 s: the rover records the exact moment and the **last point
+   where the link still worked**, stops, and keeps what its camera sees on board.
+2. It drives back along its own trace to 50 cm before that point; the link comes back.
+3. It sends what it saw during the cut. The computer marks the area where the link was lost
+   as a **no-go zone** (`carte.interdire_zone(x, y, r)`: a circle of 1.5 m just past that
+   point). The A\* treats it like an obstacle, but it stays out of the obstacle tiles, so the
+   drone does not try to zoom on it and it can be removed later (radio relay).
+4. The module plans again with the global map and the drone. If the new path enters the dead
+   zone somewhere else, the same thing happens and the zone is mapped bit by bit.
+
+In the simulation: `Simu(..., zones_blanches=[(x, y, r)])`; `monde_6()` is the scenario.
+
+**Still to do on the real robot:** the on-board safety program (watchdog on the Pi: record the
+odometry trail and the link state, and drive back on it when the computer goes silent).
+
 When no path exists, the module asks: "if the obstacles the drone only saw from far away were
 actually passable, where would I go?" It then asks the drone to zoom on exactly those tiles. If
 the drone confirms they are blocked, the rover goes to the closest reachable point and raises

@@ -29,6 +29,7 @@ from demo_fusion import (  # noqa: E402
     monde_3,
     monde_4,
     monde_5,
+    monde_6,
 )
 from fusion_carte import INCONNU, LIBRE, OBSTACLE, SRC_ROVER  # noqa: E402
 
@@ -209,6 +210,21 @@ def textes(type_, simu, carte, infos, distance):
             "pendant la coupure est réécrit au bon endroit (l'erreur est répartie le long du "
             'trajet) : les obstacles fantômes disparaissent.'
         )
+    if type_ == 'perte_rover':
+        return 'Liaison avec le rover perdue', (
+            f"À t = {infos['instant']:.0f} s, le rover n'a plus reçu d'ordre de l'ordinateur "
+            'depuis 1 s. Son programme de secours embarqué enregistre cet instant et le dernier '
+            "point où la liaison marchait (losange), s'arrête, puis le ramène sur sa propre trace "
+            "jusqu'à 50 cm avant ce point. Pendant ce temps, le drone continue de le voir : "
+            "l'ordinateur sait où il est."
+        )
+    if type_ == 'reprise_rover':
+        return 'Liaison retrouvée : zone interdite', (
+            "Revenu là où la liaison marchait, le rover reprend contact et renvoie ce qu'il a vu "
+            "pendant la coupure. L'ordinateur marque la zone où le réseau a lâché comme "
+            f'interdite (cercle rouge de {infos["zone"][2]:.1f} m), que le A* traite comme un '
+            'obstacle, et cherche une nouvelle solution avec la carte globale et le drone.'
+        )
     if type_ == 'abandon':
         return 'Drone toujours absent', (
             "Après 5 minutes sans drone, le rover reste à l'arrêt en lieu sûr et l'ordinateur "
@@ -276,6 +292,8 @@ class Traceur:
             'vraie': vraie,
             'sigma': round(simu.sigma, 3),
             'liaison': simu.connecte(),
+            'liaison_rover': simu.tampon is None,
+            'nz': len(self.carte.zones_interdites),
             'cap': round(simu.cap, 3),
             't': round(simu.t, 1),
             'chemin': self.chemin_id,
@@ -290,6 +308,8 @@ class Traceur:
             f['tuiles'] = [list(t) for t in infos['tuiles']]
         if 'restant' in infos:
             f['restant'] = round(infos['restant'], 2)
+        if 'instant' in infos:
+            f['instant'] = round(infos['instant'], 1)
         self.frames.append(f)
         self.attente = []
 
@@ -301,6 +321,7 @@ def resume(tr):
         'chocs': types.count('choc'),
         'zooms': types.count('zoom'),
         'analyses': types.count('analyse'),
+        'pertes': types.count('perte_rover'),
         'distance': round(longueur(tr.traj), 1),
         'duree': tr.frames[-1]['t'],
         'issue': tr.frames[-1]['type'],
@@ -335,6 +356,8 @@ def exporter(terrain, monde, champ, occlusion=True):
         'traj': tr.traj,
         'traj_vraie': tr.traj_vraie,
         'frames': tr.frames,
+        'zones_interdites': [[round(v, 3) for v in z] for z in carte.zones_interdites],
+        'zones_blanches': [list(z) for z in simu.zones_blanches],
         'resume': {**resume(tr), 'vu': vu},
         # pour verifier que la page refait la meme fusion que Python
         'controle': {
@@ -370,6 +393,15 @@ TERRAINS = {
         "n'existe : le rover doit s'approcher au plus près.",
         'monde': monde_2,
         'champs': TOUS,
+    },
+    'reseau': {
+        'nom': 'Zone sans réseau',
+        'description': 'Même crête, mais une zone sans réseau (la liaison ordinateur ↔ rover ne '
+        'passe pas) se trouve en plein sur le chemin, après le passage. À chaque perte, le '
+        'rover revient où la liaison marchait, la zone est marquée interdite et le module '
+        'cherche un autre chemin.',
+        'monde': monde_6,
+        'champs': SANS_DRONE,
     },
     'coupure': {
         'nom': 'Drone perdu 110 s',

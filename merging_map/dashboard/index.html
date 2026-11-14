@@ -253,7 +253,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     <div class="comparaison">
       <table>
         <caption>Même terrain, même drone : seul le champ de vision change. Cliquez une ligne pour la rejouer.</caption>
-        <thead><tr><th>Champ</th><th>Résultat</th><th>Surface vue</th><th>Replanif.</th><th>Chocs</th><th>Zooms / analyses</th><th>Distance</th><th>Durée</th></tr></thead>
+        <thead><tr><th>Champ</th><th>Résultat</th><th>Surface vue</th><th>Replanif.</th><th>Chocs</th><th>Pertes réseau</th><th>Zooms / analyses</th><th>Distance</th><th>Durée</th></tr></thead>
         <tbody id="v-table"></tbody>
       </table>
     </div>
@@ -267,6 +267,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       <button class="btn" id="b-decision" type="button">Décision suivante ⏭</button>
       <span class="etape" id="etape"></span>
       <span class="pastille good" id="liaison">Drone connecté</span>
+      <span class="pastille good" id="liaison-rover">Rover connecté</span>
       <div class="options">
         <label for="vitesse">Vitesse
           <select id="vitesse">
@@ -350,6 +351,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
         <li><span class="sw" style="border: 2px dashed var(--crit); border-radius: 50%; background: transparent"></span>Incertitude de position (drone perdu)</li>
         <li><span class="trait" style="border-top: 2px dotted var(--crit)"></span>Position et trajet réels, inconnus du robot</li>
         <li><span class="sw" style="border: 2px solid var(--zoom); border-radius: 50%; background: transparent"></span>Cible inspectée par le rover</li>
+        <li><span class="sw" style="border: 2px dashed var(--crit); border-radius: 50%; background: var(--crit-bg)"></span>Zone interdite : liaison rover perdue ici</li>
+        <li><span class="sw" style="border: 2px dotted var(--crit); border-radius: 50%; background: transparent"></span>Zone sans réseau réelle (avec « terrain réel »)</li>
       </ul>
     </div>
     <div class="panneau">
@@ -482,6 +485,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     attente: { pastille: 'Attente du drone', k: 'warn' },
     reconnexion: { pastille: 'Recalage', k: 'good' },
     abandon: { pastille: 'Arrêt', k: 'crit' },
+    perte_rover: { pastille: 'Liaison rover perdue', k: 'crit' },
+    reprise_rover: { pastille: 'Zone interdite', k: 'warn' },
   };
   const ISSUES = { arrivee: 'Arrivé', fin: 'Point le plus proche' };
   const estCle = (f) => f.type !== 'avance';
@@ -687,6 +692,23 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       ctx.restore();
     }
 
+    // zones interdites (liaison rover perdue) et, avec « terrain reel », zones sans reseau
+    if (nom !== 'drone') {
+      ctx.save();
+      ctx.strokeStyle = C['css-crit']; ctx.fillStyle = C['css-crit']; ctx.lineWidth = 2 * dpr;
+      for (const [zx, zy, zr] of (S.zones_interdites || []).slice(0, F.nz || 0)) {
+        ctx.setLineDash([6 * dpr, 4 * dpr]);
+        ctx.beginPath(); ctx.arc(X(zx), Y(zy), zr * k, 0, Math.PI * 2);
+        ctx.globalAlpha = 0.14; ctx.fill(); ctx.globalAlpha = 0.95; ctx.stroke();
+      }
+      if (opt.verite) {
+        ctx.setLineDash([2 * dpr, 3 * dpr]); ctx.globalAlpha = 0.9; ctx.lineWidth = 1.5 * dpr;
+        for (const [zx, zy, zr] of S.zones_blanches || []) {
+          ctx.beginPath(); ctx.arc(X(zx), Y(zy), zr * k, 0, Math.PI * 2); ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
     // drone perdu : incertitude de position, et position reelle (inconnue du robot)
     if (nom !== 'drone' && F.vraie) {
       if (F.sigma > 0) {
@@ -801,7 +823,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       const tr = document.createElement('tr');
       tr.dataset.v = v;
       tr.innerHTML = `<td>${nomVision(v)}</td><td>${ISSUES[r.issue] || r.issue}</td><td>${r.vu != null ? fr(r.vu, 0) + ' m²' : '–'}</td><td>${r.replans}</td>`
-        + `<td class="${r.chocs ? 'mauvais' : ''}">${r.chocs}</td><td>${r.zooms} / ${r.analyses || 0}</td>`
+        + `<td class="${r.chocs ? 'mauvais' : ''}">${r.chocs}</td><td>${r.pertes || 0}</td><td>${r.zooms} / ${r.analyses || 0}</td>`
         + `<td>${fr(r.distance)} m</td><td>${fr(r.duree, 0)} s</td>`;
       tb.appendChild(tr);
     }
@@ -825,6 +847,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     const pl = $('liaison');
     pl.className = 'pastille ' + (sansDrone ? 'crit' : 'good');
     pl.textContent = sansDrone ? `Drone perdu · position à ±${fr(F.sigma * 100, 0)} cm` : 'Drone connecté';
+    const pr = $('liaison-rover');
+    const roverCoupe = F.liaison_rover === false;
+    pr.className = 'pastille ' + (roverCoupe ? 'crit' : 'good');
+    pr.textContent = roverCoupe ? 'Rover hors liaison · retour en cours' : 'Rover connecté';
 
     const ty = TYPES[K.type] || TYPES.survol;
     const lignes = [];
@@ -837,6 +863,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     }
     if (K.obstacle) lignes.push([K.type === 'choc' ? 'Point d\'impact' : 'Obstacle vu en', `x = ${fr(K.obstacle[0], 2)} m, y = ${fr(K.obstacle[1], 2)} m`]);
     if (K.restant != null) lignes.push(['Distance restante à la victime', `${fr(K.restant)} m`]);
+    if (K.instant != null) lignes.push(['Liaison perdue à', `t = ${fr(K.instant, 0)} s`]);
+    if (K.instant != null && K.point) lignes.push(['Dernier point connecté', `x = ${fr(K.point[0], 2)} m, y = ${fr(K.point[1], 2)} m`]);
+    if (K.type === 'reprise_rover' && S.zones_interdites[K.nz - 1]) {
+      const [zx, zy, zr] = S.zones_interdites[K.nz - 1];
+      lignes.push(['Zone interdite ajoutée', `centre x = ${fr(zx, 2)} m, y = ${fr(zy, 2)} m, rayon ${fr(zr, 1)} m`]);
+    }
     lignes.push(['Position du rover', `x = ${fr(F.pos[0], 2)} m, y = ${fr(F.pos[1], 2)} m`]);
     if (sansDrone) {
       lignes.push(['Incertitude de position', `±${fr(F.sigma * 100, 0)} cm (grandit de 2,5 cm par mètre)`]);

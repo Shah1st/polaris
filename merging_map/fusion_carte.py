@@ -144,6 +144,11 @@ class CarteFusion:
         # vis-a-vis de la carte du drone. Les obstacles que le rover voit lui-meme ne sont
         # pas concernes : il les voit par rapport a lui.
         self.marge_drone = 0.0
+        # Zones interdites (x, y, rayon) : pas des obstacles physiques mais des endroits ou il
+        # ne faut pas aller, par exemple la ou la liaison avec le rover a ete perdue. Le A* les
+        # traite comme des obstacles ; elles restent a part pour pouvoir etre retirees (relais
+        # radio) et pour que le drone ne vienne pas les « zoomer ».
+        self.zones_interdites = []
 
     # ---- geometrie --------------------------------------------------------
     def res(self, z):
@@ -282,7 +287,18 @@ class CarteFusion:
             )
         else:
             bloque = dilater(val == OBSTACLE, r)
+        if self.zones_interdites:
+            nh, nw = val.shape
+            xs = (np.arange(nw) + g.j0 // k + 0.5) * res
+            ys = (np.arange(nh) + g.i0 // k + 0.5) * res
+            for zx, zy, zr in self.zones_interdites:
+                rr = zr + self.rayon_robot
+                bloque |= (xs[None, :] - zx) ** 2 + (ys[:, None] - zy) ** 2 <= rr * rr
         return GrillePlan(val, bloque, g.i0 // k, g.j0 // k, res)
+
+    def interdire_zone(self, x, y, rayon):
+        """Ajoute une zone ou le rover ne doit plus aller (cercle de `rayon` m)."""
+        self.zones_interdites.append((float(x), float(y), float(rayon)))
 
     # ---- planification ----------------------------------------------------
     def _liberer_depart(self, plan, i, j):
