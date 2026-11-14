@@ -69,7 +69,7 @@ class GlobalMapNode(Node):
         self.declare_parameter('lightness_weight', 0.7)
         self.declare_parameter('floor_window', 1.0)
         self.declare_parameter('min_obstacle_area', 0.0005)
-        self.declare_parameter('cell_size', 0.025)
+        self.declare_parameter('cell_size', 0.05)
         self.declare_parameter('margin', 0.0)
         self.declare_parameter('rover_detection', 'size')
         self.declare_parameter('rover_size', [0.20, 0.23])

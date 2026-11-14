@@ -12,7 +12,10 @@ It writes, with the given prefix:
 - PREFIX_grid.png: the occupancy grid the node would publish on /map, drawn cell by cell
   (white free, grey obstacle, blue rover, black margin, light blue unknown);
 - PREFIX_grid.csv and PREFIX_grid.npy: the same grid as numbers, one per cell (0 free,
-  100 obstacle, 50 rover, 99 margin, -1 unknown), row 0 at y = 0.
+  100 obstacle, 50 rover, 99 margin, -1 unknown), row 0 at y = 0;
+- PREFIX_fusion.npy: the grid in the convention of the map fusion in merging_map
+  (1 obstacle, 0 free, -1 not seen), ready for its decouper() at level z = 4 when the
+  cell size is 5 cm.
 """
 
 import argparse
@@ -33,6 +36,7 @@ from guidance_global_map.segmentation import (
     build_cell_grid,
     find_blobs,
     find_rover_blob,
+    grid_to_fusion,
     grid_to_image,
     margin_cells,
     segment_obstacles,
@@ -75,7 +79,7 @@ def main(args: list[str] | None = None) -> None:
     parser.add_argument('--focal-length-35mm', type=float, default=26.0)
     parser.add_argument('--sensor-size', type=int, nargs=2, default=[4032, 3024], help='pixels')
     parser.add_argument('--resolution', type=float, default=0.005, help='detection, metres')
-    parser.add_argument('--cell-size', type=float, default=0.025, help='grid cell, metres')
+    parser.add_argument('--cell-size', type=float, default=0.05, help='grid cell, metres')
     parser.add_argument('--threshold', type=float, default=25.0)
     parser.add_argument('--lightness-weight', type=float, default=0.7)
     parser.add_argument('--floor-window', type=float, default=1.0, help='metres; 0 = global')
@@ -124,6 +128,7 @@ def main(args: list[str] | None = None) -> None:
     cv2.imwrite(f'{stem}_grid.png', grid_to_image(grid))
     np.save(f'{stem}_grid.npy', grid)
     np.savetxt(f'{stem}_grid.csv', grid, fmt='%d', delimiter=',')
+    np.save(f'{stem}_fusion.npy', grid_to_fusion(grid))
 
     print(f'area {bounds.x_max:.2f} x {bounds.y_max:.2f} m, {len(blobs)} blobs')
     if rover is None:

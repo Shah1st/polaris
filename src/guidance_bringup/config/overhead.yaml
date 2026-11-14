@@ -45,10 +45,12 @@ global_map_node:
     min_obstacle_area: 0.0005
     # Cell size of the grid published on /map; a whole multiple of `resolution`. A cell that an
     # obstacle touches anywhere is occupied (100). Cells under the rover are 50.
-    cell_size: 0.025
+    # 0.05 is the finest tile level (z = 4) of the map fusion in merging_map.
+    cell_size: 0.05
     # Free cells within this distance of an occupied cell, rounded up to whole cells, are marked
     # as margin (99). Off for now. Half the rover's width (0.115) lets a planner treat the rover
-    # as a point; with 2.5 cm cells that rounds up to 5 cells = 12.5 cm.
+    # as a point; with 5 cm cells that rounds up to 3 cells = 15 cm.
+    # Leave it off when the map goes to merging_map, which grows obstacles by 15 cm itself.
     margin: 0.0
     # size: the blob matching rover_size is the rover. marker: an ArUco marker on its top.
     rover_detection: size

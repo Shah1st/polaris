@@ -146,6 +146,19 @@ def segment_obstacles(
     return keep[labels] & usable
 
 
+def grid_to_fusion(grid: np.ndarray) -> np.ndarray:
+    """Convert the cell grid to the value convention of the map fusion (`merging_map`).
+
+    1 = obstacle, 0 = free and seen, -1 = not seen. The rover's own cells become free, since
+    the fusion takes the rover position separately, and margin cells become free, since the
+    fusion grows obstacles by the robot radius itself. Rows stay as they are: row 0 is south.
+    """
+    fusion = np.zeros(grid.shape, dtype=np.int8)
+    fusion[grid == OCCUPIED] = 1
+    fusion[grid == UNKNOWN] = -1
+    return fusion
+
+
 def grid_to_image(grid: np.ndarray, cell_px: int = 12) -> np.ndarray:
     """Draw an occupancy grid as a BGR picture, shown the way the area looks from above.
 

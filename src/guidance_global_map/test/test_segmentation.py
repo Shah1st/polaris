@@ -18,6 +18,7 @@ from guidance_global_map.segmentation import (
     build_cell_grid,
     find_blobs,
     find_rover_blob,
+    grid_to_fusion,
     grid_to_image,
     margin_cells,
     mask_to_grid,
@@ -249,3 +250,12 @@ def test_result_does_not_depend_on_unseen_area_around_the_view() -> None:
     assert alone[60, 115]
     assert np.array_equal(inside[30:150, 20:180], alone)
     assert not inside[~valid].any()
+
+
+def test_fusion_convention_keeps_obstacles_and_unseen_and_frees_the_rest() -> None:
+    grid = np.array([[OCCUPIED, FREE, UNKNOWN], [ROVER, MARGIN, OCCUPIED]], dtype=np.int8)
+
+    fusion = grid_to_fusion(grid)
+
+    assert fusion.dtype == np.int8
+    assert fusion.tolist() == [[1, 0, -1], [0, 0, 1]]

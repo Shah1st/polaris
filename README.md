@@ -77,7 +77,7 @@ The overhead camera is fixed and looks straight down at the floor. Its image arr
 | Node | Publishes | How |
 |---|---|---|
 | `calib_node` | `/overhead/image_to_map` (3x3 homography, row-major, latched) | Scale from the camera height and the lens. The map origin is the image's bottom-left corner, x right, y up. |
-| `global_map_node` | `/map` (`nav_msgs/OccupancyGrid`), `/rover/pose_overhead` (`geometry_msgs/PoseWithCovarianceStamped`), debug images `/overhead/debug/top_down` and `/overhead/debug/mask` | Resamples the image to a metric view at 5 mm. Pixels whose colour differs from the floor around them are obstacles. The obstacle blob that has the rover's size is the rover: its cells are marked on the map and its position is published. The map is a grid of 2.5 cm cells; a cell that an obstacle touches anywhere is occupied. |
+| `global_map_node` | `/map` (`nav_msgs/OccupancyGrid`), `/rover/pose_overhead` (`geometry_msgs/PoseWithCovarianceStamped`), debug images `/overhead/debug/top_down` and `/overhead/debug/mask` | Resamples the image to a metric view at 5 mm. Pixels whose colour differs from the floor around them are obstacles. The obstacle blob that has the rover's size is the rover: its cells are marked on the map and its position is published. The map is a grid of 5 cm cells; a cell that an obstacle touches anywhere is occupied. |
 | `rover_pose_node` | nothing in this setup | Only used with a marker on the rover (see below). |
 
 All parameters are in `src/guidance_bringup/config/overhead.yaml`. The ones to set for a new
@@ -107,7 +107,11 @@ python -m guidance_global_map.segment_image photo.jpg out/scene --camera-height 
 This writes `out/scene_overlay.jpg` (obstacles red, rover blue, each blob labelled with its size
 in centimetres), `out/scene_grid.png` (the map drawn cell by cell: white free, grey obstacle, blue rover)
 and the map as numbers in `out/scene_grid.csv` and `out/scene_grid.npy`, row 0 at y = 0.
-This is the same grid that `/map` carries.
+This is the same grid that `/map` carries. `out/scene_fusion.npy` is that grid in the value
+convention of the map fusion (`merging_map`): 1 obstacle, 0 free, -1 not seen.
+
+The whole pipeline, its outputs, what has been verified and what comes next are described in
+[docs/overhead-camera.md](docs/overhead-camera.md).
 
 **Running a saved photo or video through the nodes**
 
