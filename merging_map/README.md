@@ -16,6 +16,17 @@ cd merging_map
 python demo_fusion.py
 ```
 
+The simulated rover camera sees 2 m around the rover and **cannot see behind obstacles**
+(ray casting): hidden cells are sent as `-1`, exactly as the real rover must do.
+`Simu(..., occlusion=False)` brings back the unrealistic "X-ray" camera for comparison.
+
+A replay dashboard (drone + rover = merged maps, decisions step by step) is in `dashboard/`:
+
+```bash
+python merging_map/dashboard/export_trace.py      # re-run after changing the module
+python -m http.server 8765 --directory merging_map/dashboard
+```
+
 ![demo](demo_fusion.png)
 
 ## Instructions for the rover team: tile format

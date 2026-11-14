@@ -36,6 +36,10 @@ def idx(v):
     return int(round(v / RES))
 
 
+def idx_floor(v):
+    return int(math.floor(v / RES))
+
+
 def rect(m, x0, y0, x1, y1, v=OBSTACLE):
     m[idx(y0) : idx(y1), idx(x0) : idx(x1)] = v
 
@@ -46,9 +50,10 @@ def disque(m, cx, cy, r, v=OBSTACLE):
 
 
 class Simu:
-    def __init__(self, carte, verite, vu_par_drone, inconnu_drone=None):
+    def __init__(self, carte, verite, vu_par_drone, inconnu_drone=None, occlusion=True):
         self.carte, self.verite, self.vu_drone = carte, verite, vu_par_drone
         self.inconnu_drone = inconnu_drone  # zone que le drone n'a pas pu voir au 1er survol
+        self.occlusion = occlusion  # False = le rover voit a travers les obstacles (irrealiste)
         self.t = 0.0
 
     def vue_drone(self, z):
@@ -83,15 +88,33 @@ class Simu:
         )
 
     def capteur_rover(self, x, y):
-        """Ce que voit le rover : un disque de PORTEE_ROVER autour de lui (sans occlusion)."""
+        """Ce que voit le rover : un disque de PORTEE_ROVER autour de lui.
+        Avec occlusion, une case cachee derriere un obstacle est envoyee en -1 (pas vue)."""
         i0, i1 = max(0, idx(y - PORTEE_ROVER)), min(NC, idx(y + PORTEE_ROVER))
         j0, j1 = max(0, idx(x - PORTEE_ROVER)), min(NC, idx(x + PORTEE_ROVER))
         loc = self.verite[i0:i1, j0:j1].copy()
         yy, xx = np.mgrid[i0:i1, j0:j1]
         hors = ((xx + 0.5) * RES - x) ** 2 + ((yy + 0.5) * RES - y) ** 2 > PORTEE_ROVER**2
+        if self.occlusion:
+            hors |= self.cache(x, y, yy, xx)
         loc[hors] = INCONNU
         for msg in decouper(loc, j0 * RES, i0 * RES, self.carte.zmax, self.carte, 'rover', self.t):
             self.carte.recevoir(msg)
+
+    def cache(self, x, y, yy, xx):
+        """Lancer de rayons : une case est cachee si la ligne rover -> case traverse un
+        obstacle avant de l'atteindre. La face avant d'un obstacle reste visible, pas ce qu'il
+        y a derriere."""
+        cx, cy = (xx + 0.5) * RES, (yy + 0.5) * RES
+        n_pas = int(math.ceil(PORTEE_ROVER / (RES / 2)))
+        s = np.arange(1, n_pas)[:, None, None] / n_pas  # fractions du rayon, sans les extremites
+        px, py = x + (cx - x) * s, y + (cy - y) * s
+        pi = np.clip(np.floor(py / RES).astype(int), 0, NC - 1)
+        pj = np.clip(np.floor(px / RES).astype(int), 0, NC - 1)
+        sur_la_case = (pi == yy) & (pj == xx)
+        depart = (pi == idx_floor(y)) & (pj == idx_floor(x))
+        bloque = (self.verite[pi, pj] == OBSTACLE) & ~sur_la_case & ~depart
+        return bloque.any(axis=0)
 
 
 def avancer(pos, chemin, pas):

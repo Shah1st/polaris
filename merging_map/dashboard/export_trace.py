@@ -270,8 +270,9 @@ def mission_tracee(carte, simu, depart, victime, tolerance=0.5, max_tours=600):
     return tr
 
 
-def exporter(nom, description, monde):
+def exporter(nom, description, monde, occlusion=True):
     carte, simu, depart, victime = monde()
+    simu.occlusion = occlusion
     tr = mission_tracee(carte, simu, depart, victime)
     g = carte.grille(*ZONE)
     return {
@@ -304,10 +305,20 @@ def main():
     trace = {
         'scenarios': [
             exporter(
-                'Crête et tronc caché',
+                'Crête : caméra réaliste',
                 'Une crête barre la route, avec un passage de 70 cm que le drone ne voit pas '
-                'de haut. Un tronc couché sous les arbres est invisible depuis le ciel.',
+                'de haut. Un tronc couché sous les arbres est invisible depuis le ciel. La caméra '
+                'du rover ne voit pas derrière les obstacles : sur sa carte, les zones cachées '
+                'restent grises (-1).',
                 monde_1,
+            ),
+            exporter(
+                'Crête : vision à rayons X',
+                'Même terrain, mais le rover simulé voit à travers les obstacles, comme dans la '
+                'première version de la démo. À comparer avec la caméra réaliste : sa carte '
+                "n'a aucune ombre, il en sait plus que ce qu'un vrai rover pourrait voir.",
+                monde_1,
+                occlusion=False,
             ),
             exporter(
                 'Cratère fermé',
