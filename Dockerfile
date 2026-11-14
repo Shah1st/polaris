@@ -14,6 +14,7 @@ RUN echo 'Acquire::Retries "10";' > /etc/apt/apt.conf.d/80-retries \
         ros-jazzy-cv-bridge \
         ros-jazzy-image-publisher \
         python3-opencv \
+        python3-matplotlib \
         python3-pip \
         python3-pytest \
         git \
