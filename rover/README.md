@@ -123,8 +123,8 @@ connects. Settings: `gimbal_speed` (deg/s while a key is held), limits `pan_min`
 `pan_sign`/`tilt_sign` (-1 if an axis goes the wrong way), `gimbal_spd`/`gimbal_acc` (firmware
 servo speed and acceleration, 0 = fastest). API: `POST /gimbal` (see `rover_server.py`).
 
-Not yet checked on our rover: the boot mission sets `{"T":900,"main":1,"module":0}` (no
-module); the firmware source does not seem to block T:133 then, but this has to be confirmed.
+Checked on our rover (2026-11-15): T:133 moves both servos although the boot mission sets
+`{"T":900,"main":1,"module":0}` (no module). Pan +45 turns the camera right, tilt +30 up.
 
 ## Safety
 
