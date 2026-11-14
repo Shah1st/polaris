@@ -8,6 +8,8 @@ and decides what to do when the rover is blocked.
 | `fusion_carte.py` | The module: tile storage, fusion, A*, blocking decisions |
 | `demo_fusion.py` | Demo on a simulated world (needs `numpy` and `matplotlib`) |
 | `demo_fusion.png` | Output of the demo |
+| `test_fusion_carte.py` | pytest tests (fusion rules, tile cutting, planning, decisions) |
+| `conftest.py` | Lets pytest import `fusion_carte` from this folder |
 
 ```bash
 cd merging_map
@@ -80,5 +82,11 @@ actually passable, where would I go?" It then asks the drone to zoom on exactly 
 the drone confirms they are blocked, the rover goes to the closest reachable point and raises
 the alert.
 
-Code comments and identifiers are in French. The code is not yet adapted to the repo's ruff
-rules (single quotes, lowercase variable names).
+## Tests and lint
+
+```bash
+pytest merging_map                     # needs numpy (also run by a plain `pytest` from the root)
+ruff check merging_map && ruff format --check merging_map
+```
+
+Code comments and identifiers are in French.
