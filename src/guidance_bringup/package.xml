@@ -12,6 +12,7 @@
   <exec_depend>guidance_calib</exec_depend>
   <exec_depend>guidance_global_map</exec_depend>
   <exec_depend>guidance_rover_pose</exec_depend>
+  <exec_depend>guidance_rover_vo</exec_depend>
   <exec_depend>guidance_supervisor</exec_depend>
   <!-- TODO(bringup): add nav2_bringup / navigation2, robot_localization and camera drivers
        once they are launched from here. -->

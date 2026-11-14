@@ -1,0 +1,7 @@
+# Same rules as the repository, plus: math notation for cameras (K = intrinsics, T = pose),
+# http.server's do_GET/do_POST, and MuJoCo XML embedded in world.py (long lines).
+extend = "../ruff.toml"
+
+[lint.per-file-ignores]
+"*.py" = ["N802", "N803", "N806"]
+"world.py" = ["E501"]

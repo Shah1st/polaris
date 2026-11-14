@@ -5,6 +5,7 @@ Today this only starts the placeholder nodes.
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -16,6 +17,9 @@ GUIDANCE_NODES = [
     ('guidance_rover_vo', 'rover_vo_bridge_node'),
     ('guidance_supervisor', 'supervisor_node'),
 ]
+# Nodes started only when their launch argument is true (off by default, so a launch that
+# does not use them is unchanged).
+OPTIONAL_NODES = {'rover_vo_bridge_node': 'rover_vo'}
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -29,6 +33,11 @@ def generate_launch_description() -> LaunchDescription:
             output='screen',
             emulate_tty=True,
             arguments=['--ros-args', '--log-level', log_level],
+            condition=(
+                IfCondition(LaunchConfiguration(OPTIONAL_NODES[executable]))
+                if executable in OPTIONAL_NODES
+                else None
+            ),
             # TODO(bringup): pass a params file from config/ once nodes declare parameters.
         )
         for package, executable in GUIDANCE_NODES
@@ -49,6 +58,11 @@ def generate_launch_description() -> LaunchDescription:
         [
             DeclareLaunchArgument(
                 'log_level', default_value='info', description='Log level for all guidance nodes'
+            ),
+            DeclareLaunchArgument(
+                'rover_vo',
+                default_value='false',
+                description='Start the bridge from the rover mapper (runs on the host)',
             ),
             *nodes,
         ]

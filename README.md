@@ -54,7 +54,8 @@ it never publishes `map`, which belongs to the overhead camera. Known limits: me
 the floor is only about ±15% accurate so far; the pose can jump once or twice in the first
 seconds while the mapper calibrates (logged); the cloud includes the floor, so set
 `min_obstacle_height` in the costmap. Parameters: `host`, `port`, `odom_frame`, `base_frame`,
-`publish_tf`. Wire format: `guidance_rover_vo/protocol.py`.
+`publish_tf`. Wire format: `guidance_rover_vo/protocol.py`. `guidance.launch.py` starts it only
+with `rover_vo:=true`, so launches that do not use the mapper are unchanged.
 
 ## Dev environment
 
