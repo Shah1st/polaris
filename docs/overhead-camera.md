@@ -20,6 +20,8 @@ position on that map. It needs no markers on the floor or on the rover, and no t
 | 4 | **Rover.** Obstacle pixels are grouped into blobs and measured in metres. The blob whose size matches the rover is the rover. | `segmentation.find_blobs`, `find_rover_blob` |
 | 5 | **Grid.** The area is cut into 5 cm cells. A cell that an obstacle touches anywhere is an obstacle cell. | `segmentation.build_cell_grid` |
 
+`guidance_global_map/pipeline.py` (`process_image`) runs all five on one image.
+
 The logic is in plain Python modules with no ROS import. The ROS nodes
 (`calib_node.py`, `global_map_node.py`) only subscribe, call those modules and publish.
 
@@ -53,44 +55,78 @@ steps on one photo and writes the grid as a picture (`_grid.png`), as numbers (`
 
 ## Feeding the map fusion (`merging_map`, branch `mergingmap`)
 
-`merging_map/fusion_carte.py` merges drone and rover maps and plans the path. It is plain
-Python with no ROS and takes tiles, not `/map`. Nothing connects the two yet. What it expects
-from the drone side, and how this pipeline meets it:
+`merging_map` merges drone and rover maps, plans the path and drives the rover. It is plain
+Python with no ROS. It takes the drone's map as tiles, and its rover controller
+(`rover_reel.RaspRoverReel`) has slots for the drone side. `guidance_global_map/drone.py`
+fills them from this pipeline, also in plain Python:
 
-| It expects | This pipeline | Match |
-|---|---|---|
-| Values 1 obstacle, 0 free and seen, -1 not seen | 100 / 0 / -1, plus 50 for the rover | Converted by `segmentation.grid_to_fusion` |
-| Cells of 5 cm at the finest level (z = 4) | `cell_size: 0.05` | Yes |
-| Row 0 = south, columns towards +x | Same | Yes |
-| Cells aligned to the global grid | Grid starts at (0, 0) | Yes |
-| Unseen area sent as -1, never as free | Cells outside the photo are -1 | Yes |
-| 32 x 32 tiles as messages `{"source", "t", "z", "x", "y", "data"}` | A dense matrix | Cut with their `decouper()`, below |
-| Rover position passed separately to `decider()` | `/rover/pose_overhead` | Yes, without heading |
-| No margin from the sender (it grows obstacles by 15 cm itself) | `margin: 0.0` | Yes, keep it off |
+| What `merging_map` wants | What `OverheadDrone` gives |
+|---|---|
+| Drone tiles at the start (first survey) | `tiles()` |
+| `drone.disponible()` | True while the camera gives images |
+| `drone.zoomer(tile)` | Takes a new image and returns the tiles overlapping the requested one |
+| `position_drone()` -> rover (x, y, heading) or None | `position_drone`; needs the marker on the rover for the heading |
+| Planning area | `zone()`, to pass as `zone=` so paths stay inside the camera's view |
 
 ```python
-from fusion_carte import CarteFusion, decouper
-from guidance_global_map.segmentation import grid_to_fusion
+from cerveau import mission
+from fusion_carte import CarteFusion
+from rover_reel import RaspRoverReel, envoyeur_http
+from guidance_global_map.drone import OverheadDrone, image_file_reader
+from guidance_global_map.pipeline import OverheadSettings
 
-carte = CarteFusion()                       # 32 cells per tile, 5 cm at z = 4
-for msg in decouper(grid_to_fusion(grid), 0.0, 0.0, 4, carte, 'drone', t=now):
-    carte.recevoir(msg)
-decision = carte.decider((rover_x, rover_y), (goal_x, goal_y))
+camera = OverheadDrone(
+    image_file_reader('overhead.jpg'),            # or any function returning a BGR image
+    OverheadSettings(camera_height=1.9, rover_marker_id=10),
+)
+carte = CarteFusion()
+for message in camera.tiles():
+    carte.recevoir(message)
+rover = RaspRoverReel(carte, envoyer=envoyeur_http(...), lire_odometrie=..., percevoir=...,
+                      position_drone=camera.position_drone, drone=camera)
+mission(rover, carte, depart=..., victime=..., zone=camera.zone())
 ```
 
-Checked once by hand on photo IMG_4099 with the `mergingmap` code as of commit `c17375e`: the
-grid became 4 tiles, and `decider()` returned `SUIVRE` with a path for three different goals.
-One of the paths left the photo and crossed unseen ground: the fusion allows unknown cells at
-three times the cost.
+How the grid meets the tile format:
 
-Open points with the `mergingmap` author:
+| Tile format | This pipeline |
+|---|---|
+| Values 1 obstacle, 0 free and seen, -1 not seen | Converted from 100 / 0 / -1; the rover's own cells (50) are sent as free |
+| 5 cm cells at the finest level (z = 4), 32 x 32 cells per tile | `cell_size: 0.05`, cut by `drone.cut_tiles` |
+| Row 0 = south, tiles aligned to the global grid | Same; the grid starts at (0, 0) |
+| Unseen area sent as -1, never as free | Cells outside the image are -1 |
+| No margin from the sender (the planner grows obstacles itself) | `margin: 0.0`; keep it off |
 
-- How the tiles travel from this pipeline to the fusion (same process, a file, a socket, a ROS
-  topic). Not decided.
-- The frame. The fusion wants one global frame for drone and rover tiles. Here it is the
-  image's bottom-left corner, which only holds while the camera does not move.
-- The rover must place its own tiles in that frame, which needs its heading. This pipeline
-  does not give the heading yet.
+Checked by hand against the `mergingmap` code as of commit `3cd2056`, in a scratch folder,
+since that code is on another branch: `cut_tiles` gives exactly what their `decouper()` gives
+(photo IMG_4099 and 200 random matrices); their map accepts the tiles from `tiles()` and
+`zoomer()`; their planner returns a decision with `zone=camera.zone()`. `RaspRoverReel` and
+`mission` themselves were not run with the adapter.
+
+To import the adapter from their plain-Python side, put `src/guidance_calib`,
+`src/guidance_global_map` and `src/guidance_rover_pose` on `PYTHONPATH` (or source the built
+workspace) and have `opencv-contrib-python` and `numpy` installed.
+
+### Needed from the `mergingmap` author
+
+1. **Use the adapter**: feed `camera.tiles()` at the start, and pass `position_drone`, `drone`
+   and `zone` as in the snippet above.
+2. **Decide about the rover's heading.** `RaspRoverReel` assigns the heading from
+   `position_drone()` without checking it. Either the rover carries an ArUco marker (id 10,
+   `DICT_4X4_50`, top edge facing forward), which this pipeline already reads, or
+   `RaspRoverReel` accepts a position with no heading and keeps its odometry heading. Without
+   one of the two, `position_drone` returns None and the rover is treated as unseen.
+3. **Planner settings for our small area**, all arguments that exist already. On photo
+   IMG_4099 the defaults block 45% of the floor (10 cm planning cells, 15 cm radius rounded up
+   to 20 cm) and count a goal as reached 50 cm away. Proposed until a test drive gives real
+   numbers: `CarteFusion(niveau_plan=4, rayon_robot=0.115)` for a 15 cm margin, and
+   `tolerance=0.15`.
+4. **The frame.** Start, goal and rover-camera tiles must be in this pipeline's frame: origin
+   at the image's bottom-left corner, x right, y up, metres. It holds while the camera does
+   not move.
+5. **The demo test and matplotlib.** Without matplotlib installed, a plain `pytest` in the
+   container collected nothing at all once `merging_map` was in `testpaths`. The Dockerfile
+   on this branch now installs it; the image has to be rebuilt.
 
 ## Setting it up
 
@@ -110,7 +146,7 @@ handles a tilted camera and gives the rover's heading. See the README.
 
 ## What has been verified
 
-- Unit tests of the logic on synthetic images and masks, and node start-up tests: 35 tests,
+- Unit tests of the logic on synthetic images and masks, and node start-up tests: 45 tests,
   run in the dev container (ROS 2 Jazzy, OpenCV 4.6).
 - Six real photos (IMG_4097 to IMG_4102, floor mock-up, phone at 1.9 m) through the photo
   tool: all obstacles detected, the rover found in all six.
@@ -146,19 +182,21 @@ marker setup through the launched nodes; anything outdoors.
 
 ## Next steps, in order
 
-1. Agree with the `mergingmap` author on how tiles are sent and on the common frame, then
-   write the sender.
-2. Rover heading from its motion between frames. The rover needs it to place its own map.
+1. Run a mission of `merging_map` with the adapter on the real rover, with a marker on the
+   rover, once its author has done the points listed above.
+2. Rover heading without a marker, from its motion between frames.
 3. Check the scale with a tape measure on the floor.
-4. Live phone stream instead of saved photos, with its own scale numbers.
+4. Live phone stream instead of saved photos: a reader function for `OverheadDrone`, and
+   the stream's own scale (`metres_per_pixel`, measured with a ruler in view).
 5. Make rover detection sturdier than size alone (colour, or tracking from the last position).
 6. Later: tilted or moving camera without markers, uneven ground, a learned segmentation for
    outdoor scenes.
 
 ## For coding agents
 
-- Put logic in the plain modules (`ground_plane.py`, `segmentation.py`, `pose.py`) with a
-  pytest test. Keep the nodes to subscribing, calling and publishing.
+- Put logic in the plain modules (`ground_plane.py`, `segmentation.py`, `pipeline.py`,
+  `drone.py`, `pose.py`) with a pytest test. Keep the nodes to subscribing, calling and
+  publishing.
 - The grid values, the cell size, the frame and the row order are interfaces other parts
   depend on. Do not change them without updating this file and telling the team.
 - Check a change on real photos with `segment_image`, and look at the overlay, before calling
