@@ -98,7 +98,27 @@ dec = carte.decider(rover_position, victim_position)
 #   'SUIVRE'           -> dec['chemin']: list of (x, y) in metres
 #   'DEMANDER_DRONE'   -> dec['tuiles']: [(z, x, y), ...] for the drone to fly over lower
 #   'OBJECTIF_DEGRADE' -> dec['point']: closest reachable point to the victim, plus dec['chemin']
+
+# after each step: does the next 3 m of the path still avoid every known obstacle?
+if not carte.chemin_valide(remaining_path, horizon=3.0):
+    dec = carte.decider(rover_position, victim_position)
 ```
+
+Planning runs where the drone has surveyed (`carte.zone_survolee()`), stretched to include the
+rover and the victim, so the rover does not wander off the map. Pass `zone=(x0, y0, x1, y1)` to
+`decider()` to choose another area.
+
+## Path planning and scales
+
+* **A\*** on the z3 grid (10 cm cells), 8 directions (straight 1, diagonal 1.414, no corner
+  cutting), straight-line heuristic, so the path is the shortest one. Unknown cells cost 3×,
+  obstacles are grown by the robot radius (15 cm). Arrival = any free cell within 50 cm of
+  the victim.
+* Tile levels, 32×32 cells each: z0 = 80 cm cells (drone, first survey), z2 = 20 cm (drone
+  zoom), z3 = 10 cm (planning), z4 = 5 cm (rover). One first-survey drone cell covers
+  16 × 16 rover cells.
+* Typical timings on a laptop (25.6 m area): one A\* ≈ 0.12 s, a full decision ≈ 0.16 s,
+  the path check after each step ≈ 1 ms. Expect a few times slower on a Raspberry Pi.
 
 When no path exists, the module asks: "if the obstacles the drone only saw from far away were
 actually passable, where would I go?" It then asks the drone to zoom on exactly those tiles. If

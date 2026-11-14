@@ -231,3 +231,44 @@ def test_rover_obstacle_invalidates_path() -> None:
     assert not carte.chemin_valide(chemin, zone)
     nouveau = carte.decider(DEPART, VICTIME, zone=zone)
     assert nouveau['action'] == 'SUIVRE' and nouveau['chemin'] != chemin
+
+
+def test_default_zone_is_the_surveyed_area() -> None:
+    carte = carte_mur()
+    assert carte.zone_survolee() == (0.0, 0.0, 6.4, 6.4)
+    for z, tx, ty in [(1, 0, 1), (1, 1, 1)]:
+        data = vue_zoom(avec_passage=True)[ty * 16 : (ty + 1) * 16, tx * 16 : (tx + 1) * 16]
+        carte.recevoir({'source': 'drone', 't': 1, 'z': z, 'x': tx, 'y': ty, 'data': data})
+    dec = carte.decider(DEPART, VICTIME)  # no zone given
+    assert dec['action'] == 'SUIVRE'
+    # the path stays on the surveyed map and goes through the gap, not around the map edge
+    assert all(0.0 <= x <= 6.4 and 0.0 <= y <= 6.4 for x, y in dec['chemin'])
+    traversee = [x for x, y in dec['chemin'] if 3.2 <= y < 3.6]
+    assert traversee and all(2.0 <= x <= 2.6 for x in traversee)
+
+
+def test_default_zone_without_drone_tiles_uses_a_margin() -> None:
+    zone = petite_carte().zone_par_defaut((1.0, 1.0), (3.0, 2.0), marge=2.0)
+    assert zone == (-1.0, -1.0, 5.0, 4.0)
+
+
+def test_window_check_matches_a_full_map_check() -> None:
+    """premier_point_bloque only renders a window around the path: it must find the same
+    blocked point as a check on the whole map, obstacles just off the path included."""
+    carte = CarteFusion(n=16, res_fine=0.1, zmax=2, niveau_plan=2, niveau_zoom=1, rayon_robot=0.1)
+    for msg in decouper(np.zeros((16, 16)), 0, 0, 0, carte, 'drone'):
+        carte.recevoir(msg)
+    chemin = [(1.0 + 0.1 * k, 1.0 + 0.05 * k) for k in range(40)]
+    rng = np.random.default_rng(1)
+    for x, y in rng.uniform(1.0, 5.0, size=(12, 2)):
+        carte.signaler_obstacle(float(x), float(y), rayon=0.1)
+    zone = (0.0, 0.0, 6.4, 6.4)
+    plan = carte.grille_plan(carte.grille(*zone))
+    attendu = None
+    for x, y in chemin[1:]:
+        i, j = plan.ij(x, y)
+        if plan.dedans(i, j) and plan.bloque[i, j]:
+            attendu = (x, y)
+            break
+    assert carte.premier_point_bloque(chemin, zone) == attendu
+    assert carte.chemin_valide(chemin, zone) == (attendu is None)

@@ -263,54 +263,66 @@ class CarteFusion:
         return bloque
 
     def astar(self, plan, depart, objectif, tolerance, cout_inconnu=None):
-        """A* 8-connexe. Arrivee = n'importe quelle case libre a moins de `tolerance` m."""
+        """A* 8-connexe. Arrivee = n'importe quelle case libre a moins de `tolerance` m.
+
+        Couts : 1 par case droite, 1.4142 en diagonale, multiplies par `cout_inconnu` sur une
+        case inconnue. Heuristique : distance a vol d'oiseau (admissible -> chemin optimal).
+        Pour la vitesse, l'heuristique, les couts et les cases bloquees sont precalcules en
+        numpy puis lus dans des listes Python indexees par p = i * largeur + j."""
         si, sj = plan.ij(*depart)
         if not plan.dedans(si, sj):
             return None
-        bloque = self._liberer_depart(plan, si, sj)
-        gx, gy = objectif
-        tol_c = tolerance / plan.res
-
-        def h(i, j):
-            x, y = plan.xy(i, j)
-            return max(0.0, math.hypot(x - gx, y - gy) / plan.res - tol_c)
-
-        cout_inc = self.cout_inconnu if cout_inconnu is None else cout_inconnu
         nh, nw = plan.val.shape
-        meilleur = {(si, sj): 0.0}
-        parent = {}
-        tas = [(h(si, sj), 0.0, si, sj)]
-        voisins = [
-            (-1, 0, 1.0),
-            (1, 0, 1.0),
-            (0, -1, 1.0),
-            (0, 1, 1.0),
-            (-1, -1, 1.4142),
-            (-1, 1, 1.4142),
-            (1, -1, 1.4142),
-            (1, 1, 1.4142),
-        ]
+        cout_inc = self.cout_inconnu if cout_inconnu is None else cout_inconnu
+        res = plan.res
+        xs = (np.arange(nw) + plan.j0 + 0.5) * res
+        ys = (np.arange(nh) + plan.i0 + 0.5) * res
+        dist = np.hypot(xs[None, :] - objectif[0], ys[:, None] - objectif[1])
+        hgrille = np.maximum(0.0, dist / res - tolerance / res)
+        h = hgrille.ravel().tolist()
+        but = (hgrille == 0.0).ravel().tolist()
+        cout = np.where(plan.val == INCONNU, cout_inc, 1.0).ravel().tolist()
+        b = self._liberer_depart(plan, si, sj).ravel().tolist()
+
+        meilleur = [math.inf] * (nh * nw)
+        parent = [-1] * (nh * nw)
+        s = si * nw + sj
+        meilleur[s] = 0.0
+        tas = [(h[s], 0.0, s)]
+        diag = 1.4142
+        pop, push = heapq.heappop, heapq.heappush
         while tas:
-            _, g, i, j = heapq.heappop(tas)
-            if g > meilleur.get((i, j), math.inf):
+            _, g, p = pop(tas)
+            if g > meilleur[p]:
                 continue
-            if h(i, j) == 0.0:
-                chemin = [(i, j)]
-                while chemin[-1] in parent:
+            if but[p]:
+                chemin = [p]
+                while parent[chemin[-1]] >= 0:
                     chemin.append(parent[chemin[-1]])
-                return [plan.xy(a, b) for a, b in reversed(chemin)]
-            for di, dj, d in voisins:
-                a, b = i + di, j + dj
-                if not (0 <= a < nh and 0 <= b < nw) or bloque[a, b]:
-                    continue
-                if di and dj and (bloque[i, b] or bloque[a, j]):
-                    continue  # pas de diagonale entre deux obstacles
-                c = d * (cout_inc if plan.val[a, b] == INCONNU else 1.0)
-                ng = g + c
-                if ng < meilleur.get((a, b), math.inf):
-                    meilleur[(a, b)] = ng
-                    parent[(a, b)] = (i, j)
-                    heapq.heappush(tas, (ng + h(a, b), ng, a, b))
+                return [plan.xy(q // nw, q % nw) for q in reversed(chemin)]
+            i, j = divmod(p, nw)
+            haut, bas, gauche, droite = i > 0, i < nh - 1, j > 0, j < nw - 1
+            # meme ordre de voisins qu'avant : haut, bas, gauche, droite, puis diagonales
+            for ok, q in ((haut, p - nw), (bas, p + nw), (gauche, p - 1), (droite, p + 1)):
+                if ok and not b[q]:
+                    ng = g + cout[q]
+                    if ng < meilleur[q]:
+                        meilleur[q] = ng
+                        parent[q] = p
+                        push(tas, (ng + h[q], ng, q))
+            for ok, q, o1, o2 in (
+                (haut and gauche, p - nw - 1, p - nw, p - 1),
+                (haut and droite, p - nw + 1, p - nw, p + 1),
+                (bas and gauche, p + nw - 1, p + nw, p - 1),
+                (bas and droite, p + nw + 1, p + nw, p + 1),
+            ):
+                # pas de diagonale entre deux obstacles
+                if ok and not b[q] and not b[o1] and not b[o2]:
+                    ng = g + diag * cout[q]
+                    if ng < meilleur[q]:
+                        meilleur[q] = ng
+                        parent[q] = p
+                        push(tas, (ng + h[q], ng, q))
         return None
 
     def atteignable(self, plan, depart):
@@ -330,19 +342,44 @@ class CarteFusion:
                     pile.append((a, b))
         return vu
 
-    def chemin_valide(self, chemin, zone, horizon=None):
-        """Le chemin (ou ses `horizon` premiers metres) traverse-t-il un obstacle connu ?"""
-        plan = self.grille_plan(self.grille(*zone))
-        parcouru = 0.0
+    def premier_point_bloque(self, chemin, zone=None, horizon=None):
+        """Premier point du chemin (ou de ses `horizon` premiers metres) qui tombe sur un
+        obstacle connu, gonfle du rayon du robot. None si tout est libre.
+
+        Seule une fenetre autour de ce morceau de chemin est calculee, au lieu de toute la
+        carte : la marge couvre le gonflement des obstacles situes juste hors du chemin."""
+        morceau, parcouru = [], 0.0
         for n, (x, y) in enumerate(chemin):
             if n:
                 parcouru += math.hypot(x - chemin[n - 1][0], y - chemin[n - 1][1])
             if horizon is not None and parcouru > horizon:
                 break
+            morceau.append((x, y))
+        if len(morceau) < 2:
+            return None
+        res_plan = self.res(self.niveau_plan)
+        marge = self.rayon_robot + 2 * res_plan
+        xs, ys = [p[0] for p in morceau], [p[1] for p in morceau]
+        fenetre = [min(xs) - marge, min(ys) - marge, max(xs) + marge, max(ys) + marge]
+        if zone is not None:  # rien n'est bloque hors de la zone de travail
+            fenetre = [
+                max(fenetre[0], zone[0]),
+                max(fenetre[1], zone[1]),
+                min(fenetre[2], zone[2]),
+                min(fenetre[3], zone[3]),
+            ]
+            if fenetre[0] >= fenetre[2] or fenetre[1] >= fenetre[3]:
+                return None
+        plan = self.grille_plan(self.grille(*fenetre))
+        for x, y in morceau[1:]:
             i, j = plan.ij(x, y)
-            if n > 0 and plan.dedans(i, j) and plan.bloque[i, j]:
-                return False
-        return True
+            if plan.dedans(i, j) and plan.bloque[i, j]:
+                return x, y
+        return None
+
+    def chemin_valide(self, chemin, zone=None, horizon=None):
+        """Le chemin (ou ses `horizon` premiers metres) evite-t-il tous les obstacles connus ?"""
+        return self.premier_point_bloque(chemin, zone, horizon) is None
 
     # ---- decision ---------------------------------------------------------
     def _tuiles_inconnues_sur(self, plan, chemin):
@@ -382,20 +419,46 @@ class CarteFusion:
                     out.append(k)
         return out, chemin
 
+    def zone_survolee(self):
+        """Rectangle (x0, y0, x1, y1) couvert par les tuiles du drone, ou None."""
+        if not self.tuiles['drone']:
+            return None
+        rects = [self.rect_tuile(k) for k in self.tuiles['drone']]
+        return (
+            min(x for x, _, _ in rects),
+            min(y for _, y, _ in rects),
+            max(x + c for x, _, c in rects),
+            max(y + c for _, y, c in rects),
+        )
+
+    def zone_par_defaut(self, depart, objectif, marge=5.0):
+        """Zone de planification quand aucune n'est donnee : la zone survolee par le drone
+        (le robot ne part pas explorer hors de la carte), agrandie si besoin pour contenir
+        le depart et l'objectif. Sans tuile drone : depart et objectif +/- `marge` m."""
+        xs, ys = (depart[0], objectif[0]), (depart[1], objectif[1])
+        zone = self.zone_survolee()
+        if zone is None:
+            return (min(xs) - marge, min(ys) - marge, max(xs) + marge, max(ys) + marge)
+        m = 1.0
+        return (
+            min(zone[0], min(xs) - m),
+            min(zone[1], min(ys) - m),
+            max(zone[2], max(xs) + m),
+            max(zone[3], max(ys) + m),
+        )
+
     def decider(self, depart, objectif, zone=None, tolerance=0.5, marge=5.0, max_tuiles=2):
         """
+        `zone` : rectangle (x0, y0, x1, y1) ou planifier. Par defaut, la zone survolee par le
+        drone (voir zone_par_defaut).
+
         Retourne un dict :
           action = "SUIVRE"           -> chemin ; a_verifier = tuiles inconnues sur le chemin
                    "DEMANDER_DRONE"   -> tuiles (z, x, y) a survoler plus bas
                    "OBJECTIF_DEGRADE" -> point accessible le plus proche + chemin
         """
         if zone is None:
-            zone = (
-                min(depart[0], objectif[0]) - marge,
-                min(depart[1], objectif[1]) - marge,
-                max(depart[0], objectif[0]) + marge,
-                max(depart[1], objectif[1]) + marge,
-            )
+            zone = self.zone_par_defaut(depart, objectif, marge)
         g = self.grille(*zone)
         plan = self.grille_plan(g)
 

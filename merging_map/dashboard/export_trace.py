@@ -70,17 +70,7 @@ def longueur(chemin):
 
 def premier_point_bloque(carte, chemin, horizon=3.0):
     """Meme test que CarteFusion.chemin_valide, mais renvoie le point bloque."""
-    plan = carte.grille_plan(carte.grille(*ZONE))
-    parcouru = 0.0
-    for n, (x, y) in enumerate(chemin):
-        if n:
-            parcouru += math.dist(chemin[n - 1], (x, y))
-        if parcouru > horizon:
-            break
-        i, j = plan.ij(x, y)
-        if n > 0 and plan.dedans(i, j) and plan.bloque[i, j]:
-            return x, y
-    return None
+    return carte.premier_point_bloque(chemin, ZONE, horizon)
 
 
 # ----------------------------------------------------------------------------
