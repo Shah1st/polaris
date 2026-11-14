@@ -230,3 +230,22 @@ def test_rover_cells_are_marked_but_never_hide_an_obstacle() -> None:
     assert grid[3, 1] == OCCUPIED
     assert (grid == ROVER).sum() == 1
     assert tuple(grid_to_image(grid, cell_px=10)[5, 5]) == (255, 80, 0)
+
+
+def test_result_does_not_depend_on_unseen_area_around_the_view() -> None:
+    rng = np.random.default_rng(1)
+    view = np.clip(rng.normal(150, 6, (120, 160, 3)), 0, 255).astype(np.uint8)
+    view[:, :40] = (view[:, :40] * 0.6).astype(np.uint8)  # darker region up to the left edge
+    view[50:70, 100:130] = (0, 0, 255)
+    view[:, 150:] = 230  # light strip along the right edge
+    alone = segment_obstacles(view, np.ones(view.shape[:2], dtype=bool), floor_window_px=60)
+
+    padded = np.zeros((200, 260, 3), dtype=np.uint8)
+    padded[30:150, 20:180] = view
+    valid = np.zeros(padded.shape[:2], dtype=bool)
+    valid[30:150, 20:180] = True
+    inside = segment_obstacles(padded, valid, floor_window_px=60)
+
+    assert alone[60, 115]
+    assert np.array_equal(inside[30:150, 20:180], alone)
+    assert not inside[~valid].any()

@@ -96,6 +96,31 @@ def segment_obstacles(
     the whole view.
     """
     rows, cols = top_down.shape[:2]
+    if valid is not None:
+        # Work on the part the camera covers only. Otherwise the empty surround would leak into
+        # the blur and the floor estimate, and the result near the edges of the view would
+        # depend on how much larger the map area is than the view.
+        if not valid.any():
+            return np.zeros((rows, cols), dtype=bool)
+        seen_rows = np.flatnonzero(valid.any(axis=1))
+        seen_cols = np.flatnonzero(valid.any(axis=0))
+        box = (
+            slice(seen_rows[0], seen_rows[-1] + 1),
+            slice(seen_cols[0], seen_cols[-1] + 1),
+        )
+        if valid[box].shape != (rows, cols):
+            obstacles = np.zeros((rows, cols), dtype=bool)
+            obstacles[box] = segment_obstacles(
+                top_down[box],
+                valid[box],
+                None if ignore is None else ignore[box],
+                color_threshold,
+                lightness_weight,
+                min_area_px,
+                floor_window_px,
+            )
+            return obstacles
+
     usable = np.ones((rows, cols), dtype=bool)
     if valid is not None:
         usable &= valid
