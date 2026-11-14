@@ -11,6 +11,8 @@ import numpy as np
 
 OCCUPIED = 100
 MARGIN = 99
+# Not a nav_msgs/OccupancyGrid value: marks the rover in grids saved for inspection.
+ROVER = 50
 FREE = 0
 UNKNOWN = -1
 
@@ -121,12 +123,13 @@ def segment_obstacles(
 def grid_to_image(grid: np.ndarray, cell_px: int = 12) -> np.ndarray:
     """Draw an occupancy grid as a BGR picture, shown the way the area looks from above.
 
-    Free cells are white, obstacle cells grey, margin cells black, unknown cells light blue,
-    with a line between cells.
+    Free cells are white, obstacle cells grey, margin cells black, rover cells blue, unknown
+    cells light blue, with a line between cells.
     """
     colors = np.full((*grid.shape, 3), 255, dtype=np.uint8)
     colors[grid == OCCUPIED] = (150, 150, 150)
     colors[grid == MARGIN] = (0, 0, 0)
+    colors[grid == ROVER] = (255, 80, 0)
     colors[grid == UNKNOWN] = (230, 200, 150)
     image = cv2.resize(
         np.flipud(colors), None, fx=cell_px, fy=cell_px, interpolation=cv2.INTER_NEAREST
@@ -211,6 +214,7 @@ def build_cell_grid(
     resolution: float,
     cell_size: float,
     margin: float,
+    rover: np.ndarray | None = None,
 ) -> np.ndarray:
     """Build the planner's occupancy grid of `cell_size` cells from the fine obstacle mask.
 
@@ -218,6 +222,10 @@ def build_cell_grid(
     metres of an occupied cell, rounded up to whole cells, are MARGIN (99): with the margin
     set to half the rover's width, a planner can treat the rover as a point. Cells the camera
     does not see at all are UNKNOWN (-1). Row 0 is minimum y, as in `nav_msgs/OccupancyGrid`.
+
+    `obstacles` must not include the rover. With `rover` (the rover's mask), the cells it
+    touches are marked ROVER (50) unless an obstacle is in them too. That is for looking at
+    the grid; a planner needs those cells free, so the published map leaves it out.
     """
     factor = int(round(cell_size / resolution))
     if factor < 1 or abs(factor * resolution - cell_size) > 1e-9:
@@ -236,5 +244,7 @@ def build_cell_grid(
             (~occupied).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE
         )
         grid[distance <= reach + 1e-6] = MARGIN
+    if rover is not None:
+        grid[_any_per_cell(np.flipud(rover), factor)] = ROVER
     grid[occupied] = OCCUPIED
     return grid

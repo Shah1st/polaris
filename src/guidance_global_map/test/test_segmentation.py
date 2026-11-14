@@ -13,6 +13,7 @@ from guidance_global_map.segmentation import (
     FREE,
     MARGIN,
     OCCUPIED,
+    ROVER,
     UNKNOWN,
     build_cell_grid,
     find_blobs,
@@ -215,3 +216,17 @@ def test_grid_picture_is_upright_and_coloured_like_the_legend() -> None:
     assert tuple(image[5, 5]) == (0, 0, 0)  # margin: black
     assert tuple(image[5, 15]) == (230, 200, 150)  # unknown: light blue
     assert tuple(image[10, 5]) == (120, 120, 120)  # line between cells
+
+
+def test_rover_cells_are_marked_but_never_hide_an_obstacle() -> None:
+    obstacles = np.zeros((20, 20), dtype=bool)
+    obstacles[0, 9] = True  # top-down cell (0, 1)
+    rover = np.zeros((20, 20), dtype=bool)
+    rover[0:5, 0:10] = True  # top-down cells (0, 0) and (0, 1)
+
+    grid = build_cell_grid(obstacles, None, 0.005, 0.025, margin=0.0, rover=rover)
+
+    assert grid[3, 0] == ROVER
+    assert grid[3, 1] == OCCUPIED
+    assert (grid == ROVER).sum() == 1
+    assert tuple(grid_to_image(grid, cell_px=10)[5, 5]) == (255, 80, 0)

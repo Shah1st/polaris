@@ -103,8 +103,10 @@ python -m guidance_global_map.segment_image photo.jpg out/scene --camera-height 
 ```
 
 This writes `out/scene_overlay.jpg` (obstacles red, rover blue, each blob labelled with its size
-in centimetres), `out/scene_grid.png` (the map drawn cell by cell: white free, grey obstacle)
+in centimetres), `out/scene_grid.png` (the map drawn cell by cell: white free, grey obstacle, blue rover)
 and the map as numbers in `out/scene_grid.csv` and `out/scene_grid.npy`, row 0 at y = 0.
+In these files the rover's cells have the value 50. The map published on `/map` leaves
+them free, since the planner starts from there.
 
 **Running a saved photo or video through the nodes**
 

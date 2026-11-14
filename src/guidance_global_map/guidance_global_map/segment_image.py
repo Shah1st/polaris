@@ -10,9 +10,10 @@ It writes, with the given prefix:
 - PREFIX_overlay.jpg: the view from above with obstacles red, the rover blue, margin cells
   orange (only with --margin), and every blob labelled with its size in centimetres;
 - PREFIX_grid.png: the occupancy grid the node would publish on /map, drawn cell by cell
-  (white free, grey obstacle, black margin, light blue unknown);
+  (white free, grey obstacle, blue rover, black margin, light blue unknown), except that
+  the published map leaves the rover's cells free;
 - PREFIX_grid.csv and PREFIX_grid.npy: the same grid as numbers, one per cell (0 free,
-  100 obstacle, 99 margin, -1 unknown), row 0 at y = 0.
+  100 obstacle, 50 rover, 99 margin, -1 unknown), row 0 at y = 0.
 """
 
 import argparse
@@ -108,7 +109,14 @@ def main(args: list[str] | None = None) -> None:
     if rover is not None:
         obstacles = obstacles & ~rover.mask
     margin = options.margin
-    grid = build_cell_grid(obstacles, valid, options.resolution, options.cell_size, margin)
+    grid = build_cell_grid(
+        obstacles,
+        valid,
+        options.resolution,
+        options.cell_size,
+        margin,
+        rover=None if rover is None else rover.mask,
+    )
     factor = int(round(options.cell_size / options.resolution))
 
     options.prefix.parent.mkdir(parents=True, exist_ok=True)
