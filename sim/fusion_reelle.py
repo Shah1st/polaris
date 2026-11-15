@@ -176,6 +176,7 @@ class FusionReelle:
             args.perception, delai=8.0, age_max=args.age_max, fraiche=True
         )
         self.camera = None  # the overhead camera (OverheadDrone), with --drone-source
+        self.ia = None  # the vision model that finds the rover, with --drone-detecteur ia
         self.drone = {'etat': 'no drone camera (--drone-source)'}
         self.reinitialiser()
         if args.drone_source:
