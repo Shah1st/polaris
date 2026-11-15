@@ -182,6 +182,7 @@ class RoverSegments(RaspRoverReel):
         self._prevu = 0.0  # s : duree prevue du segment en cours d'envoi
         self._a_dormir = 0.0  # s : a dormir avant le premier GET /state apres le POST /path
         self._vies = 0  # redemarrages de l'Odometrie au dernier recalage du repere
+        self._poste = None  # GET /state d'avant le POST /path accepte du segment en cours
         super().__init__(
             carte,
             self._transmettre,
@@ -197,13 +198,35 @@ class RoverSegments(RaspRoverReel):
         avant = self.odo.etat
         reponse = self._brute(methode, chemin, corps)
         if reponse is not None and (methode, chemin) == ('GET', '/state'):
+            self._controler_segment(reponse)
             self.odo.nouvel_etat(reponse)
         if (methode, chemin) == ('POST', '/path'):
             if reponse is None:
                 reponse = self._recu(avant)
             if reponse is not None:
-                self._a_dormir = self._prevu
+                self._a_dormir, self._poste = self._prevu, avant
         return reponse
+
+    def _controler_segment(self, etat):
+        """Un segment accepte est en cours ou fini dans ctrl.history. Ni l'un ni l'autre : le
+        serveur l'a perdu sans trace (redemarrage invisible : pas de boot_id, odometre deja a
+        zero au depart ; ou /stop d'un autre client avant qu'il parte). Le rover a peut-etre
+        roule : sa position n'est plus connue, la mission s'arrete."""
+        if self._poste is None:
+            return
+        ctrl, ctrl0 = etat.get('ctrl') or {}, self._poste.get('ctrl') or {}
+        if (
+            ctrl.get('mode', 'idle') == 'idle'
+            and not ctrl.get('queued')
+            and ctrl.get('current') is None
+            and (ctrl.get('guard') or {}).get('state') not in ('backoff', 'hold')
+            and (ctrl.get('history') or [None])[0] == (ctrl0.get('history') or [None])[0]
+        ):
+            self._poste = None
+            raise ServeurRoverError(
+                'segment accepte puis disparu sans trace (serveur du rover redemarre, ou /stop '
+                "d'un autre client) : position du rover incertaine, mission arretee"
+            )
 
     def _recu(self, avant):
         """Reponse au POST /path perdue : un GET /state dit si le serveur l'a recu (pas en
@@ -258,10 +281,22 @@ class RoverSegments(RaspRoverReel):
         try:
             statut, etat = self._faire_un_pas('/path', corps, longueur)
         finally:
+            accepte = self._poste is not None
             self.delai_liaison, self._prevu, self._a_dormir = delai, 0.0, 0.0
+            self._poste = None
         if statut is None:
             return 'liaison', None
         if statut == 'redemarrage':
+            # le serveur a pu recevoir le segment juste apres son redemarrage, dans le repere
+            # de l'ancienne odometrie : on l'arrete
+            self.arreter()
+            if accepte:
+                # redemarrage PENDANT le segment : le rover en a roule une partie, que rien
+                # ne mesure plus (pas de camera du dessus pour recaler)
+                raise ServeurRoverError(
+                    'serveur du rover redemarre pendant un segment : position du rover '
+                    'incertaine, mission arretee'
+                )
             return statut, None
         patine = self._arret(statut, etat)
         if not (patine or statut == 'stalled'):

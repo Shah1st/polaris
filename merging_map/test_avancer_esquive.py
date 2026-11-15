@@ -217,6 +217,76 @@ def test_essai_n_envoie_aucun_post() -> None:
     assert any('[essai]' in ligne for ligne in lignes)
 
 
+def test_une_coupure_de_deux_minutes_pendant_un_segment_n_arrete_pas_la_mission() -> None:
+    """La liaison se coupe 2 minutes pendant le premier segment : le serveur le finit seul,
+    le pilote attend sans rien renvoyer, se recale quand la liaison revient et arrive."""
+    faux = FauxSegments(D, D, 0.0)
+    coupure = []
+
+    def avant(methode, chemin):
+        if (methode, chemin) == ('POST', '/path') and not coupure:
+            coupure.append(faux.t)
+            faux.coupure = (faux.t + 1.0, faux.t + 120.0)
+
+    issue, bilan, lignes = conduire(
+        faux, lent(faux, 1.5, 0, avant=avant), percevoir_faux(faux, []), distance=3.0
+    )
+    assert issue == 'arrive', lignes
+    assert any('liaison perdue' in ligne for ligne in lignes)
+    t0, t1 = faux.coupure
+    assert not [r for r in faux.requetes if t0 <= r[0] < t1 and r[1] == 'POST']
+    assert math.dist((faux.x, faux.y), (D + 3.0, D)) < 0.35
+
+
+def test_un_redemarrage_du_serveur_entre_deux_segments_est_rattrape() -> None:
+    """Le serveur redemarre (odometrie a zero, gyroscope 3 s) apres le premier segment, juste
+    avant le GET /state qui precede le second : le pilote reprend la derniere pose comme
+    origine, attend le rover et arrive au bon endroit."""
+    faux = FauxSegments(D, D, 0.0)
+    fait, vus = [], []
+
+    def avant(methode, chemin):
+        if chemin == '/state' and posts(faux, '/path') and faux.history and not fait:
+            vus.append(faux.t)  # le 1er voit le segment fini ; le 2e precede le suivant
+            if len(vus) == 2:
+                fait.append(faux.t)
+                faux.redemarrer()
+
+    issue, _, lignes = conduire(
+        faux, lent(faux, 0.0, 0, avant=avant), percevoir_faux(faux, []), distance=3.0
+    )
+    assert issue == 'arrive', lignes
+    assert fait and any('redemarre' in ligne for ligne in lignes), lignes
+    assert math.dist((faux.x, faux.y), (D + 3.0, D)) < 0.35
+
+
+@pytest.mark.parametrize('segment', [1, 2])
+def test_un_redemarrage_pendant_un_segment_arrete_la_mission(segment) -> None:
+    """Le serveur (sans boot_id) redemarre PENDANT un segment. Au premier, odometre a zero
+    au depart et historique vide : rien ne le trahit, sauf que le segment accepte n'est ni en
+    cours ni dans l'historique. Au second, l'odometre qui diminue le dit. Dans les deux cas le
+    rover a roule une partie du segment avant : sa position est perdue (pas de camera pour la
+    recaler). erreur_rover tout de suite, rover arrete, pas de segment depuis une pose
+    fausse."""
+    faux = FauxSegments(D, D, 0.0)
+    fait, debut = [], []
+    tick = faux._tick
+
+    def tick_et_redemarrage():  # aucune requete n'arrive pendant un segment : le monde decide
+        tick()
+        if len(posts(faux, '/path')) == segment and faux.mode == 'path' and not fait:
+            debut.append((faux.x, faux.y))
+            if math.dist(debut[0], (faux.x, faux.y)) > 0.3:
+                fait.append(faux.t)
+                faux.redemarrer()
+
+    faux._tick = tick_et_redemarrage
+    issue, bilan, lignes = conduire(faux, faux.requete, percevoir_faux(faux, []), distance=3.0)
+    assert issue == 'erreur_rover', lignes
+    assert fait and len(posts(faux, '/path')) == segment
+    assert bilan['fin'] - fait[0] < 15.0  # au premier GET /state apres la duree prevue
+
+
 # ---- faux serveur, liaison LENTE --------------------------------------------------------
 def boucle_par_pas(requete, percevoir, horloge, dormir, distance, pas=0.25, max_pas=80):
     """La boucle qui a roule sur le vrai rover le 15 novembre (avance_esquive.py) : un pas
