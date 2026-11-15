@@ -1,4 +1,5 @@
 import ARKit
+import AVFoundation
 import CoreImage
 import ImageIO
 import QuartzCore
@@ -58,8 +59,25 @@ final class ARPoseCapture: NSObject, ARSessionDelegate, @unchecked Sendable {
         settings.withLock { $0 = EncoderSettings(maxFPS: fps, quality: quality.compression) }
     }
 
+    /// The lenses ARKit can track with on this iPhone (its video formats' cameras).
+    static var trackableLenses: Set<CameraLens> {
+        Set(ARWorldTrackingConfiguration.supportedVideoFormats.compactMap { lens(of: $0) })
+    }
+
+    private static func lens(of format: ARConfiguration.VideoFormat) -> CameraLens? {
+        switch format.captureDeviceType {
+        case .builtInUltraWideCamera: .ultraWide
+        case .builtInWideAngleCamera: .wide
+        default: nil
+        }
+    }
+
     /// Starts (or restarts) the tracking: the world frame is reset where the phone is now.
-    func start(resolution: StreamResolution) {
+    /// `lens`: the lens asked for; ARKit's formats decide whether it is possible, and
+    /// `completion` gets the lens actually used (1× when this iPhone's ARKit has no ultra wide
+    /// format).
+    func start(resolution: StreamResolution, lens: CameraLens,
+               completion: @escaping @Sendable (CameraLens) -> Void) {
         queue.async { [self] in
             targetWidth = resolution.testPatternSize.width
             planes.removeAll()
@@ -68,8 +86,18 @@ final class ARPoseCapture: NSObject, ARSessionDelegate, @unchecked Sendable {
             let configuration = ARWorldTrackingConfiguration()
             configuration.worldAlignment = .gravity // y up, whatever the phone's attitude
             configuration.planeDetection = [.horizontal] // to find the floor
+            // The format of the wanted lens nearest to the chosen resolution, at least as wide.
+            let formats = ARWorldTrackingConfiguration.supportedVideoFormats
+                .filter { Self.lens(of: $0) == lens }
+            let wide = formats.filter { $0.imageResolution.width >= targetWidth }
+            if let format = (wide.isEmpty ? formats : wide)
+                .min(by: { abs($0.imageResolution.width - targetWidth) < abs($1.imageResolution.width - targetWidth) }) {
+                configuration.videoFormat = format
+            }
+            let used = Self.lens(of: configuration.videoFormat) ?? .wide
             session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
             running = true
+            completion(used)
         }
     }
 

@@ -98,7 +98,7 @@ Le format de `X-Pose` et le code Python qui le lit sont dans `air_ground/` (`REA
 Dans ce mode :
 
 - l'image est celle du capteur, en **paysage**, et ne suit plus l'orientation de l'iPhone (les paramètres de la caméra envoyés avec elle restent ainsi justes) ; elle est réduite à la résolution choisie ;
-- caméra arrière, objectif 1× seulement ; pas de grand angle ni de profondeur LiDAR sur `/depth` ;
+- caméra arrière ; objectif 1×, ou grand angle 0,5× (bouton 1× / 0,5×) si l'ARKit de cet iPhone sait suivre la position avec lui : `/status` dit lequel est utilisé (`"lens"`), et les paramètres de la caméra envoyés avec chaque image (`k` dans `X-Pose`) suivent l'objectif ; pas de profondeur LiDAR sur `/depth` ;
 - l'app ne montre pas d'aperçu : regarder le flux sur l'ordinateur ;
 - au démarrage, bouger doucement l'iPhone au-dessus du sol quelques secondes : `track` passe à `normal` et `floor_y` (la hauteur du sol) cesse d'être `null` ;
 - le repère repart de zéro à chaque redémarrage de la capture (changement de réglage, retour dans l'app) : `sid` change.

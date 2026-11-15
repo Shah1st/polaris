@@ -88,6 +88,8 @@ final class StreamModel {
     let lidarAvailable = CameraManager.hasLiDAR
     /// ARKit can track this iPhone's position.
     let arkitAvailable = ARPoseCapture.isSupported
+    /// Lens ARKit actually tracks with (its formats decide), while the ARKit mode runs.
+    private(set) var arkitLens: CameraLens?
 
     let camera = CameraManager()
     @ObservationIgnored private let arCapture = ARPoseCapture()
@@ -191,6 +193,7 @@ final class StreamModel {
     /// Lens of the camera being streamed; nil without a camera (test pattern, failure).
     var activeLens: CameraLens? {
         if case .camera(_, let lens, _) = captureSource { return lens }
+        if captureSource == .arkit { return arkitLens }
         return nil
     }
 
@@ -206,9 +209,10 @@ final class StreamModel {
     }
 
     /// The lens button and picker only make sense on the back camera of an iPhone that has
-    /// both, and not with the LiDAR on (it only works with the 1× lens).
+    /// both, and not with the LiDAR on (it only works with the 1× lens). In ARKit mode the
+    /// LiDAR switch does not apply: the lens is asked of ARKit.
     var canChooseLens: Bool {
-        ultraWideAvailable && position == .back && !lidar && !arkitActive
+        ultraWideAvailable && position == .back && (arkitActive || !lidar)
             && captureSource != .testPattern
     }
 
@@ -222,7 +226,9 @@ final class StreamModel {
         if case .failed(let message) = captureSource { return message }
         if case .failed(let message) = serverState { return message }
         if isLive {
-            if captureSource == .arkit { return "En direct · ARKit" }
+            if captureSource == .arkit {
+                return arkitLens == .ultraWide ? "En direct · ARKit · 0,5×" : "En direct · ARKit"
+            }
             if captureSource == .testPattern { return "En direct · mire" }
             if depthActive { return "En direct · LiDAR" }
             return activeLens == .ultraWide ? "En direct · grand angle" : "En direct"
@@ -293,7 +299,16 @@ final class StreamModel {
 
         if arkitActive {
             // ARKit owns the camera: the plain capture lets go of it first.
-            camera.stop { arCapture.start(resolution: resolution) }
+            let lens = self.lens
+            camera.stop {
+                arCapture.start(resolution: resolution, lens: lens) { [weak self] used in
+                    guard let self else { return }
+                    Self.onMain {
+                        self.arkitLens = used
+                        self.pushStreamInfo() // the lens actually in use, for /status
+                    }
+                }
+            }
             captureSource = .arkit
             configurationID += 1
             pushStreamInfo()
@@ -338,7 +353,7 @@ final class StreamModel {
             height: Int(frameSize.height),
             fps: fps,
             camera: position == .front ? "front" : "back",
-            lens: captureSource == .arkit ? CameraLens.wide.rawValue : (activeLens?.rawValue ?? "none"),
+            lens: activeLens?.rawValue ?? "none",
             depth: depthActive ? "lidar" : (lidarAvailable ? "off" : "unavailable"),
             pose: captureSource == .arkit ? "arkit" : (arkitAvailable ? "off" : "unavailable")
         ))

@@ -40,7 +40,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Position de la caméra")
                 } footer: {
-                    Text("Chaque image part avec la position et l'orientation de l'iPhone dans la pièce (en-tête X-Pose, aussi sur /pose) : une carte vue du dessus reste stable quand l'iPhone bouge. L'image est alors celle du capteur (paysage, objectif 1×), sans LiDAR.")
+                    Text("Chaque image part avec la position et l'orientation de l'iPhone dans la pièce (en-tête X-Pose, aussi sur /pose) : une carte vue du dessus reste stable quand l'iPhone bouge. L'image est alors celle du capteur (paysage), sans LiDAR ; le grand angle 0,5× si cet iPhone le permet avec ARKit.")
                 }
 
                 Section {
@@ -108,6 +108,12 @@ struct SettingsView: View {
     }
 
     private var lensFooter: String {
+        if model.arkitActive {
+            if model.lens == .ultraWide && model.arkitLens == .wide {
+                return "ARKit ne suit pas la position avec le grand angle sur cet iPhone : l'image reste en 1×."
+            }
+            return "En mode ARKit, l'objectif choisi est demandé à ARKit (le grand angle seulement si cet iPhone le permet). /status dit lequel est utilisé ; les paramètres de la caméra envoyés avec chaque image suivent l'objectif."
+        }
         if model.lidar && model.position == .back {
             return "Avec le LiDAR, la caméra arrière est en 1×."
         }
