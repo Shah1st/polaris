@@ -72,6 +72,9 @@
   #fstatus { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 12px;
              color:#c9d1db; font-size:13px; overflow-wrap:anywhere; }
   #fstatus b { color:var(--fg); }
+  .maptools { display:flex; gap:10px; align-items:center; font-size:13px; color:#c9d1db; }
+  .maptools button { background:#20262d; color:var(--fg); border:1px solid var(--line); border-radius:6px;
+                     padding:6px 12px; cursor:pointer; }
   @media (max-width: 1250px) { .pane { grid-template-columns:1fr; } .pane .feed { grid-column:auto; } }
   @media (max-width: 820px) { .app { grid-template-columns:1fr; grid-template-rows:auto 80vh; } }
 </style>
@@ -141,6 +144,7 @@
         <div class="video wide"><canvas id="droneCam" width="640" height="480"></canvas><span id="dinfo"></span></div>
       </figure>
       <div id="fstatus">Cartes : en attente…</div>
+      <div class="maptools"><button id="mapReset" type="button">Réinitialiser les cartes</button><span id="mapResetMsg"></span></div>
       <figure class="mapfig">
         <figcaption><b>1. Carte du rover</b><span id="aRover">–</span></figcaption>
         <canvas id="mRover"></canvas>
@@ -322,6 +326,18 @@ function showStatus(s) {
     + ` · tuiles : drone ${esc(dr.tuiles || 0)}, rover ${esc(s.tuiles_rover || 0)}`;
   el.innerHTML = html;
 }
+// Empty the maps of the live fusion: a new map starts from where the rover stands now.
+$('mapReset').addEventListener('click', async () => {
+  if (!confirm('Effacer les cartes (rover, fusionnée, trace) et repartir de la position actuelle du rover ?')) return;
+  const msg = $('mapResetMsg');
+  msg.textContent = 'réinitialisation…';
+  try {
+    const r = await fetch('/fusion/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    msg.textContent = r.status === 200 ? 'cartes réinitialisées' : 'refusé (HTTP ' + r.status + ') : cette fusion ne sait pas se réinitialiser';
+    for (const p of panels) p.got = 0;
+  } catch (e) { msg.textContent = 'fusion injoignable'; }
+  setTimeout(() => { msg.textContent = ''; }, 6000);
+});
 async function mapsLoop() {
   let round = 0;
   for (;;) {

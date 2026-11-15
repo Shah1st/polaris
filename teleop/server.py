@@ -28,6 +28,7 @@
                      one picture or the status of the live fusion, relayed from
                      --fusion (127.0.0.1:8094); nothing else is relayed
   POST /fusion/source {"source": "camera"|"d405"}  which rover sensor feeds the fusion
+  POST /fusion/reset   empty the maps of the live fusion (when the fusion offers it)
                      (simulation only: never reaches the robot)
   POST /api/client   what the browser measures (frames shown, delays), logged
   GET  /mission      the live page of the mission for the jury: map, rover, victim, path,
@@ -748,11 +749,11 @@ def make_handler(
                         body.get('press'),
                     )
                     return self._json({'ok': True, 'accepted': ok})
-                elif self.path == '/fusion/source':  # simulation only, relayed to the fusion
+                elif self.path in ('/fusion/source', '/fusion/reset'):  # relayed to the fusion
+                    name = self.path[len('/fusion/') :]
+                    data = {'source': str(body.get('source'))} if name == 'source' else {}
                     try:
-                        r = requests.post(
-                            f'{fusion}/source', json={'source': str(body.get('source'))}, timeout=4
-                        )
+                        r = requests.post(f'{fusion}/{name}', json=data, timeout=4)
                     except requests.RequestException as e:
                         return self._json(
                             {'error': f'fusion not running: {type(e).__name__}'}, 503
