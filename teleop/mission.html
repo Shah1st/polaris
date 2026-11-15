@@ -187,10 +187,11 @@ function dessiner(d) {
     ctx.restore();
     etiquette(num(cap) ? 'ROVER' : 'ROVER (cap inconnu)', rx, ry + 46, '#19c2ff');
   }
-  // Scale bar: 1 m, or 10 cm on a very small map.
-  const L = (x1 - x0) > 3 ? 1 : 0.1;
+  // Scale bar: 1 m, or 50 cm on the arena.
+  const L = (x1 - x0) > 3 ? 1 : 0.5;
+  ctx.fillStyle = '#000'; ctx.fillRect(16, H - 34, L * s + 8, 16);
   ctx.fillStyle = '#fff'; ctx.fillRect(20, H - 30, L * s, 8);
-  $('echelle').textContent = 'barre blanche : ' + (L === 1 ? '1 m' : '10 cm') + ' · nord en haut';
+  $('echelle').textContent = 'barre blanche : ' + (L === 1 ? '1 m' : '50 cm') + ' · nord en haut';
 }
 function etiquette(txt, x, y, couleur) {
   const ctx = $('carte').getContext('2d');
