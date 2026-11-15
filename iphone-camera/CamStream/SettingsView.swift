@@ -40,7 +40,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Position de la caméra")
                 } footer: {
-                    Text("Chaque image part avec la position et l'orientation de l'iPhone dans la pièce (en-tête X-Pose, aussi sur /pose) : une carte vue du dessus reste stable quand l'iPhone bouge. L'image est alors celle du capteur (paysage), sans LiDAR ; le grand angle 0,5× si cet iPhone le permet avec ARKit.")
+                    Text("Chaque image part avec la position et l'orientation de l'iPhone dans la pièce (en-tête X-Pose, aussi sur /pose) : une carte vue du dessus reste stable quand l'iPhone bouge. L'image est alors celle du capteur (paysage) ; avec le LiDAR activé (iPhone Pro), la profondeur part aussi avec la position ; sinon le grand angle 0,5× si cet iPhone le permet avec ARKit.")
                 }
 
                 Section {
@@ -104,10 +104,16 @@ struct SettingsView: View {
         if model.lidar && model.isLive && !model.depthActive {
             return "Profondeur indisponible avec cette caméra : le flux continue sans."
         }
+        if model.arkitActive {
+            return "Avec la position ARKit, chaque carte de profondeur part avec la position de la caméra (/depth, en-tête X-Pose), environ 5 fois par seconde : la hauteur de chaque point du sol, en mètres. Les points peu sûrs valent 0. Objectif 1×."
+        }
         return "Mesure la distance de chaque point (en mètres, jusqu'à environ 5 m), servie sur /depth ; aperçu sur /depth.jpg. Le flux vidéo passe alors par l'objectif 1× : le grand angle n'est pas disponible avec le LiDAR."
     }
 
     private var lensFooter: String {
+        if model.lidar && model.position == .back && model.lidarAvailable {
+            return "Avec le LiDAR, la caméra arrière est en 1×."
+        }
         if model.arkitActive {
             if model.lens == .ultraWide && model.arkitLens == .wide {
                 return "ARKit ne suit pas la position avec le grand angle sur cet iPhone : l'image reste en 1×."

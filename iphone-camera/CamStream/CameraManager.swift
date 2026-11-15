@@ -94,6 +94,8 @@ struct DepthFrame: Sendable {
     let videoRotation: Double
     /// `CACurrentMediaTime()` when the depth arrived.
     let time: CFTimeInterval
+    /// ARKit mode: the camera's pose for that depth map (the same JSON as `X-Pose`).
+    var pose: String? = nil
 }
 
 /// Source effectivement utilisée pour le flux.
@@ -179,8 +181,8 @@ final class CameraManager: NSObject, @unchecked Sendable {
 
     /// The newest depth map as a grey JPEG for a quick look: near is white, 5 m and beyond
     /// black, no measure black. In the sensor's own orientation, like `/depth`.
-    func depthPreviewJPEG() -> Data? {
-        guard let frame = latestDepth() else { return nil }
+    func depthPreviewJPEG(of given: DepthFrame? = nil) -> Data? {
+        guard let frame = given ?? latestDepth() else { return nil }
         var grey = [UInt8](repeating: 0, count: frame.width * frame.height)
         frame.metres.withUnsafeBytes { raw in
             let metres = raw.bindMemory(to: Float32.self)
@@ -226,6 +228,7 @@ final class CameraManager: NSObject, @unchecked Sendable {
         sessionQueue.async { [self] in
             if session.isRunning { session.stopRunning() }
             stopTestPattern()
+            depth.withLock { $0 = nil } // no stale depth once the camera is let go
             completion?()
         }
     }

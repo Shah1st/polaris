@@ -271,6 +271,9 @@ final class MJPEGServer: @unchecked Sendable {
                 if let k = frame.intrinsics {
                     headers["X-Depth-Intrinsics"] = k.map { String(format: "%.3f", $0) }.joined(separator: ",")
                 }
+                if let pose = frame.pose {
+                    headers["X-Pose"] = pose // ARKit mode: the camera's pose for this depth map
+                }
                 sendResponse(on: connection, status: "200 OK", contentType: "application/octet-stream",
                              body: frame.metres, headOnly: headOnly, headers: headers)
             } else {

@@ -225,7 +225,7 @@ struct ContentView: View {
     /// 1× / 0,5× like Apple's Camera app, yellow on the ultra wide. The front camera is always 1×.
     private var lensButton: some View {
         // the front camera and the LiDAR camera are always 1×
-        let shown: CameraLens = model.position == .back && (model.arkitActive || !model.lidar)
+        let shown: CameraLens = model.position == .back && !model.lidar
             ? (model.arkitActive ? (model.arkitLens ?? model.lens) : model.lens) : .wide
         let ultraWide = shown == .ultraWide
         return Button {

@@ -48,6 +48,13 @@ final class ARPoseCapture: NSObject, ARSessionDelegate, @unchecked Sendable {
     private var lastFrameSize: CGSize = .zero
     /// Horizontal planes ARKit has found so far (the floor, tables…).
     private var planes: [UUID: Plane] = [:]
+    /// The LiDAR depth is captured with the pose (`start(depth: true)` on a Pro iPhone).
+    private var wantsDepth = false
+    private var lastDepthTime: CFTimeInterval = 0
+    /// Depth maps are converted at most this often (s).
+    private let depthPeriod: CFTimeInterval = 0.2
+    /// The newest depth map and the camera's pose for it.
+    private let depth = OSAllocatedUnfairLock<DepthFrame?>(initialState: nil)
 
     override init() {
         super.init()
@@ -72,12 +79,22 @@ final class ARPoseCapture: NSObject, ARSessionDelegate, @unchecked Sendable {
         }
     }
 
+    /// ARKit gives the LiDAR depth with the pose on this iPhone (Pro models).
+    static var hasSceneDepth: Bool {
+        ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
+    }
+
+    /// The newest LiDAR depth map with its pose, or nil (no LiDAR, depth off, not running).
+    func latestDepth() -> DepthFrame? {
+        depth.withLock { $0 }
+    }
+
     /// Starts (or restarts) the tracking: the world frame is reset where the phone is now.
-    /// `lens`: the lens asked for; ARKit's formats decide whether it is possible, and
-    /// `completion` gets the lens actually used (1× when this iPhone's ARKit has no ultra wide
-    /// format).
-    func start(resolution: StreamResolution, lens: CameraLens,
-               completion: @escaping @Sendable (CameraLens) -> Void) {
+    /// `lens`: the lens asked for; ARKit's formats decide whether it is possible. `depth`: the
+    /// LiDAR depth too (it comes with the 1× lens only). `completion` gets the lens actually
+    /// used and whether the depth is captured.
+    func start(resolution: StreamResolution, lens: CameraLens, depth wantDepth: Bool,
+               completion: @escaping @Sendable (CameraLens, Bool) -> Void) {
         queue.async { [self] in
             targetWidth = resolution.testPatternSize.width
             planes.removeAll()
@@ -86,6 +103,8 @@ final class ARPoseCapture: NSObject, ARSessionDelegate, @unchecked Sendable {
             let configuration = ARWorldTrackingConfiguration()
             configuration.worldAlignment = .gravity // y up, whatever the phone's attitude
             configuration.planeDetection = [.horizontal] // to find the floor
+            let withDepth = wantDepth && Self.hasSceneDepth
+            let lens: CameraLens = withDepth ? .wide : lens // the LiDAR's depth is the 1× lens's
             // The format of the wanted lens nearest to the chosen resolution, at least as wide.
             let formats = ARWorldTrackingConfiguration.supportedVideoFormats
                 .filter { Self.lens(of: $0) == lens }
@@ -94,10 +113,20 @@ final class ARPoseCapture: NSObject, ARSessionDelegate, @unchecked Sendable {
                 .min(by: { abs($0.imageResolution.width - targetWidth) < abs($1.imageResolution.width - targetWidth) }) {
                 configuration.videoFormat = format
             }
+            if withDepth {
+                // smoothed over a few frames: steadier heights for a map
+                if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
+                    configuration.frameSemantics.insert(.smoothedSceneDepth)
+                } else {
+                    configuration.frameSemantics.insert(.sceneDepth)
+                }
+            }
+            wantsDepth = withDepth
+            depth.withLock { $0 = nil }
             let used = Self.lens(of: configuration.videoFormat) ?? .wide
             session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
             running = true
-            completion(used)
+            completion(used, withDepth)
         }
     }
 
@@ -108,6 +137,7 @@ final class ARPoseCapture: NSObject, ARSessionDelegate, @unchecked Sendable {
                 running = false
                 session.pause()
             }
+            depth.withLock { $0 = nil }
             completion?()
         }
     }
@@ -115,7 +145,9 @@ final class ARPoseCapture: NSObject, ARSessionDelegate, @unchecked Sendable {
     // MARK: - ARSessionDelegate (queue)
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        guard running, shouldEncodeFrame() else { return }
+        guard running else { return }
+        if wantsDepth { storeDepth(frame) } // even when no picture is encoded
+        guard shouldEncodeFrame() else { return }
 
         let resolution = frame.camera.imageResolution
         let scale = min(1, targetWidth / max(resolution.width, 1))
@@ -158,6 +190,59 @@ final class ARPoseCapture: NSObject, ARSessionDelegate, @unchecked Sendable {
     }
 
     // MARK: - Interne (queue)
+
+    /// Keeps the newest LiDAR depth (Float32 metres along the optical axis, the points of low
+    /// confidence set to 0) with the pose of its frame, at most every `depthPeriod`.
+    private func storeDepth(_ frame: ARFrame) {
+        let now = CACurrentMediaTime()
+        guard now - lastDepthTime >= depthPeriod,
+              let scene = frame.smoothedSceneDepth ?? frame.sceneDepth else { return }
+        lastDepthTime = now
+
+        let map = scene.depthMap
+        CVPixelBufferLockBaseAddress(map, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(map) else { return }
+        let width = CVPixelBufferGetWidth(map), height = CVPixelBufferGetHeight(map)
+        let rowBytes = CVPixelBufferGetBytesPerRow(map)
+
+        let confidence = scene.confidenceMap
+        if let confidence { CVPixelBufferLockBaseAddress(confidence, .readOnly) }
+        defer { if let confidence { CVPixelBufferUnlockBaseAddress(confidence, .readOnly) } }
+        let confidenceBase = confidence.flatMap { CVPixelBufferGetBaseAddress($0) }
+        let confidenceRow = confidence.map { CVPixelBufferGetBytesPerRow($0) } ?? 0
+        let medium = UInt8(ARConfidenceLevel.medium.rawValue)
+
+        var metres = Data(count: width * height * MemoryLayout<Float32>.size)
+        metres.withUnsafeMutableBytes { (out: UnsafeMutableRawBufferPointer) in
+            let dst = out.bindMemory(to: Float32.self)
+            for row in 0..<height {
+                let src = (base + row * rowBytes).assumingMemoryBound(to: Float32.self)
+                let conf = confidenceBase.map {
+                    ($0 + row * confidenceRow).assumingMemoryBound(to: UInt8.self)
+                }
+                for col in 0..<width {
+                    var d = src[col]
+                    if let conf, conf[col] < medium { d = 0 }
+                    dst[row * width + col] = d
+                }
+            }
+        }
+
+        let resolution = frame.camera.imageResolution
+        let k = frame.camera.intrinsics
+        let sx = Double(width) / Double(resolution.width)
+        let sy = Double(height) / Double(resolution.height)
+        let intrinsics = [Double(k.columns.0.x) * sx, Double(k.columns.1.y) * sy,
+                          Double(k.columns.2.x) * sx, Double(k.columns.2.y) * sy]
+        let scale = min(1, targetWidth / max(resolution.width, 1))
+        let size = CGSize(width: (resolution.width * scale).rounded(),
+                          height: (resolution.height * scale).rounded())
+        let pose = poseJSON(frame: frame, size: size, scale: Float(scale))
+        let stored = DepthFrame(width: width, height: height, metres: metres,
+                                intrinsics: intrinsics, videoRotation: 0, time: now, pose: pose)
+        depth.withLock { $0 = stored }
+    }
 
     private func store(_ anchors: [ARAnchor]) {
         for anchor in anchors {

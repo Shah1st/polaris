@@ -90,6 +90,8 @@ final class StreamModel {
     let arkitAvailable = ARPoseCapture.isSupported
     /// Lens ARKit actually tracks with (its formats decide), while the ARKit mode runs.
     private(set) var arkitLens: CameraLens?
+    /// ARKit captures the LiDAR depth with the pose.
+    private(set) var arkitDepth = false
 
     let camera = CameraManager()
     @ObservationIgnored private let arCapture = ARPoseCapture()
@@ -121,8 +123,9 @@ final class StreamModel {
         let camera = self.camera
         camera.hasViewers = { server.hasViewers }
         camera.onFrame = { jpeg in server.broadcast(jpeg) }
-        server.depthProvider = { camera.latestDepth() }
-        server.depthPreview = { camera.depthPreviewJPEG() }
+        let arDepth = self.arCapture
+        server.depthProvider = { arDepth.latestDepth() ?? camera.latestDepth() }
+        server.depthPreview = { camera.depthPreviewJPEG(of: arDepth.latestDepth()) }
         let arCapture = self.arCapture
         arCapture.hasViewers = { server.hasViewers }
         arCapture.onFrame = { jpeg, pose in server.broadcast(jpeg, pose: pose) }
@@ -200,6 +203,7 @@ final class StreamModel {
     /// True while the LiDAR depth is captured with the video.
     var depthActive: Bool {
         if case .camera(_, _, let depth) = captureSource { return depth }
+        if captureSource == .arkit { return arkitDepth }
         return false
     }
 
@@ -209,16 +213,16 @@ final class StreamModel {
     }
 
     /// The lens button and picker only make sense on the back camera of an iPhone that has
-    /// both, and not with the LiDAR on (it only works with the 1× lens). In ARKit mode the
-    /// LiDAR switch does not apply: the lens is asked of ARKit.
+    /// both, and not with the LiDAR on (its depth comes with the 1× lens only, with or
+    /// without ARKit).
     var canChooseLens: Bool {
-        ultraWideAvailable && position == .back && (arkitActive || !lidar)
-            && captureSource != .testPattern
+        ultraWideAvailable && position == .back && !lidar && captureSource != .testPattern
     }
 
-    /// The LiDAR switch: back camera of an iPhone that has one.
+    /// The LiDAR switch: back camera of an iPhone that has one (with ARKit too: the depth
+    /// then comes with the camera's pose).
     var canUseLiDAR: Bool {
-        lidarAvailable && position == .back && !arkitActive && captureSource != .testPattern
+        lidarAvailable && position == .back && captureSource != .testPattern
     }
 
     var statusText: String {
@@ -227,6 +231,7 @@ final class StreamModel {
         if case .failed(let message) = serverState { return message }
         if isLive {
             if captureSource == .arkit {
+                if arkitDepth { return "En direct · ARKit · LiDAR" }
                 return arkitLens == .ultraWide ? "En direct · ARKit · 0,5×" : "En direct · ARKit"
             }
             if captureSource == .testPattern { return "En direct · mire" }
@@ -300,12 +305,14 @@ final class StreamModel {
         if arkitActive {
             // ARKit owns the camera: the plain capture lets go of it first.
             let lens = self.lens
+            let depth = lidar && lidarAvailable
             camera.stop {
-                arCapture.start(resolution: resolution, lens: lens) { [weak self] used in
+                arCapture.start(resolution: resolution, lens: lens, depth: depth) { [weak self] used, withDepth in
                     guard let self else { return }
                     Self.onMain {
                         self.arkitLens = used
-                        self.pushStreamInfo() // the lens actually in use, for /status
+                        self.arkitDepth = withDepth
+                        self.pushStreamInfo() // the lens and depth actually in use, for /status
                     }
                 }
             }
