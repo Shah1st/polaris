@@ -102,6 +102,13 @@ def test_state_has_identity_and_strict_json(bench: Bench) -> None:
     assert s2['boot_id'] == s1['boot_id'] and s2['uptime_s'] >= s1['uptime_s']
 
 
+def test_page_is_served_with_its_fault_banner(bench: Bench) -> None:
+    code, headers, data = bench.request('GET', '/')
+    assert code == 200 and headers['Content-Type'].startswith('text/html')
+    page = data.decode()
+    assert page.count('id="faults"') == 1 and 'renderFaults(s)' in page
+
+
 def test_stop_count_counts_every_stop_even_on_an_idle_rover(bench: Bench) -> None:
     """A STOP on an idle rover leaves no trace in ctrl.history: stop_count shows it."""
     n0 = strict_json(bench.request('GET', '/state')[2])['stop_count']
