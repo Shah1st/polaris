@@ -8,12 +8,30 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Caméra") {
+                Section {
                     Picker("Caméra", selection: $model.position) {
                         Text("Arrière").tag(AVCaptureDevice.Position.back)
                         Text("Avant").tag(AVCaptureDevice.Position.front)
                     }
                     .pickerStyle(.segmented)
+                    Picker("Objectif", selection: $model.lens) {
+                        ForEach(CameraLens.allCases) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(!model.canChooseLens)
+                } header: {
+                    Text("Caméra")
+                } footer: {
+                    Text(lensFooter)
+                }
+
+                Section {
+                    Toggle("Profondeur LiDAR", isOn: $model.lidar)
+                        .disabled(!model.canUseLiDAR)
+                } header: {
+                    Text("LiDAR")
+                } footer: {
+                    Text(lidarFooter)
                 }
 
                 Section {
@@ -65,6 +83,32 @@ struct SettingsView: View {
             }
         }
         .presentationDetents([.medium, .large])
+    }
+
+    private var lidarFooter: String {
+        if !model.lidarAvailable {
+            return "Cet iPhone n'a pas de LiDAR (seuls les modèles Pro en ont un, depuis l'iPhone 12 Pro)."
+        }
+        if model.position == .front {
+            return "Le LiDAR n'existe qu'à l'arrière."
+        }
+        if model.lidar && model.isLive && !model.depthActive {
+            return "Profondeur indisponible avec cette caméra : le flux continue sans."
+        }
+        return "Mesure la distance de chaque point (en mètres, jusqu'à environ 5 m), servie sur /depth ; aperçu sur /depth.jpg. Le flux vidéo passe alors par l'objectif 1× : le grand angle n'est pas disponible avec le LiDAR."
+    }
+
+    private var lensFooter: String {
+        if model.lidar && model.position == .back {
+            return "Avec le LiDAR, la caméra arrière est en 1×."
+        }
+        if !model.ultraWideAvailable {
+            return "Cet iPhone n'a pas d'objectif grand angle : la caméra arrière reste en 1×."
+        }
+        if model.position == .front {
+            return "Le grand angle n'existe que sur la caméra arrière."
+        }
+        return "Grand angle 0,5× : champ environ deux fois plus large, distorsion corrigée par iOS. Après un changement d'objectif, remesurer l'échelle (mètres par pixel) de la carte vue du dessus."
     }
 }
 
