@@ -1,0 +1,5 @@
+numpy
+opencv-python<5
+scipy
+git+https://github.com/AdamSpannbauer/python_video_stab.git@e005882727939749a91e6e327a3a0fae7d09d5d4
+pytest

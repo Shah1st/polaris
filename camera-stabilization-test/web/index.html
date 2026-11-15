@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Video stabilization test</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; padding: 24px; background: #111; color: #eee; }
+    main { max-width: 1280px; margin: auto; }
+    .views { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    figure { margin: 0; background: #202020; }
+    img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #000; }
+    figcaption { padding: 10px; font-weight: 600; }
+    #status { margin-top: 16px; color: #aaa; white-space: pre-wrap; }
+    @media (max-width: 800px) { .views { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Video stabilization test</h1>
+    <section class="views">
+      <figure>
+        <img src="/video/raw" alt="Raw camera">
+        <figcaption>Raw camera</figcaption>
+      </figure>
+      <figure>
+        <img src="/video/stabilized" alt="Stabilized camera">
+        <figcaption>Stabilized</figcaption>
+      </figure>
+    </section>
+    <div id="status">Connecting...</div>
+  </main>
+  <script>
+    async function updateStatus() {
+      try {
+        const response = await fetch('/api/status', { cache: 'no-store' });
+        const status = await response.json();
+        document.getElementById('status').textContent =
+          `capture: ${status.capture_fps.toFixed(1)} fps\n` +
+          `processing: ${status.processing_fps.toFixed(1)} fps\n` +
+          `processing time: ${status.processing_ms.toFixed(1)} ms\n` +
+          `sequence: ${status.sequence}\n` +
+          `error: ${status.error || 'none'}`;
+      } catch (error) {
+        document.getElementById('status').textContent = `status error: ${error}`;
+      }
+    }
+    setInterval(updateStatus, 1000);
+    updateStatus();
+  </script>
+</body>
+</html>
