@@ -90,8 +90,8 @@ avant la mission.
   (0,84 ; 0,75) alors que le vrai rover était en (0,62 ; 1,33), et le cap est inconnu.
 - Hauteur du marqueur : `lancer_overhead.py` **n'a pas d'option pour elle** (pas de
   correction de parallaxe). La position vue est décalée vers l'extérieur d'environ
-  distance au centre de l'image x h / H (h hauteur du marqueur, H hauteur de la caméra) : environ
-  8 cm à 1 m du centre pour h = 0,15 m et H = 1,9 m. Centrez l'arène sous la caméra, mettez la
+  distance au centre de l'image x h / (H - h) (h hauteur du marqueur, H hauteur de la caméra) :
+  8 à 9 cm à 1 m du centre pour h = 0,15 m et H = 1,9 m. Centrez l'arène sous la caméra, mettez la
   caméra haut et le marqueur bas.
 
 Contrôle sur une image (écrit `salle_overlay.jpg` : obstacles en rouge, rover en bleu, rien
@@ -134,7 +134,8 @@ gauche de l'image**, x vers la droite, y vers le haut, en mètres. Depuis un pix
 `frame.jpg` de hauteur H pixels : x = u x mpp, y = (H - v) x mpp. La victime doit être dans la
 zone, sinon `ValueError ... hors de la zone`.
 
-Lire la sortie (exemple vérifié sur la photo d'essai, sans rover) :
+Lire la sortie (exemple assemblé à partir de deux essais à blanc vérifiés sur la photo d'essai :
+la ligne `Rover joint` contre `rover_server.py --sim`, les autres avec `--marqueur 10`) :
 
 ```
 Rover joint : liaison ESP32 True, gyroscope pret True, boot_id 122b409f3c60dd72
