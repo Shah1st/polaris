@@ -97,7 +97,8 @@ depends on the size of the place changes; the rover and its sensors are the same
 
 | Setting | `FIELD` | `ARENA` | Why |
 |---|---|---|---|
-| `step`, `careful_step` | 0.3, 0.15 m | same | the rover |
+| `step` | 0.3 m | 0.2 m (to try) | the rover drives straight to the end of a step and cuts the path's corners inside it; obstacles are 30 to 40 cm apart |
+| `careful_step` | 0.15 m | same | the rover |
 | `drone_wait_max` | 300 s | same | time, not distance |
 | `uncertainty_budget` | 0.6 m | 0.15 m | position error allowed without the drone, vs the passages (30 to 40 cm in the arena) |
 | `link_backoff` | 0.5 m | 0 | rover link lost: how far back before the last connected point |

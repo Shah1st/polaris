@@ -26,11 +26,11 @@ def test_field_keeps_the_former_values() -> None:
 
 
 def test_only_the_size_of_the_place_changes_in_the_arena() -> None:
-    assert (ARENA.step, ARENA.careful_step, ARENA.drone_wait_max) == (
-        FIELD.step,
+    assert (ARENA.careful_step, ARENA.drone_wait_max) == (
         FIELD.careful_step,
         FIELD.drone_wait_max,
     )
+    assert ARENA.step == 0.2 < FIELD.step
     assert ARENA.no_go_radius == 0 and ARENA.uncertainty_budget < FIELD.uncertainty_budget
 
 
