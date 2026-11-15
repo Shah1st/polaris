@@ -67,6 +67,10 @@ class Config:
     settle: float = 0.4  # s, pause after each move/turn before measuring the result
     task_timeout: float = 20.0  # s, give up a move/turn after this long
     stall_time: float = 1.5  # s, give up if the wheels do not move while commanded
+    # Give up a turn (or a pivot on a path) when the wheels turn in opposite directions but
+    # the gyro sees less than no_rotation_rate for no_rotation_time: rover lifted or stuck.
+    no_rotation_time: float = 2.0  # s
+    no_rotation_rate: float = 0.1  # rad/s
 
     # Calibration
     dist_scale: float = 1.0  # real distance / distance measured by the encoders
@@ -803,7 +807,26 @@ class Controller:
             return self._done('done', t)
         if self._failed(t):
             return 0.0, 0.0
-        return 0.0, direction * clamp(c.k_turn * remaining, c.w_min, c.w_max)
+        w = direction * clamp(c.k_turn * remaining, c.w_min, c.w_max)
+        if self._not_rotating(t, 0.0, w):
+            return 0.0, 0.0
+        return 0.0, w
+
+    def _not_rotating(self, t: float, v: float, w: float) -> bool:
+        """Pivoting on the spot, wheels turning, but the gyro sees no rotation: give up."""
+        c, o, k = self.cfg, self.odom, self._task
+        pivot = abs(v) < 0.02 and abs(w) >= 0.9 * c.w_min
+        wheels_turn = abs(o.L) > 0.01 or abs(o.R) > 0.01
+        if not (pivot and wheels_turn and o.gyro_alive(t)) or abs(o.yaw_rate) > c.no_rotation_rate:
+            k['norot_since'] = None
+            return False
+        if k.get('norot_since') is None:
+            k['norot_since'] = t
+            return False
+        if t - k['norot_since'] > c.no_rotation_time:
+            self._done('no rotation (lifted or blocked?)', t)
+            return True
+        return False
 
     def _path(self, t: float, dt: float) -> tuple[float, float]:
         c, o, k = self.cfg, self.odom, self._task
@@ -811,7 +834,7 @@ class Controller:
         v, w, done = k['follower'].update(o.x, o.y, o.heading, o.v, max(k['v_ramp'], c.v_min), c)
         if done:
             return self._done('done', t)
-        if self._failed(t):
+        if self._failed(t) or self._not_rotating(t, v, w):
             return 0.0, 0.0
         return v, w
 
@@ -912,12 +935,18 @@ class Controller:
 # --------------------------------------------------------------------------------------
 
 
-def find_esp32_port() -> str | None:
-    """First USB serial port that looks like the driver board."""
+def find_esp32_port(usb_only: bool = False) -> str | None:
+    """First USB serial port that looks like the driver board.
+
+    usb_only: only the Linux /dev/ttyUSB* and /dev/ttyACM* ports (on the rover), never a
+    guess among a laptop's COM ports.
+    """
     for pattern in ('/dev/ttyUSB*', '/dev/ttyACM*'):
         ports = sorted(glob.glob(pattern))
         if ports:
             return ports[0]
+    if usb_only:
+        return None
     try:  # Windows / macOS
         from serial.tools import list_ports
 

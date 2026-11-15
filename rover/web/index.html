@@ -88,6 +88,7 @@
   <span id="pMode" class="pill">…</span>
   <span id="pSim" class="pill warn" hidden>SIMULATION</span>
   <span class="spacer"></span>
+  <button id="bMode" title="Switch between the real rover and the simulated one">…</button>
   <button class="stop" id="bStop" title="Space or Esc">STOP</button>
 </header>
 
@@ -358,6 +359,19 @@ $('simDrift').oninput = () => {
 };
 
 function stopAll() { held.clear(); refreshPad(); gheld.clear(); refreshGpad(); post('/stop'); }
+
+// ---------------------------------------------------------------- real / simulation
+let modeNow = null;
+$('bMode').onclick = async () => {
+  const to = modeNow === 'sim' ? 'real' : 'sim';
+  const msg = to === 'sim'
+    ? 'Switch to the SIMULATED rover?\n\nThe real rover stops and is no longer driven. Everyone using this server (the cloud VM too) gets the simulation.'
+    : 'Switch back to the REAL rover?\n\nThe ESP32 reboots (~7 s): keep the rover still until "Gyro OK".';
+  if (!confirm(msg)) return;
+  $('bMode').disabled = true; $('bMode').textContent = 'Switching…';
+  const r = await post('/mode', { mode: to });
+  if (r && r.ok) { trail.length = 0; trueTrail.length = 0; drawn.length = 0; startVideo(); }
+};
 $('bStop').onclick = stopAll;
 
 // ---------------------------------------------------------------- measured moves
@@ -429,6 +443,10 @@ function render(s) {
   else pill('pCpu', 'CPU –');
   pill('pMode', c.mode.toUpperCase(), c.mode === 'idle' ? '' : 'ok');
   $('pSim').hidden = !s.sim;
+  modeNow = s.mode;
+  $('bMode').textContent = s.mode === 'sim' ? 'Simulation ▸ Real rover' : 'Real rover ▸ Simulation';
+  $('bMode').disabled = s.mode === 'sim' && !s.real_available;
+  $('bMode').title = $('bMode').disabled ? 'No real rover on this computer' : 'Switch between the real rover and the simulated one';
   $('camInfo').textContent = s.camera.error ? '— ' + s.camera.error : s.camera.fps ? `— ${s.camera.fps} fps` : '';
   if (s.camera.error) { $('videoMsg').hidden = false; $('videoMsg').textContent = s.camera.error; }
 

@@ -58,6 +58,7 @@ class FakeEsp32:
         self.pan = self.tilt = 0.0  # camera pan-tilt, deg (T:133)
         self.blocked = False  # True: wheels stuck (tests the stall detection)
         self.hand_rate = 0.0  # rad/s: someone turns the rover by hand, wheels still
+        self.lifted = False  # True: on its stand, the wheels turn in the air
         self.booted = True  # FakeSerial sets it False while "booting"
 
         self.x = self.y = self.yaw = 0.0  # true pose
@@ -115,6 +116,8 @@ class FakeEsp32:
 
         v = (self.wl + self.wr) / 2 * self.ground_ratio
         w_kin = (self.wr - self.wl) / self.TRACK
+        if self.lifted:
+            v = w_kin = 0.0
         # Skid steering: a slow pivot does not overcome the tyres' friction.
         if abs(v) < 0.02 and abs(w_kin) < 0.5:
             w_kin = 0.0

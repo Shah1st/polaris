@@ -573,3 +573,31 @@ def test_bias_calibration_waits_until_the_rover_is_still() -> None:
     s.run(4.5)
     assert s.odom.bias_ready
     assert s.odom.bias == pytest.approx(s.board.gyro_bias_raw * s.cfg.gyro_scale, abs=0.003)
+
+
+# -- rover lifted or stuck: a turn that does not turn -----------------------------------------
+
+
+def test_turn_gives_up_when_the_rover_does_not_rotate(sim: Sim) -> None:
+    sim.board.lifted = True  # on its stand: the wheels spin, the body does not turn
+    sim.start(Step('turn', 90.0), Step('move', 0.5))
+    t0 = sim.t
+    sim.run_until_idle()
+    h = sim.ctrl.history[0]
+    assert h['status'] == 'no rotation (lifted or blocked?)'
+    assert sim.t - t0 < 4.0  # not the 20 s timeout
+    assert len(sim.ctrl.history) == 1  # the next step was dropped
+
+
+def test_path_gives_up_when_the_pivot_does_not_rotate(sim: Sim) -> None:
+    sim.board.lifted = True
+    sim.start(Step.path([[0.0, 0.5]]))  # 90 deg to the left: starts with a pivot
+    sim.run_until_idle()
+    assert sim.ctrl.history[0]['status'] == 'no rotation (lifted or blocked?)'
+
+
+def test_slow_real_turn_is_not_mistaken_for_no_rotation(sim: Sim) -> None:
+    sim.board.turn_efficiency = 0.3  # very grippy floor: turns, but slowly
+    sim.start(Step('turn', 90.0))
+    sim.run_until_idle()
+    assert sim.ctrl.history[0]['status'] == 'done'
