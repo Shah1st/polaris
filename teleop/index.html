@@ -86,14 +86,14 @@
 <div class="app">
   <div class="side" id="side" tabindex="0">
     <h1>Real rover — teleop <span class="tag" id="link">offline</span></h1>
-    <div class="route" id="routeBig">VIA THE VM</div>
+    <div class="route" id="routeBig">VIA THIS COMPUTER (teleop server)</div>
     <div class="video"><canvas id="cam" width="640" height="480"></canvas><img id="camDirect" alt="" hidden>
       <span id="vinfo"></span></div>
     <label>Link <span id="route">–</span>
       <select id="route_sel">
         <option value="auto" selected>automatic</option>
         <option value="direct">direct (robot Wi-Fi)</option>
-        <option value="vm">via the VM</option>
+        <option value="vm">via this computer</option>
       </select></label>
     <label>Image
       <select id="preset">
@@ -484,10 +484,10 @@ function showRoute() {
   const mode = $('route_sel').value;
   let txt, c;
   if (direct) [txt, c] = robotSeen ? ['DIRECT LINK', 'ok'] : ['DIRECT — ROBOT UNREACHABLE', 'bad'];
-  else if (mode === 'direct') [txt, c] = ['NO DIRECT ADDRESS (--robot-lan) — VIA THE VM', 'bad'];
-  else [txt, c] = ['VIA THE VM', 'warn'];
+  else if (mode === 'direct') [txt, c] = ['NO DIRECT ADDRESS (--robot-lan) — VIA THIS COMPUTER (teleop server)', 'bad'];
+  else [txt, c] = ['VIA THIS COMPUTER (teleop server)', 'warn'];
   $('routeBig').textContent = txt; $('routeBig').className = 'route ' + c;
-  $('route').textContent = direct ? 'direct' : 'via the VM';
+  $('route').textContent = direct ? 'direct' : 'via this computer';
   $('route').className = c;
 }
 async function probe() {
