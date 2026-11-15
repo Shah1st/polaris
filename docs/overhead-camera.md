@@ -182,6 +182,14 @@ Plain Python: the fields of `OverheadSettings` (`pipeline.py`). ROS: the same na
     the scale follows the width;
   - any other shape: a crop, at the sensor's own scale. Right for a cropped photo; wrong for
     a video mode, which crops and resizes, hence one warning in the log.
+- **Another phone or lens** changes `focal_length_35mm` (and `sensor_size` if the photo size
+  differs). The 0.5x ultrawide lens of an iPhone 14 is 13 mm equivalent, still 4032 x 3024:
+  `--focale-35mm 13` for `lancer_overhead.py`, `--focal-length-35mm 13` for `segment_image`,
+  `focal_length_35mm: 13.0` in `overhead.yaml`. Each pixel then covers twice the ground
+  (0.000660 per metre of height; 1.25 mm at 1.9 m, a view of about 5.1 x 3.8 m). Not tried on
+  a real ultrawide photo. Its lens bends straight lines towards the edges of the picture, so
+  the scale is less even across the view than with the main lens; keep "Lens Correction" on
+  in the phone's camera settings, and keep the rover and the obstacles away from the edges.
 - **The mission checks the scale on the rover** (`lancer_overhead.etalonner_echelle`,
   `scale_check.py`). Before anything else the rover drives 15 cm and back. Its wheels say how
   far it went; the camera sees how far the one thing that moved went; the ratio corrects the
