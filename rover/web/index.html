@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rover Test Bench</title>
+<style>
+  :root {
+    --bg: #14171c; --panel: #1d2128; --panel2: #252a33; --line: #323843;
+    --text: #e6e9ee; --muted: #8c95a3; --accent: #4ea1ff; --ok: #3ecf8e;
+    --warn: #f5b942; --bad: #ff5d5d;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+           padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; }
+  .pill { padding: 3px 10px; border-radius: 99px; background: var(--panel2);
+          border: 1px solid var(--line); font-size: 12px; white-space: nowrap; }
+  .pill.ok { border-color: var(--ok); color: var(--ok); }
+  .pill.warn { border-color: var(--warn); color: var(--warn); }
+  .pill.bad { border-color: var(--bad); color: var(--bad); }
+  .spacer { flex: 1; }
+  main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, 1fr);
+         gap: 12px; padding: 12px 16px; max-width: 1500px; margin: 0 auto; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+            padding: 12px; margin-bottom: 12px; }
+  section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+               color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .video { position: relative; background: #000; border-radius: 8px; overflow: hidden;
+           aspect-ratio: 4 / 3; display: flex; align-items: center; justify-content: center; }
+  .video img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .video .msg { position: absolute; color: var(--muted); text-align: center; padding: 16px; }
+  canvas { width: 100%; aspect-ratio: 4 / 3; background: #101318; border-radius: 8px;
+           display: block; }
+  button { background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+           border-radius: 7px; padding: 7px 12px; font: inherit; cursor: pointer;
+           touch-action: manipulation; user-select: none; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.stop { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 700; }
+  button.held { background: var(--accent); border-color: var(--accent); color: #fff; }
+  input { background: var(--bg); color: var(--text); border: 1px solid var(--line);
+          border-radius: 7px; padding: 7px 9px; font: inherit; min-width: 0; }
+  input:focus { outline: 1px solid var(--accent); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .row:last-child { margin-bottom: 0; }
+  .row input[type=number] { width: 90px; }
+  .unit { color: var(--muted); }
+  .pad { display: grid; grid-template-columns: repeat(3, 64px); grid-template-rows: repeat(2, 52px);
+         gap: 6px; justify-content: center; margin: 4px 0 10px; }
+  .pad button { font-size: 20px; padding: 0; }
+  .help { color: var(--muted); font-size: 12px; text-align: center; }
+  .switch { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .switch input { width: 16px; height: 16px; accent-color: var(--accent); }
+  .status { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; }
+  .status b { color: var(--text); font-weight: 600; }
+  kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px;
+        padding: 0 5px; font-size: 11px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 12px; }
+  .kv .k { color: var(--muted); font-size: 11px; }
+  .kv .v { font-variant-numeric: tabular-nums; font-size: 15px; }
+  .task { padding: 8px 10px; border-radius: 7px; background: var(--panel2); margin-bottom: 10px;
+          font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  .err-ok { color: var(--ok); } .err-warn { color: var(--warn); } .err-bad { color: var(--bad); }
+  details summary { cursor: pointer; color: var(--muted); }
+  .settings { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+              gap: 6px 10px; margin: 10px 0; }
+  .settings label { display: flex; flex-direction: column; font-size: 11px; color: var(--muted); }
+  .settings input { width: 100%; }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+           background: var(--bad); color: #fff; padding: 8px 14px; border-radius: 8px;
+           display: none; max-width: 90vw; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Rover Test Bench</h1>
+  <span id="pLink" class="pill">ESP32 …</span>
+  <span id="pBatt" class="pill">Battery …</span>
+  <span id="pGyro" class="pill">Gyro …</span>
+  <span id="pCpu" class="pill">CPU …</span>
+  <span id="pMode" class="pill">…</span>
+  <span id="pSim" class="pill warn" hidden>SIMULATION</span>
+  <span class="spacer"></span>
+  <button class="stop" id="bStop" title="Space or Esc">STOP</button>
+</header>
+
+<main>
+  <div>
+    <section>
+      <h2>Camera <span id="camInfo" class="unit"></span></h2>
+      <div class="video">
+        <img id="video" alt="">
+        <div class="msg" id="videoMsg">Connecting to the camera…</div>
+      </div>
+    </section>
+    <section>
+      <h2>Path (odometry)</h2>
+      <canvas id="map" width="800" height="600"></canvas>
+      <div class="row" style="margin-top:8px">
+        <span class="unit" id="mapLegend">Grid 10 cm. Blue: estimated path.</span>
+        <span class="spacer"></span>
+        <button id="bZoomOut">−</button><button id="bZoomIn">+</button>
+        <button id="bReset" title="Pose back to 0, clears the path">Reset pose</button>
+      </div>
+    </section>
+  </div>
+
+  <div>
+    <section>
+      <h2>Drive</h2>
+      <div class="pad">
+        <span></span><button data-key="ArrowUp">▲</button><span></span>
+        <button data-key="ArrowLeft">◀</button><button data-key="ArrowDown">▼</button>
+        <button data-key="ArrowRight">▶</button>
+      </div>
+      <div class="help">Hold <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> (combine them for curves),
+        <kbd>Shift</kbd> = fast, <kbd>Space</kbd>/<kbd>Esc</kbd> = stop</div>
+      <div class="row" style="margin-top:10px">
+        <label class="switch" title="Uses the gyro to keep the rover straight (or turning at the asked speed) despite slopes and slipping wheels">
+          <input type="checkbox" id="assist"> Gyro steering assist
+        </label>
+        <span class="spacer"></span>
+        <span class="status" id="assistInfo"></span>
+      </div>
+      <div class="row" id="simRow" hidden>
+        <span class="unit">Sim drift</span>
+        <input type="range" id="simDrift" min="-0.4" max="0.4" step="0.05" value="0" style="flex:1">
+        <span class="status" id="simDriftVal">0.00 rad/s</span>
+      </div>
+    </section>
+
+    <section>
+      <h2>Camera pan-tilt</h2>
+      <div class="pad" id="gpad">
+        <span></span><button data-gkey="KeyW" title="Tilt up">Z</button><span></span>
+        <button data-gkey="KeyA" title="Pan left">Q</button><button data-gkey="KeyS" title="Tilt down">S</button>
+        <button data-gkey="KeyD" title="Pan right">D</button>
+      </div>
+      <div class="row">
+        <span class="status">Pan <b id="gPan">–</b> · Tilt <b id="gTilt">–</b></span>
+        <span class="spacer"></span>
+        <button id="bCenter" title="C">Center</button>
+      </div>
+      <div class="help">Hold <kbd>Z</kbd> up, <kbd>S</kbd> down, <kbd>Q</kbd> left, <kbd>D</kbd> right
+        (W/A/S/D on a QWERTY keyboard), <kbd>C</kbd> = center</div>
+    </section>
+
+    <section>
+      <h2>Measured moves</h2>
+      <div class="task" id="task">Idle</div>
+      <div class="row">
+        <input type="number" id="dist" value="50" step="1"> <span class="unit">cm</span>
+        <button class="primary" id="bFwd">Forward</button><button id="bBack">Backward</button>
+      </div>
+      <div class="row">
+        <input type="number" id="angle" value="90" step="1"> <span class="unit">°</span>
+        <button class="primary" id="bLeft">Turn left</button><button id="bRight">Turn right</button>
+      </div>
+      <div class="row">
+        <span class="unit">Quick:</span>
+        <button data-move="10">↑10 cm</button><button data-move="50">↑50 cm</button>
+        <button data-move="100">↑1 m</button><button data-turn="90">↺90°</button>
+        <button data-turn="-90">↻90°</button><button data-turn="180">180°</button>
+      </div>
+      <div class="row">
+        <input id="seq" value="F50 L90 F50 L90 F50 L90 F50 L90" style="flex:1" title="F/B = forward/backward cm, L/R = left/right degrees">
+        <button class="primary" id="bSeq">Run</button>
+      </div>
+      <div class="help" style="text-align:left">Sequence: <kbd>F50</kbd> forward 50 cm, <kbd>B20</kbd> backward,
+        <kbd>L90</kbd> left 90°, <kbd>R45</kbd> right. Default: a 50 cm square.</div>
+    </section>
+
+    <section>
+      <h2>Telemetry</h2>
+      <div class="grid" id="telemetry"></div>
+    </section>
+
+    <section>
+      <h2>Results <span class="unit">(measured by the rover once stopped)</span></h2>
+      <table>
+        <thead><tr><th>Step</th><th>Measured</th><th>Error</th><th>Fix</th><th>Time</th><th>Status</th></tr></thead>
+        <tbody id="history"><tr><td colspan="6" class="unit">No move yet</td></tr></tbody>
+      </table>
+    </section>
+
+    <section>
+      <details id="settingsBox">
+        <summary>Settings &amp; calibration</summary>
+        <div class="help" style="text-align:left;margin-top:8px">
+          <b>yaw_sign</b>: turn the rover left by hand, the heading must increase, else −1.
+          <b>dist_scale</b>: real distance (tape) ÷ distance measured.
+          <b>lag</b>: higher if it overshoots. <b>w_min</b>: higher if it does not pivot.
+        </div>
+        <div class="settings" id="settings"></div>
+        <div class="row">
+          <button class="primary" id="bSave">Save settings</button>
+          <button id="bGyro">Recalibrate gyro (keep still 2 s)</button>
+        </div>
+      </details>
+    </section>
+  </div>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let cfg = {};
+let state = null;
+
+// ---------------------------------------------------------------- HTTP helpers
+async function post(path, body = {}) {
+  try {
+    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify(body) });
+    const j = await r.json();
+    if (!r.ok) toast(j.error || r.statusText);
+    return j;
+  } catch (e) { toast('Rover unreachable: ' + e.message); }
+}
+let toastTimer;
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.style.display = 'block';
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = 'none', 3500);
+}
+
+// ---------------------------------------------------------------- video
+function startVideo() {
+  const img = $('video');
+  img.onload = () => $('videoMsg').hidden = true;
+  img.onerror = () => { $('videoMsg').hidden = false; $('videoMsg').textContent =
+    'No video. Retrying…'; setTimeout(startVideo, 2000); };
+  img.src = '/video_feed?t=' + Date.now();
+}
+
+// ---------------------------------------------------------------- manual driving
+const held = new Set();
+const ARROWS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+let fast = false, wasDriving = false;
+
+function manualCommand() {
+  const vmax = fast ? cfg.v_manual_fast : cfg.v_manual;
+  const wmax = fast ? cfg.w_manual_fast : cfg.w_manual;
+  const f = (held.has('ArrowUp') ? 1 : 0) - (held.has('ArrowDown') ? 1 : 0);
+  const t = (held.has('ArrowLeft') ? 1 : 0) - (held.has('ArrowRight') ? 1 : 0);
+  // Turning while moving: a gentler curve than a pivot.
+  return { v: f * (vmax || 0.15), omega: t * (wmax || 1.2) * (f ? 0.6 : 1) };
+}
+function refreshPad() {
+  document.querySelectorAll('.pad button[data-key]').forEach(b =>
+    b.classList.toggle('held', held.has(b.dataset.key)));
+}
+setInterval(() => {  // repeat while held: the server stops the rover after manual_timeout
+  if (held.size) { post('/cmd', manualCommand()); wasDriving = true; }
+  else if (wasDriving) { post('/cmd', { v: 0, omega: 0 }); wasDriving = false; }
+}, 100);
+
+function typing(e) { return e.target.tagName === 'INPUT'; }
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' || (e.key === ' ' && !typing(e))) {
+    e.preventDefault(); stopAll(); return;
+  }
+  if (typing(e)) return;
+  fast = e.shiftKey;
+  if (ARROWS.includes(e.key)) {
+    e.preventDefault();
+    if (!held.has(e.key)) { held.add(e.key); refreshPad(); post('/cmd', manualCommand()); }
+  }
+});
+document.addEventListener('keyup', (e) => {
+  fast = e.shiftKey;
+  if (held.delete(e.key)) refreshPad();
+});
+window.addEventListener('blur', () => { held.clear(); refreshPad(); });
+document.querySelectorAll('.pad button[data-key]').forEach(b => {
+  const on = (e) => { e.preventDefault(); b.setPointerCapture?.(e.pointerId);
+                      held.add(b.dataset.key); refreshPad(); post('/cmd', manualCommand()); };
+  const off = () => { held.delete(b.dataset.key); refreshPad(); };
+  b.addEventListener('pointerdown', on);
+  b.addEventListener('pointerup', off);
+  b.addEventListener('pointercancel', off);
+  b.addEventListener('lostpointercapture', off);
+});
+// ---------------------------------------------------------------- camera pan-tilt
+// e.code is the key's position, so Z/Q/S/D on AZERTY and W/A/S/D on QWERTY both work.
+const GKEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD'];
+const gheld = new Set();
+let wasPanning = false;
+function gimbalCommand() {
+  return { pan_rate: (gheld.has('KeyD') ? 1 : 0) - (gheld.has('KeyA') ? 1 : 0),
+           tilt_rate: (gheld.has('KeyW') ? 1 : 0) - (gheld.has('KeyS') ? 1 : 0) };
+}
+function refreshGpad() {
+  document.querySelectorAll('#gpad button').forEach(b =>
+    b.classList.toggle('held', gheld.has(b.dataset.gkey)));
+}
+setInterval(() => {
+  if (gheld.size) { post('/gimbal', gimbalCommand()); wasPanning = true; }
+  else if (wasPanning) { post('/gimbal', { pan_rate: 0, tilt_rate: 0 }); wasPanning = false; }
+}, 100);
+document.addEventListener('keydown', (e) => {
+  if (typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (GKEYS.includes(e.code)) {
+    e.preventDefault();
+    if (!gheld.has(e.code)) { gheld.add(e.code); refreshGpad(); post('/gimbal', gimbalCommand()); }
+  } else if (e.code === 'KeyC' && !e.repeat) {
+    post('/gimbal', { center: true });
+  }
+});
+document.addEventListener('keyup', (e) => { if (gheld.delete(e.code)) refreshGpad(); });
+window.addEventListener('blur', () => { gheld.clear(); refreshGpad(); });
+document.querySelectorAll('#gpad button').forEach(b => {
+  const on = (e) => { e.preventDefault(); b.setPointerCapture?.(e.pointerId);
+                      gheld.add(b.dataset.gkey); refreshGpad(); post('/gimbal', gimbalCommand()); };
+  const off = () => { gheld.delete(b.dataset.gkey); refreshGpad(); };
+  b.addEventListener('pointerdown', on);
+  b.addEventListener('pointerup', off);
+  b.addEventListener('pointercancel', off);
+  b.addEventListener('lostpointercapture', off);
+});
+$('bCenter').onclick = () => post('/gimbal', { center: true });
+
+// ---------------------------------------------------------------- steering assist
+$('assist').onchange = async () => {
+  await post('/config', { assist: $('assist').checked ? 1 : 0 });
+  await loadConfig();
+};
+$('simDrift').oninput = () => {
+  $('simDriftVal').textContent = (+$('simDrift').value).toFixed(2) + ' rad/s';
+  post('/sim', { drift: +$('simDrift').value });
+};
+
+function stopAll() { held.clear(); refreshPad(); gheld.clear(); refreshGpad(); post('/stop'); }
+$('bStop').onclick = stopAll;
+
+// ---------------------------------------------------------------- measured moves
+const cm = () => parseFloat($('dist').value) / 100;
+const deg = () => parseFloat($('angle').value);
+$('bFwd').onclick = () => post('/move', { distance: Math.abs(cm()) });
+$('bBack').onclick = () => post('/move', { distance: -Math.abs(cm()) });
+$('bLeft').onclick = () => post('/turn', { angle: Math.abs(deg()) });
+$('bRight').onclick = () => post('/turn', { angle: -Math.abs(deg()) });
+document.querySelectorAll('[data-move]').forEach(b =>
+  b.onclick = () => post('/move', { distance: +b.dataset.move / 100 }));
+document.querySelectorAll('[data-turn]').forEach(b =>
+  b.onclick = () => post('/turn', { angle: +b.dataset.turn }));
+
+function parseSequence(text) {
+  const steps = [];
+  for (const tok of text.trim().split(/[\s,;]+/).filter(Boolean)) {
+    const m = /^([FBLR])\s*(\d+(?:\.\d+)?)$/i.exec(tok);
+    if (!m) throw new Error(`"${tok}" is not a step (F50, B20, L90, R45)`);
+    const n = parseFloat(m[2]), k = m[1].toUpperCase();
+    steps.push(k === 'F' ? { move: n / 100 } : k === 'B' ? { move: -n / 100 }
+             : k === 'L' ? { turn: n } : { turn: -n });
+  }
+  if (!steps.length) throw new Error('empty sequence');
+  return steps;
+}
+$('bSeq').onclick = () => {
+  try { post('/sequence', { steps: parseSequence($('seq').value) }); }
+  catch (e) { toast(e.message); }
+};
+$('seq').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('bSeq').click(); });
+
+// ---------------------------------------------------------------- settings
+async function loadConfig() {
+  cfg = await (await fetch('/config')).json();
+  $('assist').checked = !!cfg.assist;
+  const box = $('settings'); box.innerHTML = '';
+  for (const [k, v] of Object.entries(cfg)) {
+    const l = document.createElement('label');
+    l.innerHTML = `${k}<input type="number" step="any" data-cfg="${k}" value="${v}">`;
+    box.appendChild(l);
+  }
+}
+$('bSave').onclick = async () => {
+  const body = {};
+  document.querySelectorAll('[data-cfg]').forEach(i => body[i.dataset.cfg] = parseFloat(i.value));
+  const r = await post('/config', body);
+  if (r && r.ok) { await loadConfig(); toast('Saved'); $('toast').style.background = 'var(--ok)';
+                   setTimeout(() => $('toast').style.background = '', 3600); }
+};
+$('bGyro').onclick = () => post('/calibrate_gyro');
+
+// ---------------------------------------------------------------- telemetry
+const fmt = (x, d = 2) => (x === null || x === undefined || Number.isNaN(x)) ? '–' : (+x).toFixed(d);
+function pill(id, text, cls) { const p = $(id); p.textContent = text; p.className = 'pill ' + (cls || ''); }
+
+function render(s) {
+  const o = s.odom, c = s.ctrl, L = s.link;
+  if (L.connected && L.rx_age !== null && L.rx_age < 1) pill('pLink', 'ESP32 OK', 'ok');
+  else pill('pLink', L.error ? 'ESP32: ' + L.error : 'ESP32: no data', 'bad');
+  if (s.battery_v) {
+    const v = s.battery_v, pct = Math.max(0, Math.min(100, (v - 9.6) / (12.6 - 9.6) * 100));
+    pill('pBatt', `Battery ${fmt(v, 2)} V (${pct.toFixed(0)}%)`, v < 10.2 ? 'bad' : v < 10.8 ? 'warn' : 'ok');
+  } else pill('pBatt', 'Battery –');
+  pill('pGyro', o.gyro_ready ? `Gyro OK (bias ${fmt(o.gyro_bias, 4)} rad/s)` : 'Gyro calibrating, keep still',
+       o.gyro_ready ? (o.heading_source === 'gyro' ? 'ok' : 'warn') : 'warn');
+  if (s.cpu_temp !== null) pill('pCpu', `CPU ${fmt(s.cpu_temp, 0)} °C`,
+       s.cpu_temp > 85 ? 'bad' : s.cpu_temp > 70 ? 'warn' : 'ok');
+  else pill('pCpu', 'CPU –');
+  pill('pMode', c.mode.toUpperCase(), c.mode === 'idle' ? '' : 'ok');
+  $('pSim').hidden = !s.sim;
+  $('camInfo').textContent = s.camera.error ? '— ' + s.camera.error : s.camera.fps ? `— ${s.camera.fps} fps` : '';
+  if (s.camera.error) { $('videoMsg').hidden = false; $('videoMsg').textContent = s.camera.error; }
+
+  // steering assist and pan-tilt
+  const a = c.assist;
+  const amode = { off: 'off', idle: 'ready', hold: 'holding heading', settling: 'settling',
+                  rate: 'tracking turn' }[a.mode] || a.mode;
+  $('assistInfo').innerHTML = !cfg.assist ? 'off'
+    : a.mode === 'hold' || a.mode === 'rate'
+      ? `<b>${amode}</b> · error ${fmt(a.err, 1)} ${a.err_unit === 'deg' ? '°' : '°/s'} · fix ${fmt(a.w_corr, 2)} rad/s`
+      : amode;
+  if (s.gimbal) { $('gPan').textContent = fmt(s.gimbal.pan, 0) + '°';
+                  $('gTilt').textContent = fmt(s.gimbal.tilt, 0) + '°'; }
+  $('simRow').hidden = !s.sim;
+
+  // current step
+  let t = 'Idle';
+  if (c.current) {
+    const cur = c.current, p = c.progress;
+    t = cur.kind === 'move'
+      ? `Moving ${fmt(cur.value * 100, 0)} cm — ${p === null ? 'settling' : fmt(p * 100, 1) + ' cm'}`
+      : `Turning ${fmt(cur.value, 0)}° — ${p === null ? 'settling' : fmt(p, 1) + '°'}`;
+  } else if (c.mode === 'manual') t = 'Manual';
+  if (c.queued.length) t += ` · ${c.queued.length} step(s) queued`;
+  $('task').textContent = t;
+
+  const rows = [
+    ['x', fmt(o.x, 3) + ' m'], ['y', fmt(o.y, 3) + ' m'], ['Heading', fmt(o.heading_deg, 1) + '°'],
+    ['Heading gyro', fmt(o.heading_gyro_deg, 1) + '°'], ['Heading wheels', fmt(o.heading_enc_deg, 1) + '°'],
+    ['Distance', fmt(o.distance * 100, 1) + ' cm'], ['Distance (counters)', o.counter_distance === null ? '–' : fmt(o.counter_distance * 100, 0) + ' cm'],
+    ['Wheel L', fmt(o.L, 3) + ' m/s'], ['Wheel R', fmt(o.R, 3) + ' m/s'], ['Speed', fmt(o.v, 3) + ' m/s'],
+    ['Cmd v', fmt(c.v_cmd, 3) + ' m/s'], ['Cmd ω', fmt(c.w_cmd, 2) + ' rad/s'], ['Yaw rate', fmt(o.yaw_rate_dps, 1) + ' °/s'],
+    ['Roll', fmt(s.roll_deg, 1) + '°'], ['Pitch', fmt(s.pitch_deg, 1) + '°'], ['Odometer', fmt(o.odometer, 2) + ' m'],
+  ];
+  if (s.sim_truth) rows.push(['True x (sim)', fmt(s.sim_truth.x, 3) + ' m'],
+                             ['True y (sim)', fmt(s.sim_truth.y, 3) + ' m'],
+                             ['True heading (sim)', fmt(s.sim_truth.heading_deg, 1) + '°']);
+  $('telemetry').innerHTML = rows.map(([k, v]) =>
+    `<div class="kv"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+
+  // results
+  const hist = c.history;
+  const key = JSON.stringify(hist);
+  if (key !== render.lastHist) {
+    render.lastHist = key;
+    $('history').innerHTML = hist.length ? hist.map(h => {
+      const move = h.kind === 'move';
+      const err = h.error, aerr = Math.abs(move ? err * 100 : err);
+      const cls = h.status !== 'done' ? 'err-bad' : aerr <= (move ? 1 : 2) ? 'err-ok' : aerr <= (move ? 3 : 5) ? 'err-warn' : 'err-bad';
+      return `<tr><td>${move ? (h.target >= 0 ? 'Forward ' : 'Backward ') + fmt(Math.abs(h.target) * 100, 0) + ' cm'
+                              : (h.target >= 0 ? 'Left ' : 'Right ') + fmt(Math.abs(h.target), 0) + '°'}</td>
+        <td>${move ? fmt(h.distance * 100, 1) + ' cm' + (h.counter_distance !== undefined ? ` <span class="unit">(counters ${fmt(h.counter_distance * 100, 0)})</span>` : '') : fmt(h.turned_deg, 1) + '°'}</td>
+        <td class="${cls}">${move ? fmt(err * 100, 1) + ' cm' : fmt(err, 1) + '°'}</td>
+        <td>${h.corrections || ''}</td><td>${fmt(h.duration, 1)} s</td>
+        <td class="${h.status === 'done' ? '' : 'err-bad'}">${h.status}</td></tr>`;
+    }).join('') : '<tr><td colspan="6" class="unit">No move yet</td></tr>';
+  }
+  drawMap(s);
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/state');
+    state = await r.json();
+    render(state);
+  } catch (e) {
+    pill('pLink', 'Server unreachable', 'bad');
+  }
+  setTimeout(poll, 150);
+}
+
+// ---------------------------------------------------------------- map
+const trail = [], trueTrail = [];
+let zoom = 200;  // pixels per metre
+function pushPoint(arr, x, y) {
+  const last = arr[arr.length - 1];
+  if (!last || Math.hypot(x - last[0], y - last[1]) > 0.005) arr.push([x, y]);
+  if (arr.length > 5000) arr.shift();
+}
+function drawMap(s) {
+  const o = s.odom;
+  pushPoint(trail, o.x, o.y);
+  if (s.sim_truth) pushPoint(trueTrail, s.sim_truth.x, s.sim_truth.y);
+  const cv = $('map'), g = cv.getContext('2d'), W = cv.width, H = cv.height;
+  // Rover-centred view, x forward = up, y left = left.
+  const px = (x, y) => [W / 2 - (y - o.y) * zoom, H / 2 - (x - o.x) * zoom];
+  g.fillStyle = '#101318'; g.fillRect(0, 0, W, H);
+  const step = zoom >= 80 ? 0.1 : 0.5;
+  g.lineWidth = 1;
+  const span = Math.max(W, H) / zoom / 2 + step;
+  for (let k = Math.floor((o.x - span) / step); k <= (o.x + span) / step; k++) {
+    g.strokeStyle = k % 10 === 0 ? '#3a414d' : '#22272f';
+    const [, yy] = px(k * step, 0); g.beginPath(); g.moveTo(0, yy); g.lineTo(W, yy); g.stroke();
+  }
+  for (let k = Math.floor((o.y - span) / step); k <= (o.y + span) / step; k++) {
+    g.strokeStyle = k % 10 === 0 ? '#3a414d' : '#22272f';
+    const [xx] = px(0, k * step); g.beginPath(); g.moveTo(xx, 0); g.lineTo(xx, H); g.stroke();
+  }
+  const line = (arr, color) => {
+    if (arr.length < 2) return;
+    g.strokeStyle = color; g.lineWidth = 3; g.beginPath();
+    arr.forEach(([x, y], i) => { const [a, b] = px(x, y); i ? g.lineTo(a, b) : g.moveTo(a, b); });
+    g.stroke();
+  };
+  line(trueTrail, 'rgba(62, 207, 142, .55)');
+  line(trail, '#4ea1ff');
+  const [ox, oy] = px(0, 0);
+  g.strokeStyle = '#f5b942'; g.lineWidth = 2; g.beginPath(); g.arc(ox, oy, 6, 0, 7); g.stroke();
+  // rover
+  const h = o.heading_deg * Math.PI / 180, c = Math.cos(h), sn = Math.sin(h);
+  const body = [[0.12, 0.09], [0.12, -0.09], [-0.12, -0.09], [-0.12, 0.09]]
+    .map(([x, y]) => px(o.x + c * x - sn * y, o.y + sn * x + c * y));
+  g.fillStyle = 'rgba(78, 161, 255, .25)'; g.strokeStyle = '#e6e9ee'; g.lineWidth = 2;
+  g.beginPath(); body.forEach(([a, b], i) => i ? g.lineTo(a, b) : g.moveTo(a, b)); g.closePath();
+  g.fill(); g.stroke();
+  const [hx, hy] = px(o.x + 0.2 * c, o.y + 0.2 * sn), [cx, cy] = px(o.x, o.y);
+  g.strokeStyle = '#f5b942'; g.beginPath(); g.moveTo(cx, cy); g.lineTo(hx, hy); g.stroke();
+  $('mapLegend').textContent = `Grid ${step * 100} cm. Blue: estimated path` +
+    (s.sim_truth ? ', green: true path (sim).' : '.');
+}
+$('bZoomIn').onclick = () => zoom = Math.min(800, zoom * 1.5);
+$('bZoomOut').onclick = () => zoom = Math.max(20, zoom / 1.5);
+$('bReset').onclick = async () => { await post('/reset_odom'); trail.length = 0; trueTrail.length = 0; };
+
+loadConfig().then(() => { startVideo(); poll(); });
+</script>
+</body>
+</html>
