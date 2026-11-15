@@ -127,6 +127,26 @@ corners, a square and a circle, 3 cm on an S curve; the end point is reached wit
 Not yet: obstacles (a planner or the depth camera will have to replace or stop the path), and
 the odometry drifts over long runs (no absolute position until the overhead camera).
 
+## Tilt safety (anti-tipping)
+
+Roll (sideways, + = left side up) and pitch (nose, + = nose up) come from a complementary
+filter: the gyro (gx, gy) for fast changes, the accelerometer for the long term (trusted much
+less during bumps). Their rates and angular accelerations are watched too.
+
+- Between `*_warn_deg` and `*_stop_deg` the rover slows down (down to `tilt_min_scale`).
+- At `*_stop_deg`, or when it is **tipping** (tilted more than `tip_min_deg` and the angle grows
+  faster than `tip_rate_dps`, or accelerates away from level faster than `tip_acc_dps2`), it
+  stops whatever it does (manual, move, path), backs off `tilt_backoff_dist` along the way it
+  came, then refuses to go further that way until the angle is back under the warn angle.
+- **The thresholds are placeholders** (15° warn, 25° stop): set them from the tipping tests.
+
+Tipping tests: turn the "Tilt guard" switch off, press "● Record", tilt or drive the rover until
+it tips, stop the recording and download the CSV (20 Hz: commands, wheel speeds, roll, pitch,
+rates, angular accelerations, raw IMU). The page also shows the peaks since the last reset.
+The page warns if the gyro axes turn the wrong way compared with the accelerometer (fix with
+`imu_roll_sign` / `imu_pitch_sign`). In simulation, the "Sim slope" sliders tilt the rover
+(past 40° it falls over).
+
 ## Gyro steering assist (manual driving)
 
 A software differential: the server adds a small rotation command to yours, which the ESP32

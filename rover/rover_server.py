@@ -25,7 +25,13 @@ HTTP API (JSON bodies). The first two match the shared simulation in sim/run_wor
   POST /stop           stop now and drop the queued steps
   POST /reset_odom     pose back to (0, 0, 0 deg)
   POST /calibrate_gyro measure the gyro bias again (rover must stand still 2 s)
-  POST /sim            simulation only: {"drift": rad/s} the rover turns by itself while moving
+  POST /mode           {"mode": "real"|"sim"}: switch between the real rover and the simulated
+                       one without restarting (the real rover stops; back to real reboots the
+                       ESP32, ~7 s). /state gives "mode" and "real_available".
+  POST /sim            simulation only: {"drift": rad/s} the rover turns by itself while moving,
+                       {"roll": deg, "pitch": deg} the slope it stands on (past 40 deg it falls)
+  POST /record         {"on": true|false}: 20 Hz log for the tipping tests; GET /record.csv
+  POST /tilt           {"reset_peaks": true}: forget the largest roll/pitch seen
   POST /gimbal         camera pan-tilt: {"pan_rate": -1|0|1, "tilt_rate": -1|0|1} while a key
                        is held (repeat it like /cmd), {"pan": deg, "tilt": deg} (pan + = right,
                        tilt + = up), or {"center": true}. A raw {"T":133,...} on /cmd works too.
@@ -78,15 +84,24 @@ class Camera:
         self._cond = threading.Condition()
         self._last_request = 0.0
         self._thread: threading.Thread | None = None
+        self._start_lock = threading.Lock()  # several viewers may ask at the same moment
+
+    def close(self) -> None:
+        """Stop capturing for good (the capture loop ends within a frame)."""
+        self._closed = True
+        self._last_request = float('-inf')
 
     def request(self) -> None:
         """Mark that a viewer wants frames; starts the capture thread if needed."""
+        if getattr(self, '_closed', False):
+            return
         self._last_request = time.monotonic()
         if cv2 is None:
             return
-        if self._thread is None or not self._thread.is_alive():
-            self._thread = threading.Thread(target=self._run, name='camera', daemon=True)
-            self._thread.start()
+        with self._start_lock:
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._run, name='camera', daemon=True)
+                self._thread.start()
 
     def wait_frame(self, last_id: int, timeout: float = 2.0) -> tuple[bytes | None, int]:
         self.request()
@@ -218,16 +233,68 @@ def read_cpu_temp() -> float | None:
 
 
 class App:
-    def __init__(self, rover: Rover, camera: Camera, cfg_path: str, sim_board=None) -> None:
-        self.rover = rover
-        self.camera = camera
+    """The rover being driven, real or simulated, and the switch between the two."""
+
+    def __init__(self, cfg: Config, cfg_path: str, args, serial_port: str | None) -> None:
+        self.cfg = cfg
         self.cfg_path = cfg_path
-        self.sim_board = sim_board
+        self.args = args
+        self.serial_port = serial_port  # None: no real rover on this computer
+        self.mode: str | None = None
+        self.rover: Rover | None = None
+        self.camera: Camera | None = None
+        self.sim_board = None
+        self._switch_lock = threading.Lock()
+
+    def set_mode(self, mode: str) -> None:
+        """Start driving the real rover ('real') or the simulated one ('sim')."""
+        if mode not in ('real', 'sim'):
+            raise ValueError('mode must be "real" or "sim"')
+        if mode == 'real' and self.serial_port is None:
+            raise ValueError('no ESP32 serial port on this computer: simulation only')
+        with self._switch_lock:
+            if mode == self.mode:
+                return
+            if self.rover is not None:  # the real rover stops before anything else happens
+                self.rover.stop()
+                self.rover.close()
+            if self.camera is not None:
+                self.camera.close()
+            a = self.args
+            cam_kw = {'width': a.width, 'height': a.height, 'fps': a.fps, 'quality': a.quality}
+            if mode == 'sim':
+                from fake_esp32 import FakeEsp32, FakeSerial
+
+                board = FakeEsp32(seed=int(time.time()), yaw_drift=a.sim_drift)
+                rover = Rover(self.cfg, lambda: FakeSerial(board))
+                camera = SimCamera(board, **cam_kw)
+            else:
+                board = None
+                port = self.serial_port
+                rover = Rover(self.cfg, lambda: open_serial(port))
+                camera = Camera(a.camera, **cam_kw)
+            if a.no_camera:
+                camera.error = 'camera disabled (--no-camera)'
+                camera.request = lambda: None
+            rover.start()
+            self.rover, self.camera, self.sim_board, self.mode = rover, camera, board, mode
+            print(
+                f'Mode: {mode}'
+                + (f' (ESP32 on {self.serial_port}, rebooting ~7 s)' if mode == 'real' else '')
+            )
+
+    def close(self) -> None:
+        if self.rover is not None:
+            self.rover.close()
+        if self.camera is not None:
+            self.camera.close()
 
     def state(self) -> dict:
         s = self.rover.snapshot()
         s['cpu_temp'] = read_cpu_temp()
         s['camera'] = {'error': self.camera.error, 'fps': round(self.camera.measured_fps, 1)}
+        s['mode'] = self.mode
+        s['real_available'] = self.serial_port is not None
         s['sim'] = self.sim_board is not None
         if self.sim_board is not None:
             b = self.sim_board
@@ -236,6 +303,8 @@ class App:
                 'y': b.y,
                 'heading_deg': math.degrees(b.yaw),
                 'drift': b.yaw_drift,
+                'roll': b.roll,
+                'pitch': b.pitch,
             }
         return s
 
@@ -283,6 +352,16 @@ def make_handler(app: App):
                 self._json(json.loads(json.dumps(app.rover.cfg.__dict__)))
             elif path == '/video_feed':
                 self._stream()
+            elif path == '/record.csv':
+                with app.rover.lock:
+                    data = app.rover.recorder.csv().encode()
+                name = time.strftime('rover_tilt_%Y%m%d_%H%M%S.csv')
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/csv')
+                self.send_header('Content-Disposition', f'attachment; filename="{name}"')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
             elif path == '/snapshot.jpg':
                 frame, _ = app.camera.wait_frame(-1)
                 if frame is None:
@@ -319,8 +398,26 @@ def make_handler(app: App):
                         b.trail.clear()
                 elif path == '/calibrate_gyro':
                     rover.recalibrate_gyro()
+                elif path == '/mode':
+                    app.set_mode(str(body.get('mode', '')))
                 elif path == '/sim' and app.sim_board is not None:
-                    app.sim_board.yaw_drift = float(body['drift'])
+                    b = app.sim_board
+                    if 'drift' in body:
+                        b.yaw_drift = float(body['drift'])
+                    if 'roll' in body:
+                        b.roll_target = float(body['roll'])
+                    if 'pitch' in body:
+                        b.pitch_target = float(body['pitch'])
+                elif path == '/record':
+                    with rover.lock:
+                        if body.get('on'):
+                            rover.recorder.start(time.monotonic())
+                        else:
+                            rover.recorder.stop()
+                elif path == '/tilt':
+                    if body.get('reset_peaks'):
+                        with rover.lock:
+                            rover.odom.tilt.reset_peaks()
                 elif path == '/gimbal':
                     if body.get('center'):
                         rover.gimbal_set(0.0, 0.0)
@@ -449,29 +546,17 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = Config.load(args.config)
-    cam_kw = {'width': args.width, 'height': args.height, 'fps': args.fps, 'quality': args.quality}
-    sim_board = None
     if args.sim:
-        from fake_esp32 import FakeEsp32, FakeSerial
-
-        sim_board = FakeEsp32(seed=int(time.time()), yaw_drift=args.sim_drift)
-        rover = Rover(cfg, lambda: FakeSerial(sim_board))
-        camera = SimCamera(sim_board, **cam_kw)
-        print('Simulated ESP32 and camera.')
+        # On a laptop, only offer the real mode for a port that is surely the rover's.
+        port = args.port_serial or find_esp32_port(usb_only=True)
     else:
         port = args.port_serial or find_esp32_port()
         if port is None:
             raise SystemExit('No ESP32 serial port found (/dev/ttyUSB*, /dev/ttyACM*). '
                              'Is the USB cable plugged in? Or give --port-serial.')  # fmt: skip
         print(f'ESP32 on {port}. Opening the port reboots it: ~7 s, KEEP THE ROVER STILL.')
-        rover = Rover(cfg, lambda: open_serial(port))
-        camera = Camera(args.camera, **cam_kw)
-    if args.no_camera:
-        camera.error = 'camera disabled (--no-camera)'
-        camera.request = lambda: None
-
-    rover.start()
-    app = App(rover, camera, args.config, sim_board)
+    app = App(cfg, args.config, args, port)
+    app.set_mode('sim' if args.sim else 'real')
     server = ThreadingHTTPServer((args.host, args.port), make_handler(app))
     server.daemon_threads = True
     print('Keep the rover still until the page shows "Gyro OK" (ESP32 boot + gyro bias).')
@@ -483,7 +568,7 @@ def main() -> None:
         pass
     finally:
         print('Stopping the rover.')
-        rover.close()
+        app.close()
         server.server_close()
 
 
