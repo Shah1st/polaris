@@ -110,7 +110,8 @@ start_one() {
       set -- "$PY" teleop/server.py --port 8082 --robot "$ROVER" --robot-lan "$ROVER" \
         --map-port 8081 --fusion http://127.0.0.1:8096 --suivi out/suivi.json \
         --perception-debug http://127.0.0.1:8095/debug.jpg
-      if [ -n "$PHONE" ]; then set -- "$@" --drone "$PHONE" --drone-lan "$PHONE"; fi
+      # no --drone-lan: the browser would open a second full-size stream on the phone
+      if [ -n "$PHONE" ]; then set -- "$@" --drone "$PHONE"; fi
       launch "$name" "$ROOT" "$@"
       ;;
     perception)

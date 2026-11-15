@@ -140,7 +140,7 @@ class FusionReelle:
             rover_marker_id=a.drone_marqueur,
             marker_height=a.drone_hauteur_marqueur,
         )
-        self.lecteur = camera_reader(a.drone_source)
+        self.lecteur = camera_reader(a.drone_source, max_age=5.0)  # a slow Wi-Fi link
         self.camera = OverheadDrone(self.lecteur, self.reglages_camera, period=0.0)
         self.drone = {'etat': 'waiting for the first picture'}
         threading.Thread(target=self.boucle_drone, daemon=True).start()
@@ -159,17 +159,18 @@ class FusionReelle:
 
         from guidance_global_map.segmentation import grid_to_fusion
 
-        if self.mpp_auto:
+        if self.mpp_auto:  # the phone app can change its picture size: follow it
             image = self.lecteur()
             if image is None:
                 self.drone = {'etat': 'no picture from the drone camera'}
                 return
             a = self.args
             largeur = 2 * a.drone_hauteur * math.tan(math.radians(a.drone_champ) / 2)
-            self.camera.settings = dataclasses.replace(
-                self.camera.settings, metres_per_pixel=largeur / max(image.shape[:2])  # long side
-            )
-            self.mpp_auto = False
+            mpp = largeur / max(image.shape[:2])  # the field is the long side's
+            if abs(mpp / self.camera.settings.metres_per_pixel - 1.0) > 1e-6:
+                self.camera.settings = dataclasses.replace(
+                    self.camera.settings, metres_per_pixel=mpp
+                )
         r = self.camera.refresh(force=True)
         if r is None:
             self.drone = {'etat': f'picture not usable: {self.camera.problem or "no picture"}'}
@@ -182,12 +183,14 @@ class FusionReelle:
             vu = (r.rover_position[0], r.rover_position[1], r.rover_heading)
         with self.verrou:
             pose = self.pose
+            # The camera may be held by hand: a picture is placed in the frame of the maps only
+            # by the marker seen in that same picture, while the rover stands still. Without
+            # it, the last placed view stays on the maps.
+            calage = None
             if vu is not None and vu[2] is not None and pose is not None and self.immobile:
-                # the camera does not move: one view of the marker while the rover stands
-                # still places its whole picture in the frame of the maps
-                self.calage = (angle(pose[2] - vu[2]), vu[0], vu[1], pose[0], pose[1])
-            calage = self.calage
-            place = None
+                calage = (angle(pose[2] - vu[2]), vu[0], vu[1], pose[0], pose[1])
+                self.calage, self.t_calage = calage, time.time()
+            place = None if self.vue_drone is None else self.vue_drone['place']
             if calage is not None:
                 place = self.placer_vue(m, res, calage)
                 self.carte.tuiles['drone'] = {}  # the camera sees its whole area every time
@@ -199,7 +202,9 @@ class FusionReelle:
         self.drone = {
             'etat': 'ok',
             't': time.time(),
-            'cale': calage is not None,
+            'cale': place is not None,
+            'cale_sur_cette_image': calage is not None,
+            'age_calage_s': None if self.calage is None else round(time.time() - self.t_calage),
             'rover_vu': vu is not None,
             'cap_vu': vu is not None and vu[2] is not None,
             'obstacles': int((m == 1).sum()),
@@ -247,6 +252,7 @@ class FusionReelle:
             self.n_scan = {'points': 0, 'free': 0, 'obstacle': 0}
             self.immobile = False
             self.calage = None  # camera frame -> frame of the maps, from the rover's marker
+            self.t_calage = 0.0
             self.vue_drone = None
 
     def en_mission(self):
@@ -505,20 +511,33 @@ class FusionReelle:
             ff.draw_frame(drone, vue, 1.0)
             ff.draw_polyline(drone, vue, chemin, ff.PATH_C, 2)
             ff.draw_markers(drone, vue, pose, objectif, depart, None)
-            titres = ('Drone: placed by the rover marker', 'Click: goal for the rover')
+            titres = (
+                'Drone: placed by the rover marker'
+                if etat_drone.get('cale_sur_cette_image')
+                else f'Drone: view of {etat_drone.get("age_calage_s")} s ago (no marker now)',
+                'Click: goal for the rover',
+            )
         elif vd is not None:
+            # not placed yet: the path and the goal on an empty map (still clickable), and
+            # what the camera sees, in its own frame, as a small picture in the corner
+            drone = np.full((TAILLE, TAILLE, 3), ff.PALETTE[ff.K_UNKNOWN], np.uint8)
+            ff.draw_frame(drone, vue, 1.0)
+            ff.draw_polyline(drone, vue, chemin, ff.PATH_C, 2)
+            ff.draw_markers(drone, vue, pose, objectif, depart, None)
             h, w = vd['m'].shape
             cote = max(h, w) * vd['res']
             ox, oy = (w * vd['res'] - cote) / 2, (h * vd['res'] - cote) / 2
-            vue_d = None
-            vc = ff.View(ox, oy, ox + cote, oy + cote, TAILLE / cote)
-            drone = vc.raster(ff.drone_classes(vd['m']), 0.0, 0.0, vd['res'])
-            ff.draw_frame(drone, vc, 1.0)
+            pt = TAILLE // 3
+            vc = ff.View(ox, oy, ox + cote, oy + cote, pt / cote)
+            petit = vc.raster(ff.drone_classes(vd['m']), 0.0, 0.0, vd['res'])
             if vd['rover'] is not None:
-                ff.draw_rover(drone, vc, (vd['rover'][0], vd['rover'][1], vd['rover'][2] or 0.0))
+                ff.draw_rover(petit, vc, (vd['rover'][0], vd['rover'][1], vd['rover'][2] or 0.0))
+            ph, pw = petit.shape[:2]
+            drone[TAILLE - ph - 8 : TAILLE - 8, 8 : 8 + pw] = petit
+            cv2.rectangle(drone, (8, TAILLE - ph - 8), (8 + pw, TAILLE - 8), ff.INK_C, 1)
             titres = (
-                'Drone: camera frame, not placed yet',
-                f'needs ArUco marker {self.args.drone_marqueur} on the rover',
+                f'Drone: not placed (needs ArUco {self.args.drone_marqueur} on the rover)',
+                'Click: goal for the rover. Corner: camera view',
             )
         else:
             drone = np.full((TAILLE, TAILLE, 3), ff.PALETTE[ff.K_UNKNOWN], np.uint8)
@@ -544,7 +563,7 @@ class FusionReelle:
             objectif,
             None,
             None,
-            path=chemin,
+            path=None,  # the planned path is drawn on the drone map and the fused map
             trail=trail,
         )
         ff.draw_frame(rover, vr, 0.5)
