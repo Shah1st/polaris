@@ -186,6 +186,7 @@ def raw_post(port: int, path: str, body: bytes, length: str | None = None) -> in
     'body',
     [
         b'{"v": NaN, "omega": 0}',
+        b'{"v": "nan", "omega": 0}',  # float('nan') would pass the clamp as the full speed
         b'{"v": 0.1, "omega": Infinity}',
         b'{"v": 1e999}',
         b'[1, 2]',
