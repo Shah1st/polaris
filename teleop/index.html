@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Polaris — téléop rover</title>
+<title>Polaris — rover teleop</title>
 <style>
   :root { --bg:#111417; --panel:#191d22; --line:#2a3038; --fg:#e6e9ee; --dim:#8b95a3;
           --acc:#19c2ff; --ok:#3ecf73; --warn:#f2b233; --bad:#ff5a52; }
@@ -85,97 +85,97 @@
 <body>
 <div class="app">
   <div class="side" id="side" tabindex="0">
-    <h1>Rover réel — téléop <span class="tag" id="link">hors ligne</span></h1>
-    <div class="route" id="routeBig">VIA LA VM</div>
+    <h1>Real rover — teleop <span class="tag" id="link">offline</span></h1>
+    <div class="route" id="routeBig">VIA THE VM</div>
     <div class="video"><canvas id="cam" width="640" height="480"></canvas><img id="camDirect" alt="" hidden>
       <span id="vinfo"></span></div>
-    <label>Liaison <span id="route">–</span>
+    <label>Link <span id="route">–</span>
       <select id="route_sel">
-        <option value="auto" selected>automatique</option>
-        <option value="direct">directe (Wi-Fi du robot)</option>
-        <option value="vm">via la VM</option>
+        <option value="auto" selected>automatic</option>
+        <option value="direct">direct (robot Wi-Fi)</option>
+        <option value="vm">via the VM</option>
       </select></label>
     <label>Image
       <select id="preset">
-        <option value="ld">légère (320 px)</option>
-        <option value="sd" selected>normale (480 px)</option>
-        <option value="hd">pleine (640 px)</option>
+        <option value="ld">light (320 px)</option>
+        <option value="sd" selected>normal (480 px)</option>
+        <option value="hd">full (640 px)</option>
       </select></label>
-    <label>Cadence
+    <label>Frame rate
       <select id="fluid">
-        <option value="0" selected>économe (4 img/s)</option>
-        <option value="1">fluide (20 img/s, bonne connexion)</option>
+        <option value="0" selected>thrifty (4 fps)</option>
+        <option value="1">smooth (20 fps, good connection)</option>
       </select></label>
-    <div class="focus" id="focus">Clique ici pour piloter au clavier</div>
+    <div class="focus" id="focus">Click here to drive with the keyboard</div>
     <div class="pad">
-      <span></span><button class="key" data-k="f">Z<small>avancer</small></button><span></span>
-      <button class="key" data-k="l">Q<small>gauche</small></button>
-      <button class="key" data-k="b">S<small>reculer</small></button>
-      <button class="key" data-k="r">D<small>droite</small></button>
+      <span></span><button class="key" data-k="f">Z<small>forward</small></button><span></span>
+      <button class="key" data-k="l">Q<small>left</small></button>
+      <button class="key" data-k="b">S<small>back</small></button>
+      <button class="key" data-k="r">D<small>right</small></button>
     </div>
-    <button class="stop" id="stop">STOP (Espace)</button>
+    <button class="stop" id="stop">STOP (Space)</button>
     <div>
-      <label>Vitesse <span id="vlab"></span></label>
+      <label>Speed <span id="vlab"></span></label>
       <input type="range" id="speed" min="0.05" max="0.20" step="0.01" value="0.10">
-      <label>Rotation <span id="wlab"></span></label>
+      <label>Turn rate <span id="wlab"></span></label>
       <input type="range" id="turn" min="0.4" max="1.5" step="0.1" value="0.9">
     </div>
     <table>
-      <tr><td>Batterie</td><td id="bat">–</td></tr>
-      <tr><td>Position (odométrie)</td><td id="odo">–</td></tr>
-      <tr><td>Vitesse mesurée</td><td id="vel">–</td></tr>
-      <tr><td>Commande envoyée</td><td id="cmd">–</td></tr>
-      <tr><td>Délai des commandes</td><td id="lat">–</td></tr>
-      <tr><td>Caméra (robot / VM / écran)</td><td id="fps">–</td></tr>
-      <tr><td>Caméra du drone (iPhone / écran)</td><td id="dfps">–</td></tr>
-      <tr><td>Aller-retour navigateur ↔ VM</td><td id="ping">–</td></tr>
+      <tr><td>Battery</td><td id="bat">–</td></tr>
+      <tr><td>Position (odometry)</td><td id="odo">–</td></tr>
+      <tr><td>Measured speed</td><td id="vel">–</td></tr>
+      <tr><td>Command sent</td><td id="cmd">–</td></tr>
+      <tr><td>Command delay</td><td id="lat">–</td></tr>
+      <tr><td>Camera (robot / VM / screen)</td><td id="fps">–</td></tr>
+      <tr><td>Drone camera (iPhone / screen)</td><td id="dfps">–</td></tr>
+      <tr><td>Round trip browser ↔ VM</td><td id="ping">–</td></tr>
     </table>
-    <div class="hint">ZQSD ou flèches (positions physiques des touches, AZERTY ou QWERTY). Le rover
-      s'arrête dès que la touche est relâchée, que cette page perd le focus (clic dans la vue 3D)
-      ou que la liaison tombe. La liaison a un délai : avance par petites touches.</div>
+    <div class="hint">ZQSD or arrow keys (physical key positions: ZQSD on AZERTY, WASD on QWERTY). The rover
+      stops as soon as the key is released, this page loses focus (click in the 3D view)
+      or the link drops. The link has a delay: move in short presses.</div>
   </div>
   <div class="right">
     <div class="tabs">
-      <button type="button" id="tabMaps" class="on">Drone et cartes</button>
-      <button type="button" id="tab3d">Vue 3D du mappeur</button>
-      <a href="/mission" target="_blank" rel="noopener">page mission</a>
+      <button type="button" id="tabMaps" class="on">Drone and maps</button>
+      <button type="button" id="tab3d">Mapper 3D view</button>
+      <a href="/mission" target="_blank" rel="noopener">mission page</a>
       <a href="/sim" target="_blank" rel="noopener">simulation</a>
     </div>
     <div class="pane" id="paneMaps">
       <figure class="feed">
-        <figcaption><b>Caméra du drone (iPhone)</b><span id="dsrc">–</span></figcaption>
+        <figcaption><b>Drone camera (iPhone)</b><span id="dsrc">–</span></figcaption>
         <div class="video wide"><canvas id="droneCam" width="640" height="480"></canvas><span id="dinfo"></span></div>
       </figure>
-      <div id="fstatus">Cartes : en attente…</div>
-      <div class="maptools"><button id="mapReset" type="button">Réinitialiser les cartes</button>
-        <button id="goalGo" type="button" class="go">Aller vers le point</button>
-        <button id="goalStop" type="button" class="halt">Arrêter la mission</button>
-        <button id="goalClear" type="button">Effacer le point</button>
-        <span id="mapResetMsg">Clic sur la carte du drone ou la carte fusionnée : point d'arrivée du rover</span></div>
+      <div id="fstatus">Maps: waiting…</div>
+      <div class="maptools"><button id="mapReset" type="button">Reset the maps</button>
+        <button id="goalGo" type="button" class="go">Go to the point</button>
+        <button id="goalStop" type="button" class="halt">Stop the mission</button>
+        <button id="goalClear" type="button">Clear the point</button>
+        <span id="mapResetMsg">Click the drone map or the fused map to set the rover's destination</span></div>
       <figure class="mapfig">
-        <figcaption><b>1. Carte du rover</b><span id="aRover">–</span></figcaption>
+        <figcaption><b>1. Rover map</b><span id="aRover">–</span></figcaption>
         <canvas id="mRover"></canvas>
-        <div class="src" id="sRover">Source : –</div>
-        <div class="legend">Vue de dessus autour du rover, nord en haut : son dernier scan.
-          <br><span class="sw" style="background:#8fd4b4"></span>libre (ce scan)<span class="sw" style="background:#eb6834"></span>obstacle (ce scan)<span class="sw" style="background:#b0177a"></span>vide (sol attendu absent)<span class="sw" style="background:#dbe6dd"></span><span class="sw" style="background:#e5aa8f"></span>libre / obstacle vus avant
-          <br>Points : <span class="sw" style="background:#6e8c78"></span>sol<span class="sw" style="background:#dc2828"></span>obstacle<span class="sw" style="background:#3caa3c"></span>végétation basse<span class="sw" style="background:#2878c8"></span>plus haut (ignoré) · cercle : portée</div>
+        <div class="src" id="sRover">Source: –</div>
+        <div class="legend">Top-down view around the rover, north up: its latest scan.
+          <br><span class="sw" style="background:#8fd4b4"></span>free (this scan)<span class="sw" style="background:#eb6834"></span>obstacle (this scan)<span class="sw" style="background:#b0177a"></span>drop (expected ground missing)<span class="sw" style="background:#dbe6dd"></span><span class="sw" style="background:#e5aa8f"></span>free / obstacle seen before
+          <br>Points: <span class="sw" style="background:#6e8c78"></span>ground<span class="sw" style="background:#dc2828"></span>obstacle<span class="sw" style="background:#3caa3c"></span>low vegetation<span class="sw" style="background:#2878c8"></span>higher (ignored) · circle: range</div>
       </figure>
       <figure class="mapfig">
-        <figcaption><b>2. Carte du drone</b><span id="aDrone">–</span></figcaption>
+        <figcaption><b>2. Drone map</b><span id="aDrone">–</span></figcaption>
         <canvas id="mDrone"></canvas>
-        <div class="src" id="sDrone">Source : –</div>
-        <div class="legend">Ce que le drone voit d'en haut, envoyé à la fusion en tuiles de 5 cm.
-          <br><span class="sw" style="background:#fcfcfb"></span>libre<span class="sw" style="background:#52514e"></span>obstacle<span class="sw" style="background:#e1e0d9"></span>non vu<span class="sw" style="background:#e34948"></span>objectif · flèche noire : rover · ○ départ · cadre bleu : zone de la carte du rover</div>
+        <div class="src" id="sDrone">Source: –</div>
+        <div class="legend">What the drone sees from above, sent to the fusion as 5 cm tiles.
+          <br><span class="sw" style="background:#fcfcfb"></span>free<span class="sw" style="background:#52514e"></span>obstacle<span class="sw" style="background:#e1e0d9"></span>not seen<span class="sw" style="background:#e34948"></span>goal · black arrow: rover · ○ start · blue frame: area of the rover map</div>
       </figure>
       <figure class="mapfig">
-        <figcaption><b>3. Carte fusionnée</b><span id="aFused">–</span></figcaption>
+        <figcaption><b>3. Fused map</b><span id="aFused">–</span></figcaption>
         <canvas id="mFused"></canvas>
-        <div class="src" id="sFused">Source : –</div>
-        <div class="legend">merging_map : CarteFusion.recevoir + decider (A*) vers l'objectif. Le rover l'emporte sur le drone.
-          <br><span class="sw" style="background:#fcfcfb"></span>libre (drone)<span class="sw" style="background:#d3eee2"></span>libre (rover)<span class="sw" style="background:#52514e"></span>obstacle (drone)<span class="sw" style="background:#eb6834"></span>obstacle (rover)<span class="sw" style="background:#e1e0d9"></span>inconnu<span class="sw" style="background:#2a78d6"></span>chemin prévu<span class="sw" style="background:#5a5a5a"></span>trace du rover<span class="sw" style="background:#6250d6"></span>tuiles à vérifier / zoom drone</div>
+        <div class="src" id="sFused">Source: –</div>
+        <div class="legend">merging_map: CarteFusion.recevoir + decider (A*) toward the goal. The rover wins over the drone.
+          <br><span class="sw" style="background:#fcfcfb"></span>free (drone)<span class="sw" style="background:#d3eee2"></span>free (rover)<span class="sw" style="background:#52514e"></span>obstacle (drone)<span class="sw" style="background:#eb6834"></span>obstacle (rover)<span class="sw" style="background:#e1e0d9"></span>unknown<span class="sw" style="background:#2a78d6"></span>planned path<span class="sw" style="background:#5a5a5a"></span>rover track<span class="sw" style="background:#6250d6"></span>tiles to check / drone zoom</div>
       </figure>
     </div>
-    <iframe id="map" title="carte 3D" hidden></iframe>
+    <iframe id="map" title="3D map" hidden></iframe>
   </div>
 </div>
 <script>
@@ -268,13 +268,13 @@ let droneInfo = null;  // the drone section of /api/state
 setInterval(() => {
   const el = $('dinfo');
   if (!droneOn) {
-    el.textContent = 'pas de caméra drone : lancer server.py avec --drone http://<iPhone>:<port>/…';
+    el.textContent = 'no drone camera: start server.py with --drone http://<iPhone>:<port>/…';
     el.className = 'old'; return;
   }
   const a = dAge === null ? null : (dAge + performance.now() - dGot) / 1000;
   const err = droneInfo && droneInfo.error;
-  el.textContent = (a === null ? 'pas d\'image' : `image d'il y a ${a.toFixed(1)} s · ${dShownFps} img/s`)
-    + (err ? ' · caméra : ' + err : '');
+  el.textContent = (a === null ? 'no image' : `image ${a.toFixed(1)} s old · ${dShownFps} fps`)
+    + (err ? ' · camera: ' + err : '');
   el.className = a === null || a > 1 ? 'old' : '';
 }, 250);
 
@@ -299,41 +299,46 @@ async function fetchPanel(p) {
 }
 const fmt = (v, d) => (v === null || v === undefined || isNaN(v)) ? '–' : (+v).toFixed(d);
 const ACTIONS = {
-  SUIVRE: 'SUIVRE — chemin trouvé',
-  DEMANDER_DRONE: 'DEMANDER_DRONE — zoom du drone demandé',
-  OBJECTIF_DEGRADE: 'OBJECTIF_DEGRADE — aucun passage : point accessible le plus proche',
-  INSPECTER: 'INSPECTER — le rover va voir lui-même',
+  SUIVRE: 'SUIVRE — path found',
+  DEMANDER_DRONE: 'DEMANDER_DRONE — drone zoom requested',
+  OBJECTIF_DEGRADE: 'OBJECTIF_DEGRADE — no way through: closest reachable point',
+  INSPECTER: 'INSPECTER — the rover goes to look for itself',
+};
+// What the mission states (ms.etat, from the server) are shown as.
+const MISSION_STATES = {
+  en_cours: 'in progress', arrive: 'arrived', arret_operateur: 'stopped by the operator',
+  abandon: 'abandoned', erreur: 'error',
 };
 // Where each map comes from, written under it: today only the forest simulation serves /fusion/,
 // so next to the iPhone the maps may be the simulation's.
 function showSources(s) {
   const dr = (s && s.drone) || {};
-  $('sRover').textContent = 'Source : ' + (s ? s.source_rover || '–' : 'fusion injoignable');
-  $('sDrone').textContent = 'Source : ' + (s ? dr.source || '–' : 'fusion injoignable');
-  $('sFused').textContent = 'Source : ' + (s ? 'merging_map sur les deux cartes ci-contre' : 'fusion injoignable');
+  $('sRover').textContent = 'Source: ' + (s ? s.source_rover || '–' : 'fusion unreachable');
+  $('sDrone').textContent = 'Source: ' + (s ? dr.source || '–' : 'fusion unreachable');
+  $('sFused').textContent = 'Source: ' + (s ? 'merging_map on the rover and drone maps' : 'fusion unreachable');
 }
 function showStatus(s) {
   const el = $('fstatus');
   showSources(s);
   if (!s) {
-    el.innerHTML = '<b>Cartes</b> : pas de réponse de la fusion (/fusion/status.json). '
-      + 'Elle tourne ? (sim/fusion_live.py, port 8094 par défaut, server.py --fusion)';
+    el.innerHTML = '<b>Maps</b>: no answer from the fusion (/fusion/status.json). '
+      + 'Is it running? (sim/fusion_live.py, port 8094 by default, server.py --fusion)';
     return;
   }
   const d = s.decision || {}, sc = s.scan || {}, dr = s.drone || {}, rv = s.rover || {}, goal = s.objectif || [];
   let html = '';
-  if (s.etat === 'erreur') html += `<span class="bad">Erreur de la fusion : ${esc(s.erreur)}</span><br>`;
-  html += `<b>Décision n° ${esc(d.numero || 0)} : ${esc(ACTIONS[d.action] || d.action)}</b>`
-    + `<br>chemin ${fmt(d.longueur_chemin_m, 1)} m vers l'objectif (${fmt(goal[0], 1)}, ${fmt(goal[1], 1)})`
-    + ` · recalculée parce que : ${esc(d.pourquoi)} (il y a ${fmt(d.age_s, 0)} s)`;
+  if (s.etat === 'erreur') html += `<span class="bad">Fusion error: ${esc(s.erreur)}</span><br>`;
+  html += `<b>Decision #${esc(d.numero || 0)}: ${esc(ACTIONS[d.action] || d.action)}</b>`
+    + `<br>path ${fmt(d.longueur_chemin_m, 1)} m to the goal (${fmt(goal[0], 1)}, ${fmt(goal[1], 1)})`
+    + ` · recomputed because: ${esc(d.pourquoi)} (${fmt(d.age_s, 0)} s ago)`;
   if (d.distance_restante_m !== null && d.distance_restante_m !== undefined)
-    html += ` · reste ${fmt(d.distance_restante_m, 1)} m`;
+    html += ` · ${fmt(d.distance_restante_m, 1)} m left`;
   const ms = s.mission || {};
   if (ms.etat && ms.etat !== 'aucune')
-    html += `<br><b>Mission : ${esc(ms.etat)}</b>${ms.pas ? ' · pas ' + esc(ms.pas) : ''} · ${esc(ms.texte || '')}`;
-  html += `<br>Rover (${fmt(rv.x, 1)}, ${fmt(rv.y, 1)}) m · scan : ${esc(sc.points || 0)} points,`
-    + ` ${esc(sc.free || 0)} cases libres, ${esc(sc.obstacle || 0)} obstacles`
-    + ` · tuiles : drone ${esc(dr.tuiles || 0)}, rover ${esc(s.tuiles_rover || 0)}`;
+    html += `<br><b>Mission: ${esc(MISSION_STATES[ms.etat] || ms.etat)}</b>${ms.pas ? ' · step ' + esc(ms.pas) : ''} · ${esc(ms.texte || '')}`;
+  html += `<br>Rover (${fmt(rv.x, 1)}, ${fmt(rv.y, 1)}) m · scan: ${esc(sc.points || 0)} points,`
+    + ` ${esc(sc.free || 0)} free cells, ${esc(sc.obstacle || 0)} obstacles`
+    + ` · tiles: drone ${esc(dr.tuiles || 0)}, rover ${esc(s.tuiles_rover || 0)}`;
   el.innerHTML = html;
 }
 // The point the rover must reach: a click on the drone map or the fused map (both drawn in the
@@ -355,41 +360,41 @@ for (const [id, panneau] of [['mFused', 'fused'], ['mDrone', 'drone']]) {
     const fx = (e.clientX - box.left) / box.width, fy = (e.clientY - box.top) / box.height;
     try {
       const { ok, status, d } = await fusionPost('objectif', { panneau, fx, fy });
-      if (ok && d.objectif) mapMsg(`point d'arrivée : (${(+d.objectif[0]).toFixed(2)}, ${(+d.objectif[1]).toFixed(2)}) m — « Aller vers le point » pour partir`);
-      else mapMsg('point refusé : ' + (d.error || 'HTTP ' + status) + (status === 404 ? ' (cette fusion ne gère pas les points)' : ''));
+      if (ok && d.objectif) mapMsg(`destination: (${(+d.objectif[0]).toFixed(2)}, ${(+d.objectif[1]).toFixed(2)}) m — press "Go to the point" to start`);
+      else mapMsg('point refused: ' + (d.error || 'HTTP ' + status) + (status === 404 ? ' (this fusion does not handle points)' : ''));
       for (const p of panels) p.got = 0;
-    } catch (err) { mapMsg('fusion injoignable'); }
+    } catch (err) { mapMsg('fusion unreachable'); }
   });
 }
 $('goalGo').addEventListener('click', async () => {
-  if (!confirm("Le rover va rouler SEUL vers le point choisi, en contournant ce que sa caméra voit.\n\n"
-             + "Quelqu'un est à côté du rover, prêt à l'arrêter (bouton « Arrêter la mission » ou STOP) ?")) return;
+  if (!confirm("The rover will drive ON ITS OWN to the chosen point, going around what its camera sees.\n\n"
+             + "Is someone next to the rover, ready to stop it (the 'Stop the mission' button or STOP)?")) return;
   try {
     const { ok, status, d } = await fusionPost('aller');
-    mapMsg(ok ? 'mission lancée' : 'refusé : ' + (d.error || 'HTTP ' + status));
-  } catch (err) { mapMsg('fusion injoignable'); }
+    mapMsg(ok ? 'mission started' : 'refused: ' + (d.error || 'HTTP ' + status));
+  } catch (err) { mapMsg('fusion unreachable'); }
 });
 $('goalStop').addEventListener('click', async () => {
   stopAll();   // the rover stops at once through the dashboard too
   try {
     const { ok } = await fusionPost('arreter');
-    mapMsg(ok ? 'mission arrêtée, /stop envoyé' : 'arrêt envoyé au rover ; la fusion ne répond pas');
-  } catch (err) { mapMsg('arrêt envoyé au rover ; fusion injoignable'); }
+    mapMsg(ok ? 'mission stopped, /stop sent' : 'stop sent to the rover; the fusion does not answer');
+  } catch (err) { mapMsg('stop sent to the rover; fusion unreachable'); }
 });
 $('goalClear').addEventListener('click', async () => {
-  try { const { ok } = await fusionPost('objectif', {}); mapMsg(ok ? 'point effacé' : 'refusé'); }
-  catch (err) { mapMsg('fusion injoignable'); }
+  try { const { ok } = await fusionPost('objectif', {}); mapMsg(ok ? 'point cleared' : 'refused'); }
+  catch (err) { mapMsg('fusion unreachable'); }
 });
 // Empty the maps of the live fusion: a new map starts from where the rover stands now.
 $('mapReset').addEventListener('click', async () => {
-  if (!confirm('Effacer les cartes (rover, fusionnée, trace) et repartir de la position actuelle du rover ?')) return;
+  if (!confirm('Clear the maps (rover, fused, track) and start again from where the rover is now?')) return;
   const msg = $('mapResetMsg');
-  msg.textContent = 'réinitialisation…';
+  msg.textContent = 'resetting…';
   try {
     const r = await fetch('/fusion/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    msg.textContent = r.status === 200 ? 'cartes réinitialisées' : 'refusé (HTTP ' + r.status + ') : cette fusion ne sait pas se réinitialiser';
+    msg.textContent = r.status === 200 ? 'maps reset' : 'refused (HTTP ' + r.status + '): this fusion cannot reset';
     for (const p of panels) p.got = 0;
-  } catch (e) { msg.textContent = 'fusion injoignable'; }
+  } catch (e) { msg.textContent = 'fusion unreachable'; }
   setTimeout(() => { msg.textContent = ''; }, 6000);
 });
 async function mapsLoop() {
@@ -422,7 +427,7 @@ setInterval(() => {
     const el = $(p.age);
     if (!p.got) { el.textContent = '–'; continue; }
     const age = (p.ageMs + (now - p.got)) / 1000;
-    el.textContent = 'il y a ' + age.toFixed(1) + ' s';
+    el.textContent = age.toFixed(1) + ' s ago';
     el.className = age > 10 ? 'bad' : (age > 4 ? 'warn' : '');
   }
 }, 500);
@@ -463,11 +468,11 @@ function setDirect(on) {
 function showRoute() {
   const mode = $('route_sel').value;
   let txt, c;
-  if (direct) [txt, c] = robotSeen ? ['LIAISON DIRECTE', 'ok'] : ['DIRECTE — ROBOT INJOIGNABLE', 'bad'];
-  else if (mode === 'direct') [txt, c] = ['PAS D\'ADRESSE DIRECTE (--robot-lan) — VIA LA VM', 'bad'];
-  else [txt, c] = ['VIA LA VM', 'warn'];
+  if (direct) [txt, c] = robotSeen ? ['DIRECT LINK', 'ok'] : ['DIRECT — ROBOT UNREACHABLE', 'bad'];
+  else if (mode === 'direct') [txt, c] = ['NO DIRECT ADDRESS (--robot-lan) — VIA THE VM', 'bad'];
+  else [txt, c] = ['VIA THE VM', 'warn'];
   $('routeBig').textContent = txt; $('routeBig').className = 'route ' + c;
-  $('route').textContent = direct ? 'directe' : 'via la VM';
+  $('route').textContent = direct ? 'direct' : 'via the VM';
   $('route').className = c;
 }
 async function probe() {
@@ -551,8 +556,8 @@ function focusState() {
   const on = document.hasFocus() && document.activeElement !== $('map');
   const slow = tooSlow();
   $('focus').classList.toggle('on', on && !slow);
-  $('focus').textContent = slow ? `Liaison trop lente pour piloter (${(pingMs / 1000).toFixed(1)} s aller-retour)`
-    : on ? 'Clavier actif : ZQSD pour piloter' : 'Clique ici pour piloter au clavier';
+  $('focus').textContent = slow ? `Link too slow to drive (${(pingMs / 1000).toFixed(1)} s round trip)`
+    : on ? 'Keyboard active: ZQSD / WASD to drive' : 'Click here to drive with the keyboard';
   if (!on || slow) release();
 }
 window.addEventListener('blur', focusState);
@@ -574,32 +579,32 @@ async function poll() {
     const s = await (await fetch('/api/state')).json();
     const r = s.robot || {}, o = r.odom || {};
     const fresh = s.state_age !== null && s.state_age < 3 && r.link && r.link.connected;
-    $('link').textContent = fresh ? 'en ligne' : 'hors ligne'; $('link').classList.toggle('on', !!fresh);
+    $('link').textContent = fresh ? 'online' : 'offline'; $('link').classList.toggle('on', !!fresh);
     const b = r.battery_v;
-    $('bat').textContent = b == null ? '–' : b.toFixed(2) + ' V' + (b < 9 ? ' (valeur douteuse)' : '');
+    $('bat').textContent = b == null ? '–' : b.toFixed(2) + ' V' + (b < 9 ? ' (doubtful value)' : '');
     cls($('bat'), b == null ? '' : b < 9 ? 'warn' : b < 10.5 ? 'bad' : 'ok');
     $('odo').textContent = o.x == null ? '–' :
       `x ${o.x.toFixed(2)} m · y ${o.y.toFixed(2)} m · ${(((o.heading_deg % 360) + 540) % 360 - 180).toFixed(0)}°`;
     $('vel').textContent = o.v == null ? '–' : `${o.v.toFixed(2)} m/s · ${(o.yaw_rate_dps || 0).toFixed(0)} °/s`;
-    const REFUS = { latched: 'refusée : stop actif, relâche puis réappuie', stale: 'refusée : arrivée en retard' };
-    $('cmd').textContent = `v ${s.want[0].toFixed(2)} · ω ${s.want[1].toFixed(2)}` + (s.cmd_err ? ' · erreur' : '')
+    const REFUS = { latched: 'refused: stop active, release and press again', stale: 'refused: arrived late' };
+    $('cmd').textContent = `v ${s.want[0].toFixed(2)} · ω ${s.want[1].toFixed(2)}` + (s.cmd_err ? ' · error' : '')
       + (s.refused ? ' · ' + (REFUS[s.refused] || s.refused) : '');
     cls($('cmd'), s.cmd_err || s.refused ? 'bad' : '');
     const ms = s.cmd_ms ?? s.state_ms;
     $('lat').textContent = ms == null ? '–' : ms.toFixed(0) + ' ms';
     cls($('lat'), ms == null ? '' : ms > 400 ? 'bad' : ms > 250 ? 'warn' : 'ok');
     const cf = r.camera ? r.camera.fps : null;
-    $('fps').textContent = `${cf ?? '–'} / ${s.video.fps} / ${direct ? 'direct' : shownFps} img/s`;
+    $('fps').textContent = `${cf ?? '–'} / ${s.video.fps} / ${direct ? 'direct' : shownFps} fps`;
     vinfoErr = s.video.error;
     droneInfo = s.drone || null;
     droneOn = !!(droneInfo && droneInfo.configured);
-    $('dsrc').textContent = droneOn ? droneInfo.camera || '–' : 'non configurée';
-    $('dfps').textContent = !droneOn ? 'non configurée (--drone)'
-      : `${droneInfo.fps} / ${droneShown() ? dShownFps : '–'} img/s` + (droneInfo.error ? ' · erreur' : '');
+    $('dsrc').textContent = droneOn ? droneInfo.camera || '–' : 'not configured';
+    $('dfps').textContent = !droneOn ? 'not configured (--drone)'
+      : `${droneInfo.fps} / ${droneShown() ? dShownFps : '–'} fps` + (droneInfo.error ? ' · error' : '');
     cls($('dfps'), !droneOn ? '' : droneInfo.error ? 'bad' : droneInfo.fps > 0 ? 'ok' : 'warn');
     $('ping').textContent = pingMs == null ? '–' : pingMs.toFixed(0) + ' ms';
     cls($('ping'), pingMs == null ? '' : pingMs > 400 ? 'bad' : pingMs > 200 ? 'warn' : 'ok');
-  } catch (e) { $('link').textContent = 'serveur injoignable'; $('link').classList.remove('on'); }
+  } catch (e) { $('link').textContent = 'server unreachable'; $('link').classList.remove('on'); }
 }
 // Over the picture: its age, red above 1 s (an old picture shows where the rover WAS).
 let vinfoErr = null;
@@ -607,8 +612,8 @@ setInterval(() => {
   const a = shownAge();
   const el = $('vinfo');
   if (direct) { el.textContent = 'direct'; el.className = ''; return; }
-  el.textContent = (a === null ? 'pas d\'image' : `image d'il y a ${a.toFixed(1)} s · ${shownFps} img/s`)
-    + (vinfoErr ? ' · vidéo : ' + vinfoErr : '');
+  el.textContent = (a === null ? 'no image' : `image ${a.toFixed(1)} s old · ${shownFps} fps`)
+    + (vinfoErr ? ' · video: ' + vinfoErr : '');
   el.className = a === null || a > 1 ? 'old' : '';
 }, 250);
 setInterval(poll, 500); poll();
