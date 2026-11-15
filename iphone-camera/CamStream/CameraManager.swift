@@ -372,7 +372,8 @@ final class CameraManager: NSObject, @unchecked Sendable {
             used = wanted.choices.first { device.activeFormat.isVideoStabilizationModeSupported($0.mode) }
             connection.preferredVideoStabilizationMode = used?.mode ?? .off
         }
-        stabilizationName.withLock { $0 = used?.name ?? "off" }
+        let name = used?.name ?? "off"
+        stabilizationName.withLock { $0 = name }
     }
 
     /// Picks, on the LiDAR camera, the video format nearest to `resolution` that also gives
