@@ -37,6 +37,8 @@ import numpy as np
 RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, RACINE + '/merging_map')
 sys.path.insert(0, RACINE + '/sim')
+for _paquet in ('guidance_calib', 'guidance_global_map', 'guidance_rover_pose'):
+    sys.path.insert(0, f'{RACINE}/src/{_paquet}')  # the overhead camera pipeline (--drone-source)
 
 from cerveau import avancer  # noqa: E402
 from fusion_carte import CarteFusion, decouper  # noqa: E402
@@ -53,6 +55,25 @@ TAILLE = 480  # px: side of the pictures
 
 def angle(a):
     return math.atan2(math.sin(a), math.cos(a))
+
+
+def sans_traits(m, cases):
+    """The drone's matrix without what is thinner than `cases` cells: a line painted or taped
+    on the floor differs from the floor's colour but is not an obstacle. Those cells become
+    free; so do the specks of fewer than cases * cases cells that are left."""
+    k = int(round(cases))
+    if k < 2:
+        return m
+    obstacle = (m == 1).astype(np.uint8)
+    garde = cv2.morphologyEx(obstacle, cv2.MORPH_OPEN, np.ones((k, k), np.uint8))
+    # give back the border cells of what survived (the opening rounds the corners off)
+    n, etiquettes = cv2.connectedComponents(obstacle, connectivity=8)
+    vivants = np.unique(etiquettes[garde == 1])
+    gros = np.isin(etiquettes, vivants[vivants > 0])
+    large = cv2.dilate(garde, np.ones((3, 3), np.uint8)) == 1
+    out = m.copy()
+    out[(m == 1) & ~(gros & large)] = 0
+    return out
 
 
 class Odometrie:
@@ -95,7 +116,119 @@ class FusionReelle:
         self.percevoir_frais = percevoir_frais or percevoir_http(
             args.perception, delai=8.0, age_max=args.age_max, fraiche=True
         )
+        self.camera = None  # the overhead camera (OverheadDrone), with --drone-source
+        self.drone = {'etat': 'no drone camera (--drone-source)'}
         self.reinitialiser()
+        if args.drone_source:
+            self.ouvrir_camera()
+
+    # ---- the drone: the overhead camera, read only ------------------------------------------
+    def ouvrir_camera(self):
+        from guidance_global_map.drone import OverheadDrone, camera_reader
+        from guidance_global_map.pipeline import OverheadSettings
+
+        a = self.args
+        mpp = a.drone_mpp
+        if mpp is None:  # width seen on the floor / width of the picture, set at the first one
+            mpp = 1.0
+            self.mpp_auto = True
+        else:
+            self.mpp_auto = False
+        self.reglages_camera = OverheadSettings(
+            metres_per_pixel=mpp,
+            camera_height=a.drone_hauteur,
+            rover_marker_id=a.drone_marqueur,
+            marker_height=a.drone_hauteur_marqueur,
+        )
+        self.lecteur = camera_reader(a.drone_source)
+        self.camera = OverheadDrone(self.lecteur, self.reglages_camera, period=0.0)
+        self.drone = {'etat': 'waiting for the first picture'}
+        threading.Thread(target=self.boucle_drone, daemon=True).start()
+
+    def boucle_drone(self):
+        while True:
+            t0 = time.monotonic()
+            try:
+                self.tour_drone()
+            except Exception as e:  # noqa: BLE001 - a bad picture must not end the thread
+                self.drone = {'etat': f'{type(e).__name__}: {e}'[:160]}
+            time.sleep(max(0.2, self.args.drone_periode - (time.monotonic() - t0)))
+
+    def tour_drone(self):
+        import dataclasses
+
+        from guidance_global_map.segmentation import grid_to_fusion
+
+        if self.mpp_auto:
+            image = self.lecteur()
+            if image is None:
+                self.drone = {'etat': 'no picture from the drone camera'}
+                return
+            a = self.args
+            largeur = 2 * a.drone_hauteur * math.tan(math.radians(a.drone_champ) / 2)
+            self.camera.settings = dataclasses.replace(
+                self.camera.settings, metres_per_pixel=largeur / max(image.shape[:2])  # long side
+            )
+            self.mpp_auto = False
+        r = self.camera.refresh(force=True)
+        if r is None:
+            self.drone = {'etat': f'picture not usable: {self.camera.problem or "no picture"}'}
+            return
+        m = np.asarray(grid_to_fusion(r.grid), dtype=np.int8)  # row 0 = south, 5 cm cells
+        m = sans_traits(m, self.args.drone_largeur_min / self.camera.settings.cell_size)
+        res = self.camera.settings.cell_size
+        vu = None
+        if r.rover_position is not None:
+            vu = (r.rover_position[0], r.rover_position[1], r.rover_heading)
+        with self.verrou:
+            pose = self.pose
+            if vu is not None and vu[2] is not None and pose is not None and self.immobile:
+                # the camera does not move: one view of the marker while the rover stands
+                # still places its whole picture in the frame of the maps
+                self.calage = (angle(pose[2] - vu[2]), vu[0], vu[1], pose[0], pose[1])
+            calage = self.calage
+            place = None
+            if calage is not None:
+                place = self.placer_vue(m, res, calage)
+                self.carte.tuiles['drone'] = {}  # the camera sees its whole area every time
+                self.carte.maj['drone'] = {}
+                for msg in decouper(place[0], place[1], place[2], 4, self.carte, 'drone',
+                                    t=time.monotonic()):
+                    self.carte.recevoir(msg)
+            self.vue_drone = {'m': m, 'res': res, 'rover': vu, 'place': place}
+        self.drone = {
+            'etat': 'ok',
+            't': time.time(),
+            'cale': calage is not None,
+            'rover_vu': vu is not None,
+            'cap_vu': vu is not None and vu[2] is not None,
+            'obstacles': int((m == 1).sum()),
+            'libres': int((m == 0).sum()),
+            'metres_par_pixel': self.camera.settings.metres_per_pixel,
+            'zone_m': [round(m.shape[1] * res, 2), round(m.shape[0] * res, 2)],
+        }
+
+    @staticmethod
+    def placer_vue(m, res, calage):
+        """The camera's matrix (its own frame: origin bottom left of the picture) resampled on
+        the grid of the maps: (matrix, x0, y0)."""
+        th, cx, cy, mx, my = calage
+        c, s = math.cos(th), math.sin(th)
+        h, w = m.shape
+        coins = [(0, 0), (w * res, 0), (0, h * res), (w * res, h * res)]
+        xs = [mx + c * (x - cx) - s * (y - cy) for x, y in coins]
+        ys = [my + s * (x - cx) + c * (y - cy) for x, y in coins]
+        j0, j1 = math.floor(min(xs) / res), math.ceil(max(xs) / res)
+        i0, i1 = math.floor(min(ys) / res), math.ceil(max(ys) / res)
+        X = (np.arange(j0, j1) + 0.5) * res - mx
+        Y = (np.arange(i0, i1) + 0.5) * res - my
+        XX, YY = np.meshgrid(X, Y)
+        jc = np.floor((cx + c * XX + s * YY) / res).astype(int)
+        ic = np.floor((cy - s * XX + c * YY) / res).astype(int)
+        ok = (jc >= 0) & (jc < w) & (ic >= 0) & (ic < h)
+        out = np.full(XX.shape, -1, np.int8)
+        out[ok] = m[ic[ok], jc[ok]]
+        return out, j0 * res, i0 * res
 
     def reinitialiser(self):
         """Empty map, trail cleared, new frame: its origin is the rover pose at the next round
@@ -112,6 +245,9 @@ class FusionReelle:
             self.objectif = None
             self.decision = None
             self.n_scan = {'points': 0, 'free': 0, 'obstacle': 0}
+            self.immobile = False
+            self.calage = None  # camera frame -> frame of the maps, from the rover's marker
+            self.vue_drone = None
 
     def en_mission(self):
         return self.fil_mission is not None and self.fil_mission.is_alive()
@@ -165,6 +301,7 @@ class FusionReelle:
             and abs(angle(self.precedente[2] - pose[2])) < math.radians(3)
         )
         self.precedente = pose
+        self.immobile = immobile
         if self.en_mission():
             info = 'mission running: the rover looks at each stop'
         elif not immobile:
@@ -329,6 +466,7 @@ class FusionReelle:
         return cx - cote / 2, cy - cote / 2, cx + cote / 2, cy + cote / 2
 
     def dessiner(self, pose, info, etat):
+        now0 = time.time()
         with self.verrou:
             z = self.zone_vue(pose)
             g = self.carte.grille(*z)
@@ -346,6 +484,7 @@ class FusionReelle:
             gr = self.carte.grille(*zr)
             trail = list(self.trail)
             n_tuiles = len(self.carte.tuiles['rover'])
+            n_tuiles_drone = len(self.carte.tuiles.get('drone') or {})
         gx0, gy0 = g.j0 * g.res, g.i0 * g.res
         vue = ff.View(z[0], z[1], z[2], z[3], TAILLE / (z[2] - z[0]))
         depart = trail[0] if trail else None
@@ -354,26 +493,43 @@ class FusionReelle:
             g.val, g.src, gx0, gy0, vue, pose, objectif, depart, None, path=chemin, trail=trail
         )
         ff.draw_frame(fused, vue, 1.0)
-        # the drone panel: same frame, only what the drone saw (nothing until it is calibrated)
-        val_drone = np.where(g.src == 1, g.val, -1)
-        drone = ff.render_fused_view(
-            val_drone, g.src, gx0, gy0, vue, pose, objectif, depart, None, path=chemin
-        )
-        ff.draw_frame(drone, vue, 1.0)
-        titre = (
-            f'Drone: {self.args.drone_nom} - not calibrated, not fused yet'
-            if self.args.drone_nom
-            else 'No overhead camera fused yet'
-        )
-        for k, t in enumerate((titre, 'Click: goal for the rover')):
+        # the drone panel: what the overhead camera sees. Placed on the frame of the maps once
+        # the rover's marker was seen; before that, in the camera's own frame (not clickable).
+        etat_drone = dict(self.drone)
+        vd = self.vue_drone
+        frais = etat_drone.get('etat') == 'ok' and now0 - etat_drone.get('t', 0) < 10.0
+        vue_d = vue
+        if vd is not None and vd['place'] is not None:
+            md, dx0, dy0 = vd['place']
+            drone = vue.raster(ff.drone_classes(md), dx0, dy0, vd['res'])
+            ff.draw_frame(drone, vue, 1.0)
+            ff.draw_polyline(drone, vue, chemin, ff.PATH_C, 2)
+            ff.draw_markers(drone, vue, pose, objectif, depart, None)
+            titres = ('Drone: placed by the rover marker', 'Click: goal for the rover')
+        elif vd is not None:
+            h, w = vd['m'].shape
+            cote = max(h, w) * vd['res']
+            ox, oy = (w * vd['res'] - cote) / 2, (h * vd['res'] - cote) / 2
+            vue_d = None
+            vc = ff.View(ox, oy, ox + cote, oy + cote, TAILLE / cote)
+            drone = vc.raster(ff.drone_classes(vd['m']), 0.0, 0.0, vd['res'])
+            ff.draw_frame(drone, vc, 1.0)
+            if vd['rover'] is not None:
+                ff.draw_rover(drone, vc, (vd['rover'][0], vd['rover'][1], vd['rover'][2] or 0.0))
+            titres = (
+                'Drone: camera frame, not placed yet',
+                f'needs ArUco marker {self.args.drone_marqueur} on the rover',
+            )
+        else:
+            drone = np.full((TAILLE, TAILLE, 3), ff.PALETTE[ff.K_UNKNOWN], np.uint8)
+            ff.draw_frame(drone, vue, 1.0)
+            ff.draw_markers(drone, vue, pose, objectif, depart, None)
+            titres = ('Drone: ' + str(etat_drone.get('etat'))[:40], 'Click: goal for the rover')
+        if vd is not None and not frais:
+            titres = (titres[0], 'OLD PICTURE: ' + str(etat_drone.get('etat'))[:34])
+        for k, t in enumerate(titres):
             cv2.putText(
-                drone,
-                t,
-                (16, 28 + 26 * k),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                ff.INK_C,
-                2,
+                drone, t, (12, 24 + 22 * k), cv2.FONT_HERSHEY_SIMPLEX, 0.5, ff.INK_C, 1,
                 cv2.LINE_AA,
             )
         val_rover = np.where(gr.src == 2, gr.val, -1)
@@ -411,14 +567,22 @@ class FusionReelle:
             'views fused while standing still',
             'drone': {
                 'source': (
-                    f'{self.args.drone_nom} (REAL drone; not calibrated on the floor yet: '
-                    'its picture is not fused)'
+                    f'{self.args.drone_nom or "overhead camera"} (REAL drone): '
+                    + (
+                        'placed on the map by the rover marker, fused'
+                        if etat_drone.get('cale')
+                        else 'obstacles seen in its own frame, not fused until the rover '
+                        f'marker (ArUco {self.args.drone_marqueur}) is seen'
+                        if etat_drone.get('etat') == 'ok'
+                        else str(etat_drone.get('etat'))
+                    )
                 )
-                if self.args.drone_nom
+                if (self.args.drone_nom or self.camera is not None)
                 else 'no overhead camera connected',
-                'reel': bool(self.args.drone_nom),
-                'calibre': False,
-                'tuiles': 0,
+                'reel': bool(self.args.drone_nom or self.camera is not None),
+                'calibre': bool(etat_drone.get('cale')),
+                'tuiles': n_tuiles_drone,
+                'vue': etat_drone,
             },
             'tuiles_rover': n_tuiles,
             'scan': self.n_scan,
@@ -444,7 +608,7 @@ class FusionReelle:
         with self.lock:
             for n, png in pngs.items():
                 self.images[n] = (png, now)
-            self.vues_img = {'fused': vue, 'drone': vue, 'rover': vr}
+            self.vues_img = {'fused': vue, 'drone': vue_d, 'rover': vr}
             self.status = status
 
     def poser_objectif(self, corps):
@@ -455,7 +619,10 @@ class FusionReelle:
         with self.lock:
             v = self.vues_img.get(str(corps['panneau']))
         if v is None:
-            return 409, {'error': 'no picture of this map yet'}
+            return 409, {
+                'error': 'this map is not placed yet (the drone needs the rover marker): '
+                'click on the fused map'
+            }
         fx, fy = float(corps['fx']), float(corps['fy'])
         if not (0.0 <= fx <= 1.0 and 0.0 <= fy <= 1.0):
             return 400, {'error': 'fx and fy must be between 0 and 1'}
@@ -583,6 +750,35 @@ def options(argv=None):
         default=None,
         help='name of the real drone camera (e.g. the iPhone above the area), shown as the '
         'drone source; not fused until calibrated',
+    )
+    p.add_argument(
+        '--drone-source',
+        default=None,
+        help="the overhead camera's stream or snapshot URL (e.g. the dashboard's "
+        'http://127.0.0.1:8082/drone_feed): its obstacles are drawn on the drone map, and '
+        "fused once the rover's ArUco marker was seen. Read only. Default: none",
+    )
+    p.add_argument('--drone-periode', type=float, default=1.0, help='s between two pictures')
+    p.add_argument('--drone-hauteur', type=float, default=1.8, help='camera height (m)')
+    p.add_argument(
+        '--drone-champ',
+        type=float,
+        default=108.0,
+        help='horizontal field of the picture (deg), for the scale with --drone-hauteur '
+        '(108: iPhone ultrawide)',
+    )
+    p.add_argument(
+        '--drone-mpp', type=float, default=None, help='metres per pixel, measured (preferred)'
+    )
+    p.add_argument(
+        '--drone-largeur-min',
+        type=float,
+        default=0.15,
+        help='m: what the drone sees thinner than this is a line on the floor, not an obstacle',
+    )
+    p.add_argument('--drone-marqueur', type=int, default=10, help="ArUco id on the rover's top")
+    p.add_argument(
+        '--drone-hauteur-marqueur', type=float, default=0.0, help='marker height above floor (m)'
     )
     args = p.parse_args(argv)
     args.rover = args.rover.rstrip('/')
