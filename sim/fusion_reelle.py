@@ -143,6 +143,18 @@ def marqueurs_tolerants(detecter, identifiant):
     return detecter_mieux
 
 
+def mesure_du_mouvement(px_de, pose_de, px_a, pose_a, mini_px=8.0, mini_m=0.08):
+    """What one move of the rover says of the camera, from PIXELS: (rotation of the camera's
+    frame to the maps', metres per pixel), or None when the move is too small to tell. In
+    pixels (x right, y up) so that a wrong scale of the pictures cannot bend it."""
+    vu = (px_a[0] - px_de[0], px_a[1] - px_de[1])
+    roule = (pose_a[0] - pose_de[0], pose_a[1] - pose_de[1])
+    if math.hypot(*vu) < mini_px or math.hypot(*roule) < mini_m:
+        return None
+    rotation = angle(math.atan2(roule[1], roule[0]) - math.atan2(vu[1], vu[0]))
+    return rotation, math.hypot(*roule) / math.hypot(*vu)
+
+
 def troncon(chemin, grille, carte, longueur_max, depart):
     """The start of the planned path, `longueur_max` m at most, in a few points: each chord
     stays out of the obstacles grown by the rover's radius. Cells nobody has seen may be
@@ -562,7 +574,7 @@ class FusionReelle:
             return None
         r = self.ia(image)
         reglages = self.camera.settings
-        if r is not None and a.drone_mpp is None:
+        if r is not None and a.drone_mpp is None and not self.mpp_calibre:
             mpp = a.drone_taille_rover / r.taille
             reglages = dataclasses.replace(reglages, metres_per_pixel=mpp)
             self.camera.settings = reglages  # kept for the pictures where it is not found
@@ -638,6 +650,7 @@ class FusionReelle:
             self.repere_fixe = []  # what stood still in the camera's view when it was found
             self.appui = None  # (objects the camera saw, rover pose) at the last stop
             self.appui_ia = None  # (rover in the picture, rover pose) at the last stop
+            self.mpp_calibre = False  # the scale was measured by /calibrer: kept as it is
             self.rotation_ia = None  # camera frame -> maps, from a move (vision model)
             self.info_mouvement = None
             self.correction_echelle = 1.0  # what the rover's move said of the camera's scale
@@ -793,6 +806,119 @@ class FusionReelle:
             if issue != 'arrive':
                 arreter_le_rover(self.requete, journal=lambda t: print(t, flush=True))
             self.journal_mission(etat=issue)
+
+    # ---- calibration: the rover drives forward and back, seen by the drone ------------------
+    def calibrer(self):
+        """POST /calibrer: the rover drives --calibrage-distance forward, then back. The vision
+        model finds it in the drone's picture at the three stops; the two moves give the
+        direction of the camera's frame and its scale. (code, answer)"""
+        if self.en_mission():
+            return 409, {'error': 'a mission or a calibration is already running'}
+        if self.camera is None or self.ia is None:
+            return 409, {'error': 'needs the drone camera with the vision model (ia)'}
+        self.arret_demande.clear()
+        self.journal_mission('en_cours', 'calibration: start', 0)
+        self.fil_mission = threading.Thread(target=self._calibrage, daemon=True)
+        self.fil_mission.start()
+        return 200, {'ok': True}
+
+    def _rover_dans_l_image(self, apres, delai=12.0):
+        """(rover in the picture in PIXELS (x right, y up), rover pose on the maps) from a drone
+        picture taken after `apres` (time.time()) with the rover standing still and found by
+        the model; None after `delai` s without one."""
+        fin = time.time() + delai
+        while time.time() < fin and not self.arret_demande.is_set():
+            d = self.drone
+            if d.get('etat') == 'ok' and d.get('t', 0.0) > apres and d.get('rover_vu'):
+                with self.verrou:
+                    vd, pose, immobile = self.vue_drone, self.pose, self.immobile
+                mpp = d.get('metres_par_pixel')
+                if immobile and vd is not None and vd['rover'] is not None and pose and mpp:
+                    return (vd['rover'][0] / mpp, vd['rover'][1] / mpp), pose
+            time.sleep(0.2)
+        return None
+
+    def _rouler(self, distance, delai=20.0):
+        """POST /move {distance} (+ forward, - backward) and wait for the rover to stand still.
+        Raises when the rover does not take it or does not finish."""
+        import avancer_esquive as ae
+
+        etat = self.requete('GET', '/state')
+        if etat is None or not ae.pret(etat):
+            raise RuntimeError('rover not ready (GET /state): link, gyro, or a move running')
+        if self.requete('POST', '/move', {'distance': distance}) is None:
+            raise RuntimeError('the rover did not answer POST /move')
+        debut = time.monotonic()
+        time.sleep(0.5)
+        while time.monotonic() - debut < delai:
+            if self.arret_demande.is_set():
+                raise ArretOperateur('calibration stopped')
+            etat = self.requete('GET', '/state')
+            if etat is not None and ae.pret(etat):
+                return
+            time.sleep(0.5)
+        raise RuntimeError(f'the rover did not finish {distance:+.2f} m in {delai:.0f} s')
+
+    def _calibrage(self):
+        a = self.args
+        d = a.calibrage_distance
+        issue = 'erreur'
+        try:
+            p0 = self._rover_dans_l_image(time.time())
+            if p0 is None:
+                raise RuntimeError('the drone does not see the rover standing still')
+            self.journal_mission(texte=f'calibration: {d * 100:.0f} cm forward', pas=1)
+            self._rouler(d)
+            p1 = self._rover_dans_l_image(time.time() + 1.0)
+            self.journal_mission(texte=f'calibration: {d * 100:.0f} cm back', pas=2)
+            self._rouler(-d)
+            p2 = self._rover_dans_l_image(time.time() + 1.0)
+            if p1 is None or p2 is None:
+                raise RuntimeError('the drone lost the rover during the move')
+            mesures = [mesure_du_mouvement(*p0, *p1), mesure_du_mouvement(*p1, *p2)]
+            if any(m is None for m in mesures):
+                raise RuntimeError('the rover hardly moved (in the picture or on its odometry)')
+            (r1, k1), (r2, k2) = mesures
+            ecart = abs(angle(r1 - r2))
+            if ecart > math.radians(a.calibrage_ecart) or not 0.75 <= k1 / k2 <= 1.33:
+                raise RuntimeError(
+                    f'forward and back disagree ({math.degrees(ecart):.0f} deg, scales '
+                    f'{k1 * 1000:.1f} and {k2 * 1000:.1f} mm per pixel): hold the camera still'
+                )
+            rotation = angle(r1 + angle(r2 - r1) / 2)
+            mpp = (k1 + k2) / 2
+            self.fixer_calibrage(rotation, mpp, p2)
+            issue = 'arrive'
+            self.journal_mission(
+                texte=f'CALIBRATED: direction {math.degrees(rotation):+.0f} deg, '
+                f'{mpp * 1000:.1f} mm per pixel (forward and back agree within '
+                f'{math.degrees(ecart):.0f} deg)'
+            )
+        except ArretOperateur as e:
+            issue = 'arret_operateur'
+            self.journal_mission(texte=f'OPERATOR STOP: {e}')
+        except Exception as e:  # noqa: BLE001 - the calibration ends, the rover stops
+            self.journal_mission(texte=f'CALIBRATION FAILED: {e}')
+        finally:
+            if issue != 'arrive':
+                arreter_le_rover(self.requete, journal=lambda t: print(t, flush=True))
+            self.journal_mission(etat=issue)
+
+    def fixer_calibrage(self, rotation, mpp, dernier):
+        """The direction and the scale measured by the calibration become the camera's: the
+        scale is no longer read off the rover's box, the drone map starts again."""
+        import dataclasses
+
+        px, pose = dernier
+        with self.verrou:
+            self.camera.settings = dataclasses.replace(self.camera.settings, metres_per_pixel=mpp)
+            self.mpp_calibre, self.mpp_auto = True, False
+            self.rotation_ia = rotation
+            self.appui_ia = ((px[0] * mpp, px[1] * mpp), pose)
+            self.info_mouvement = 'direction and scale from the calibration (forward and back)'
+            self.calage, self.vue_drone = None, None
+            self.carte.tuiles['drone'] = {}  # placed with the old direction and scale
+            self.carte.maj['drone'] = {}
 
     def _mission_segments(self):
         """The mission in long segments (--segment): one POST /path carries several points of
@@ -1275,6 +1401,8 @@ def handler(fr):
                     return self._json(*fr.regler_carte_locale(corps))
                 if nom == '/marqueur':
                     return self._json(*fr.regler_marqueur(corps))
+                if nom == '/calibrer':
+                    return self._json(*fr.calibrer())
             except (KeyError, TypeError, ValueError) as e:
                 return self._json(400, {'error': str(e)[:200]})
             return self._json(404, {'error': 'unknown'})
@@ -1313,6 +1441,18 @@ def options(argv=None):
         default=0.0,
         help='m: drive in segments of this length at most, several points in one command, '
         'without stopping every --pas m. 0: step by step',
+    )
+    p.add_argument(
+        '--calibrage-distance',
+        type=float,
+        default=0.30,
+        help='m driven forward then back by POST /calibrer (the "Calibrate direction" button)',
+    )
+    p.add_argument(
+        '--calibrage-ecart',
+        type=float,
+        default=25.0,
+        help='deg: the calibration is refused when forward and back disagree by more',
     )
     p.add_argument(
         '--segment-vu',

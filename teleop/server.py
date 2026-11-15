@@ -35,6 +35,8 @@
   POST /fusion/carte_locale {"carte_locale": true|false}  build the rover's local map from
                      its own camera, or not (the "Local map" box of the maps)
   POST /fusion/marqueur {"sans_marqueur": true|false}  ignore or trust the rover's marker
+  POST /fusion/calibrer  the rover drives 30 cm forward then back, seen by the drone: direction
+                     and scale of the drone map (the rover MOVES)
                      in the drone's picture (the "No marker" box of the maps)
                      (sim/fusion_reelle.py)
                      (simulation only: never reaches the robot)
@@ -110,6 +112,7 @@ FUSION_POSTS = {
     '/fusion/arreter': (),
     '/fusion/marqueur': ('sans_marqueur',),
     '/fusion/carte_locale': ('carte_locale',),
+    '/fusion/calibrer': (),
 }
 SNAPSHOT_PERIOD = 0.1  # s: a camera that answers one picture per request is asked this often
 SNAPSHOT_MAX = 10_000_000  # bytes: a larger "picture" is refused

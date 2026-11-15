@@ -150,6 +150,7 @@
       <div class="maptools"><button id="mapReset" type="button">Reset the maps</button>
         <button id="goalGo" type="button" class="go">Go to the point</button>
         <button id="goalStop" type="button" class="halt">Stop the mission</button>
+        <button id="calibrate" type="button" title="The rover drives 30 cm forward, then 30 cm back, in view of the drone camera: the two moves give the direction and the scale of the drone map. Hold the camera still meanwhile.">Calibrate direction</button>
         <button id="goalClear" type="button">Clear the point</button>
         <label id="localMapBox" title="On: the rover's own camera builds the local map (rover map), outside a mission and at each stop. Off: it is not used and the rover map is emptied; the planner works from the drone map alone."><input type="checkbox" id="localMap"> Local map (rover camera)</label>
         <label id="noMarkerBox" title="On: the rover's marker is ignored in the drone's picture. Drive the rover at least 12 cm and stop, twice, in view of the drone camera: its move places the drone map. Off: the marker places it from one picture."><input type="checkbox" id="noMarker"> No marker on the rover</label>
@@ -434,6 +435,15 @@ $('noMarker').addEventListener('change', async (ev) => {
     mapMsg(on ? 'No marker: drive the rover 12 cm and stop, twice, to place the drone map'
               : 'Marker trusted: the drone map is placed when the marker is seen');
   } catch (err) { ev.target.checked = !on; mapMsg('fusion unreachable'); }
+});
+// The rover drives forward and back in view of the drone: direction and scale of its map.
+$('calibrate').addEventListener('click', async () => {
+  if (!confirm('The rover will drive 30 cm forward, then 30 cm back. Is the way clear, and is the rover in view of the drone camera?')) return;
+  try {
+    const r = await fetch('/fusion/calibrer', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const b = await r.json().catch(() => ({}));
+    mapMsg(r.status === 200 ? 'calibration started: hold the camera still' : 'calibration refused: ' + (b.error || 'HTTP ' + r.status));
+  } catch (e) { mapMsg('fusion unreachable'); }
 });
 // Empty the maps of the live fusion: a new map starts from where the rover stands now.
 $('mapReset').addEventListener('click', async () => {

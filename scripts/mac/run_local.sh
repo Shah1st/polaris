@@ -134,8 +134,7 @@ start_one() {
         # the phone is read through the dashboard (one connection to the phone)
         set -- "$@" --drone-nom "$PHONE_NAME" --drone-source http://127.0.0.1:8082/drone_feed \
           --drone-hauteur "$DRONE_HEIGHT" --drone-marqueur "$DRONE_MARKER" \
-          --drone-detecteur "$DRONE_DETECTOR" --drone-cumul \
-          --no-drone-sans-marqueur
+          --drone-detecteur "$DRONE_DETECTOR" --drone-cumul
         if [ -n "$DRONE_MPP" ]; then set -- "$@" --drone-mpp "$DRONE_MPP"; fi
       fi
       launch "$name" "$ROOT" "$@"

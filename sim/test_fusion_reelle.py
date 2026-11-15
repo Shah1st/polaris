@@ -517,3 +517,74 @@ def test_in_segments_a_segment_goes_round_an_obstacle_of_the_drone() -> None:
         for k in range(21):
             x, y = a[0] + (b[0] - a[0]) * k / 20, a[1] + (b[1] - a[1]) * k / 20
             assert max(abs(x - box[0]), abs(y - box[1])) > 0.15 + 0.15
+
+
+# ---- calibration: forward and back, seen by the drone (POST /calibrer) ---------------------
+
+
+def calibrating(turn_deg=70.0, mm_per_px=4.0, camera_moves=False):
+    """A FusionReelle whose rover and drone are stand-ins: the camera's frame is turned
+    `turn_deg` from the maps' and one pixel is `mm_per_px` on the floor. `_rouler` moves the
+    stand-in rover along its heading; `_rover_dans_l_image` says where the camera sees it."""
+    posts = []
+    f = fr.FusionReelle(
+        fr.options([]),
+        requete=lambda m, c, corps=None: posts.append((m, c)) or {'ok': True},
+        percevoir=lambda *a: None,
+        percevoir_frais=lambda *a: None,
+    )
+    f.camera = type('Camera', (), {'settings': OverheadSettings(metres_per_pixel=0.0031)})()
+    f.ia = lambda image: None
+    pose = [20.0, 20.0, math.radians(30)]
+    moves = []
+
+    def rouler(distance):
+        pose[0] += distance * math.cos(pose[2])
+        pose[1] += distance * math.sin(pose[2])
+        moves.append(distance)
+
+    def dans_l_image(apres):
+        th, k = math.radians(-turn_deg), 1000.0 / mm_per_px  # maps -> picture, pixels per m
+        x, y = pose[0] - 18.0, pose[1] - 19.0
+        px = (k * (math.cos(th) * x - math.sin(th) * y), k * (math.sin(th) * x + math.cos(th) * y))
+        if camera_moves and len(moves) == 2:  # the hand moved before the last picture
+            px = (px[0] + 40.0, px[1] + 70.0)
+        return px, tuple(pose)
+
+    f._rouler, f._rover_dans_l_image = rouler, dans_l_image
+    for msg in fr.decouper(np.zeros((8, 8), np.int8), 20.0, 20.0, 4, f.carte, 'drone', t=1.0):
+        f.carte.recevoir(msg)  # an older drone map, placed before the calibration
+    return f, moves, posts
+
+
+def test_the_calibration_drives_forward_and_back_and_finds_direction_and_scale() -> None:
+    f, moves, posts = calibrating(turn_deg=70.0, mm_per_px=4.0)
+
+    f._calibrage()
+
+    assert moves == [pytest.approx(0.30), pytest.approx(-0.30)]  # back where it started
+    assert f.mission['etat'] == 'arrive' and 'CALIBRATED' in f.mission['texte']
+    assert f.rotation_ia == pytest.approx(math.radians(70.0), abs=math.radians(1))
+    assert f.camera.settings.metres_per_pixel == pytest.approx(0.004, rel=0.01)
+    assert f.mpp_calibre  # the rover's box no longer changes the scale
+    assert not f.carte.tuiles['drone']  # the map placed before starts again
+    assert ('POST', '/stop') not in posts
+
+
+def test_the_calibration_is_refused_when_the_camera_moved_meanwhile() -> None:
+    f, moves, posts = calibrating(camera_moves=True)
+
+    f._calibrage()
+
+    assert f.mission['etat'] == 'erreur' and 'hold the camera still' in f.mission['texte']
+    assert f.rotation_ia is None and not f.mpp_calibre
+    assert f.carte.tuiles['drone']  # nothing was thrown away
+    assert ('POST', '/stop') in posts
+
+
+def test_the_calibration_needs_the_drone_camera_and_no_mission() -> None:
+    f, _, _ = calibrating()
+    f.ia = None
+    code, body = f.calibrer()
+    assert code == 409 and 'vision model' in body['error']
+    assert not f.en_mission()
