@@ -49,6 +49,14 @@ class RoutePlanner:
     def radius(self) -> float:
         return self.carte.rayon_effectif
 
+    def set_margin(self, margin: float) -> None:
+        """Room kept on top of the rover's radius (m), e.g. what its odometry may have drifted
+        since it was last seen from the air (rounded to the centimetre)."""
+        margin = round(max(0.0, margin), 2)
+        if margin != self.carte.marge_securite:
+            self.carte.marge_securite = margin
+            self.last_grid = None  # the grown obstacles change
+
     def _plan_of(self, grid: dict) -> GrillePlan:
         """The grid as the team's planner wants it: its own frame starts at the map's corner
         (x0, y0), so that the cells line up whatever the map's place on the floor."""

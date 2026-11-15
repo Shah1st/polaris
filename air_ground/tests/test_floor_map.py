@@ -16,6 +16,7 @@ sys.path.insert(0, HERE)
 
 import synthetic as syn  # noqa: E402
 from floor_map import FloorMap  # noqa: E402
+from planner import RoutePlanner  # noqa: E402
 from pose_camera import Pose  # noqa: E402
 
 # two boxes (centre, side, height) and the rover's marker
@@ -136,11 +137,13 @@ def test_the_map_centres_itself_where_the_phone_first_looks() -> None:
 
 def test_the_teams_colour_detection_adds_what_has_no_height_measured() -> None:
     floor, patches, marker = scene()
-    fmap = FloorMap((-0.8, -0.7, 0.8, 0.7))
-    for pose in list(views())[:4]:  # few views: almost no height measured yet
-        fmap.add(syn.render(pose, floor, marker, patches), pose, rover_xy=ROVER)
-    before = np.array(fmap.grid(0.05)['cells'])
-    fmap.update_colour(rover_xy=ROVER)
+    poses = list(views())[:4]  # few views: almost no height measured yet
+    heights_only = FloorMap((-0.8, -0.7, 0.8, 0.7))
+    fmap = FloorMap((-0.8, -0.7, 0.8, 0.7), colour=True)
+    for pose in poses:
+        for m in (heights_only, fmap):
+            m.add(syn.render(pose, floor, marker, patches), pose, rover_xy=ROVER)
+    before = np.array(heights_only.grid(0.05)['cells'])
     cells = np.array(fmap.grid(0.05)['cells'])
     row = lambda y: int((y - fmap.bounds[1]) / 0.05)  # noqa: E731  (row 0 = south)
     col = lambda x: int((x - fmap.bounds[0]) / 0.05)  # noqa: E731
@@ -159,3 +162,65 @@ def test_the_grid_view_is_the_planners_grid_on_the_same_pixels() -> None:
     assert picture.shape == grid.shape
     r, c = cell_of(fmap, *BOXES[1][0])
     assert tuple(picture[r + 2, c + 2]) == (40, 40, 190)  # an obstacle cell: dark red
+
+
+def test_the_moving_rover_leaves_no_trail_of_obstacles() -> None:
+    """The rover drives across the floor while the phone moves above it: where it has been
+    must not turn into obstacles (it used to be painted into the floor's picture at every
+    place, and the colour detection then saw a trail of rover)."""
+    floor = carpet()
+    body = np.full((200, 200, 3), (30, 30, 35), np.uint8)  # the rover's dark roof
+    fmap = FloorMap((-0.8, -0.7, 0.8, 0.7), colour=True)
+    track = [(-0.45 + 0.03 * k, -0.25) for k in range(30)]  # 0.9 m across
+    for k, (x, y) in enumerate(track):
+        a = 2 * math.pi * k / 30
+        d = syn.arkit_pose((0.2 * math.cos(a), 0.15 * math.sin(a), 1.5), (0.0, 0.0, 0.0),
+                           roll_deg=10 * math.sin(a), t=float(k))  # fmt: skip
+        d['sid'] = 4
+        pose = Pose.from_arkit(d)
+        rover = [(body, x, y, 0.0, 0.25, 0.25), (syn.marker_image(), x, y, 0.0, 0.14 * 1.5, 0.26)]
+        fmap.add(syn.render(pose, floor, None, rover), pose, rover_xy=(x, y))
+    cells = np.array(fmap.grid(0.05)['cells'])
+    row = lambda y: int((y - fmap.bounds[1]) / 0.05)  # noqa: E731  (row 0 = south)
+    col = lambda x: int((x - fmap.bounds[0]) / 0.05)  # noqa: E731
+    trail = {(row(y), col(x)) for x, y in track[:-8]}  # where it was, not where it is
+    assert not any(cells[r, c] == 1 for r, c in trail)
+    assert sum(cells[r, c] == 0 for r, c in trail) > len(trail) // 2  # seen as floor
+
+
+def plain_carpet() -> np.ndarray:
+    """A carpet of one colour, with its grain only (no coloured squares on it)."""
+    rng = np.random.default_rng(8)
+    n = round(3.0 / syn.FLOOR_RES)
+    grain = cv2.GaussianBlur(rng.normal(0, 40, (n, n)).astype(np.float32), (0, 0), 1.2)
+    base = np.full((n, n, 3), (70, 120, 160), np.float32)
+    return np.clip(base + grain[:, :, None], 0, 255).astype(np.uint8)
+
+
+def test_tall_boxes_do_not_grow_until_the_passage_closes() -> None:
+    """Two boxes 30 cm high, 45 cm apart: room for the rover (2 x 15 cm). The phone wanders
+    farther and farther from the middle, seeing them more and more from the side, where they
+    land farther out once laid flat. The map must keep their size and the passage open
+    (adding up all those views closed it after about 140 views)."""
+    floor = plain_carpet()
+    boxes = [
+        (syn.box_top(1), -0.35, 0.0, 0.0, 0.25, 0.30),
+        (syn.box_top(2), 0.35, 0.0, 0.0, 0.25, 0.30),
+    ]
+    fmap = FloorMap((-0.8, -0.7, 0.8, 0.7), res=0.01, colour=True)
+    planner = RoutePlanner(0.15)
+    sizes = []
+    for k in range(160):
+        a = 2 * math.pi * k / 40
+        r = 0.15 + 0.45 * k / 160
+        d = syn.arkit_pose((r * math.cos(a), 0.8 * r * math.sin(a), 1.4), (0.0, 0.0, 0.0),
+                           roll_deg=15 * math.sin(a), t=float(k))  # fmt: skip
+        d['sid'] = 5
+        pose = Pose.from_arkit(d)
+        fmap.add(syn.render(pose, floor, None, boxes), pose)
+        if k % 20 == 19:
+            g = fmap.grid(0.05)
+            sizes.append(int((np.array(g['cells']) == 1).sum()))
+            route = planner.route(g, (0.0, -0.45), (0.0, 0.45))
+            assert route is not None and len(route) <= 2, (k, sizes)  # straight through
+    assert max(sizes[2:]) <= 1.2 * sizes[2], sizes  # once built, it no longer creeps (+20 %)

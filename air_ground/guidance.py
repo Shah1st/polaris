@@ -105,7 +105,7 @@ class OdomLink:
 
     def __init__(
         self,
-        alpha: float = 0.3,
+        alpha: float = 0.15,
         jump_m: float = 0.25,
         jump_deg: float = 25.0,
         reset_after: int = 5,
@@ -219,8 +219,21 @@ class RoverClient:
 class GuideConfig:
     speed: float = 0.15  # m/s
     tolerance: float = 0.04  # m: arrived within this distance of the goal
-    resend: float = 0.03  # m: send the path again when its end moved by more than this
-    blind_s: float = 3.0  # s without seeing the rover from the air: stop and wait
+    # While driving, the path is sent again for a correction of the rover's place only when
+    # it moved the path's end by more than `resend` m, and not twice within `min_resend_s`:
+    # the rover drives on its odometry, as in the team's segments (sim/fusion_reelle.py
+    # --segment); a new route (an obstacle on the way) is sent at once.
+    resend: float = 0.08
+    min_resend_s: float = 2.0
+    # Rover not seen from the air (picture lost, rover out of view): after `blind_s` s it goes
+    # on along the route on its odometry; it stops after `blind_max_m` m driven or
+    # `blind_max_s` s that way, and goes on when it is seen again. The planner's margin grows
+    # by `blind_margin` of the distance driven blind (the odometry's uncertainty), as the
+    # team's `marge_drone` does without a drone (merging_map/fusion_carte.py).
+    blind_s: float = 1.0
+    blind_max_m: float = 1.5
+    blind_max_s: float = 30.0
+    blind_margin: float = 0.05
     near: float = 0.10  # m: this close to the goal, at most `near_tries` more paths
     near_tries: int = 3
     marker_offset: tuple[float, float] = (0.0, 0.0)  # marker centre in the rover's own frame
@@ -255,6 +268,9 @@ class Guide:
     # False while a planner owes a route for the goal: nothing is sent before (not even the
     # straight line). Without a planner it stays True.
     route_ready: bool = True
+    blind_m: float = 0.0  # m driven on odometry since the rover was last seen
+    _sent_at: float = -1e9
+    _prev_odom: Pose2 | None = None
 
     # -- inputs ---------------------------------------------------------------------------
 
@@ -292,6 +308,11 @@ class Guide:
         if self.mode == 'idle' and ctrl.get('queued'):
             self.mode = 'path'  # received, not started yet: the rover's loop takes it next
         self._state_since_command = True
+        if self._prev_odom is not None and (self.last_seen is None or t - self.last_seen > 0.5):
+            self.blind_m += math.dist(
+                (self._prev_odom.x, self._prev_odom.y), (self.odom.x, self.odom.y)
+            )
+        self._prev_odom = self.odom
         boot = state.get('boot_id')
         if boot != self._boot_id:  # the server restarted: its odometry starts again from zero
             if self._boot_id is not None:
@@ -339,6 +360,7 @@ class Guide:
         used = self.link.update(base, odom)
         if used:
             self.last_seen = t_picture
+            self.blind_m = 0.0
         else:
             self.dropped = (
                 f'sighting {self.link.last_error_m * 100:.0f} cm / '
@@ -376,13 +398,22 @@ class Guide:
             self.status = 'planning the route'
             return self.status
         blind = None if self.last_seen is None else now - self.last_seen
-        if blind is None or blind > self.cfg.blind_s:
-            if self.mode in MOVING and self.sent is not None and not self._blind_stopped:
-                self._stop()
-                self._blind_stopped = True
-            self.sent = None
-            self.status = f'waiting: rover not seen from the air for {blind or 0:.1f} s'
+        if blind is None:
+            self.status = 'waiting: the rover has not been seen from the air yet'
             return self.status
+        blind_note = ''
+        if blind > self.cfg.blind_s:
+            if self.blind_m > self.cfg.blind_max_m or blind > self.cfg.blind_max_s:
+                if self.mode in MOVING and self.sent is not None and not self._blind_stopped:
+                    self._stop()
+                    self._blind_stopped = True
+                self.sent = None
+                self.status = (
+                    f'stopped: rover not seen from the air for {blind:.0f} s, '
+                    f'{self.blind_m:.1f} m on odometry: waiting to see it again'
+                )
+                return self.status
+            blind_note = f' on odometry (not seen for {blind:.0f} s, {self.blind_m:.2f} m)'
         self._blind_stopped = False
 
         # Waypoints already passed (closer than the tolerance) are dropped.
@@ -400,8 +431,15 @@ class Guide:
 
         route = [*self.waypoints, self.goal]
         end = self.link.to_odom(*self.goal)
-        if moving and self.sent is not None and math.dist(end, self.sent) <= self.cfg.resend:
-            self.status = f'driving, {distance * 100:.0f} cm to go'
+        if (
+            moving
+            and self.sent is not None
+            and (
+                math.dist(end, self.sent) <= self.cfg.resend
+                or now - self._sent_at < self.cfg.min_resend_s
+            )
+        ):
+            self.status = f'driving{blind_note}, {distance * 100:.0f} cm to go'
             return self.status
         if not moving and self.sent is not None and distance < self.cfg.near:
             self._near_tries += 1
@@ -412,9 +450,15 @@ class Guide:
         self._state_since_command = False
         self.rover.path([self.link.to_odom(x, y) for x, y in route], self.cfg.speed)
         self.sent = end
+        self._sent_at = now
         self.paths_sent += 1
-        self.status = f'path sent ({self.paths_sent}), {distance * 100:.0f} cm to go'
+        self.status = f'path sent ({self.paths_sent}){blind_note}, {distance * 100:.0f} cm to go'
         return self.status
+
+    def blind_uncertainty(self) -> float:
+        """How far (m) the rover may be from where its odometry puts it, since it was last
+        seen: the planner keeps that much more room around the obstacles."""
+        return self.cfg.blind_margin * self.blind_m
 
     def snapshot(self) -> dict:
         est = self.rover_on_floor()

@@ -54,6 +54,7 @@ from guidance import ClockSync, Guide, GuideConfig, RoverClient, RoverError
 from planner import RoutePlanner
 from pose_camera import PoseError
 from rover_marker import RoverFinder
+from run_log import RunLog
 
 INDEX_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web', 'index.html')
 # What the dashboard may ask the rover through this server.
@@ -139,10 +140,6 @@ class MapWorker:
         self.grid_picture: np.ndarray | None = None  # the planner's grid, drawn
         self.error: str | None = None
         self.last_s: float | None = None  # seconds the last update took
-        # s between two runs of the team's colour detection (~0.1 s each); None: never
-        self.colour_every: float | None = 1.0
-        self._colour_at = 0.0
-        self._rover_xy = None  # where the rover was last seen: left out of the colours
         self._job = None
         self._wake = threading.Event()
         self._stop = threading.Event()
@@ -171,13 +168,8 @@ class MapWorker:
                 continue
             t0 = time.monotonic()
             try:
-                if job[2] is not None:
-                    self._rover_xy = job[2]
                 with self.lock:
-                    self.fmap.add(*job)
-                    if self.colour_every is not None and t0 - self._colour_at >= self.colour_every:
-                        self._colour_at = t0
-                        self.fmap.update_colour(self._rover_xy)
+                    self.fmap.add(*job)  # with the team's colour detection on this view
                     self.picture = self.fmap.render()
                     self.grid_picture = self.fmap.render_grid()
                 self.error = None
@@ -218,6 +210,7 @@ class GuideService:
         follow=False,
         radius=0.15,
         colour=True,
+        log_dir=None,
     ):
         """`follow`: the map centres itself where the phone first looks (`bounds` then only
         gives its size); otherwise it covers `bounds` of the floor frame. `radius`: the
@@ -225,6 +218,11 @@ class GuideService:
         `colour`: the team's colour detection adds its obstacles to the heights' (it cannot
         tell a flat colour on the floor from an object: off for a painted floor)."""
         self.planner = RoutePlanner(radius=radius)
+        # a record of each drive (run_log.py): None = none
+        self.log = RunLog(log_dir) if log_dir else None
+        self.clock = time.monotonic  # the time of the record's lines
+        self._next_log = 0.0
+        self._logged = (None, 0, None)  # goal, paths sent, status: what was last written
         self.plans = 0  # routes computed for the current goal and before
         self.plan_note: str | None = None
         self._next_plan = 0.0
@@ -232,9 +230,7 @@ class GuideService:
         rover = rover if rover is not None else NoRover()
         self.rover = rover
         self.mapping_only = isinstance(rover, NoRover)
-        self.mapper = MapWorker(FloorMap(bounds, res, follow=follow))
-        if not colour:
-            self.mapper.colour_every = None
+        self.mapper = MapWorker(FloorMap(bounds, res, follow=follow, colour=colour))
         self.view_jpg: bytes | None = None
         self.finder = finder
         self.guide = Guide(rover, cfg or GuideConfig())
@@ -299,10 +295,39 @@ class GuideService:
                     self.guide.step(time.monotonic())
                 except RoverError as e:
                     self.rover_error = str(e)
+            if self.log is not None:
+                self._write_log(now)
             if fresh and now >= next_draw:
                 next_draw = now + 0.15
                 self._draw(frame)
             self._stop.wait(0.01 if fresh else 0.03)
+
+    def _write_log(self, now: float) -> None:
+        """The drive's record: a line per path sent and per end of a goal, four a second
+        while a goal is set."""
+        g = self.guide
+        goal, sent, status = self._logged
+        if g.paths_sent != sent:
+            self.log.write('send', at=now, n=g.paths_sent, blind_m=round(g.blind_m, 3))
+        if goal is not None and g.goal is None:  # the goal ended: arrived, stopped, cancelled
+            self.log.write('end', at=now, status=g.status)
+        if g.goal is not None and now >= self._next_log:
+            self._next_log = now + 0.25
+            est = g.rover_on_floor()
+            seen = None if g.last_seen is None else round(now - g.last_seen, 2)
+            self.log.write(
+                'tick',
+                at=now,
+                rover=None if est is None else [round(est.x, 3), round(est.y, 3),
+                                                 round(math.degrees(est.heading), 1)],
+                odom=None if g.odom is None else [round(g.odom.x, 3), round(g.odom.y, 3)],
+                mode=g.mode,
+                status=g.status,
+                seen_age=seen,
+                blind_m=round(g.blind_m, 3),
+                link_error_cm=round(g.link.last_error_m * 100, 1),
+            )  # fmt: skip
+        self._logged = (g.goal, g.paths_sent, g.status)
 
     def _replan(self, force: bool = False) -> None:
         """The route around the obstacles, from where the rover is now: computed for a new
@@ -315,6 +340,8 @@ class GuideService:
             sent = self.guide.sent
         if goal is None or here is None:
             return
+        # on odometry since the rover was last seen: more room, its place is less sure
+        self.planner.set_margin(self.guide.blind_uncertainty())
         grid = self.mapper.grid()
         start = (here.x, here.y)
         if not force and sent is not None and self.planner.blocked(grid, route, start) is None:
@@ -333,6 +360,10 @@ class GuideService:
                 return
             self.plan_note = f'route of {len(new)} point(s) around the obstacles'
             self.guide.set_route(new[:-1])
+        if self.log is not None:
+            points = [[round(x, 3), round(y, 3)] for x, y in new]
+            margin = self.planner.carte.marge_securite
+            self.log.write('route', at=self.clock(), points=points, margin_m=margin)
 
     def _read_rover(self) -> None:
         try:
@@ -455,6 +486,11 @@ class GuideService:
         with self.lock:
             self.guide.set_goal(x, y)
             self.guide.route_ready = False  # nothing sent before the route is planned
+        if self.log is not None:
+            here = self.guide.rover_on_floor()
+            start = None if here is None else [round(here.x, 3), round(here.y, 3)]
+            self.log.write('goal', at=self.clock(), goal=[round(x, 3), round(y, 3)], start=start)
+        with self.lock:
             self.plan_note = None
         self._replan(force=True)  # the route before anything is sent to the rover
         if self.guide.goal is None and self.plan_note:
@@ -662,6 +698,11 @@ def main() -> None:
         '--fixed-bounds: then only its size counts',
     )
     ap.add_argument(
+        '--log',
+        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'runs'),
+        help="folder of the drives' records (run_log.py); '' for none",
+    )
+    ap.add_argument(
         '--no-colour',
         action='store_true',
         help="obstacles from the heights only, without the team's colour detection (for a "
@@ -680,6 +721,7 @@ def main() -> None:
     service = GuideService(
         a.phone, rover, finder, cfg, tuple(a.bounds), a.res, a.port, a.host,
         follow=not a.fixed_bounds, radius=a.radius, colour=not a.no_colour,
+        log_dir=a.log or None,
     )  # fmt: skip
     service.start()
     print(

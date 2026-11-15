@@ -213,17 +213,52 @@ def test_reaches_the_goal_although_the_odometry_is_wrong() -> None:
 
 def test_waits_for_the_first_sighting_and_stops_when_blind() -> None:
     rover = FakeRover(Pose2(0.0, 0.0, 0.0))
-    guide = Guide(rover, GuideConfig(blind_s=1.0))
+    guide = Guide(rover, GuideConfig(blind_max_m=0.3))
     guide.set_goal(1.5, 0.0)
     statuses = run(guide, rover, 2.0, air=lambda t: False)
     assert statuses == ['waiting: the rover has not been seen from the air yet']
-    assert rover.paths == []  # nothing sent blind
-    # seen for 3 s (it drives), then the camera loses it for 3 s, then finds it again
-    statuses = run(guide, rover, 14.0, air=lambda t: t < 5.0 or t > 8.0)
-    waiting = [s for s in statuses if 'not seen from the air for' in s]
-    assert waiting and rover.stop_count == 1  # stopped once, not at every step
+    assert rover.paths == []  # nothing sent before the rover is seen once
+    # seen for 3 s (it drives), then lost for 5 s: it goes on 0.3 m on its odometry, then
+    # stops and waits; seen again, it goes on to the goal
+    statuses = run(guide, rover, 20.0, air=lambda t: t < 5.0 or t > 10.0)
+    assert any('on odometry' in s for s in statuses)
+    stopped = [s for s in statuses if s.startswith('stopped: rover not seen')]
+    assert stopped and rover.stop_count == 1  # stopped once, not at every step
     assert statuses[-1].startswith('arrived')
     assert math.dist((rover.truth.x, rover.truth.y), (1.5, 0.0)) < 0.05
+
+
+def test_a_short_loss_of_the_picture_does_not_stop_the_rover() -> None:
+    """The phone loses its picture for 2 s in the middle of the drive: the rover goes on along
+    its route on odometry, without stopping, and is corrected once seen again."""
+    rover = FakeRover(Pose2(0.0, 0.0, 0.0))
+    guide = Guide(rover)
+    guide.set_goal(1.5, 0.3)
+    stops = []
+
+    def air(t):
+        return not 5.0 < t < 7.0
+
+    statuses = run(guide, rover, 25.0, air=air)
+    assert rover.stop_count == 0
+    assert any('on odometry' in s for s in statuses)
+    moving_while_blind = [p for t, p in rover.trail if 5.5 < t < 6.9]
+    assert math.dist((moving_while_blind[0].x, moving_while_blind[0].y),
+                     (moving_while_blind[-1].x, moving_while_blind[-1].y)) > 0.1  # fmt: skip
+    assert statuses[-1].startswith('arrived') and not stops
+    assert math.dist((rover.truth.x, rover.truth.y), (1.5, 0.3)) < 0.05
+    assert guide.blind_m == 0.0 and guide.blind_uncertainty() == 0.0
+
+
+def test_corrections_while_driving_do_not_resend_the_path_every_time() -> None:
+    """The air camera corrects the rover's place 15 times a second; the rover drives its
+    route on odometry and gets it again only for a large correction, at most every 2 s."""
+    rover = FakeRover(Pose2(0.0, 0.0, 0.0))
+    guide = Guide(rover)
+    guide.set_goal(2.0, 0.0)
+    statuses = run(guide, rover, 30.0)
+    assert statuses[-1].startswith('arrived')
+    assert len(rover.paths) <= 6, len(rover.paths)  # 13 s of driving
 
 
 def test_yields_to_an_operator_stop_and_to_manual_driving() -> None:

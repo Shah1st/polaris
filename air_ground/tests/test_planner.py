@@ -122,6 +122,8 @@ def drive(service: GuideService, rover: FakeRover, seconds: float, on_tick=None)
             service._replan()
         if k % 5 == 0:
             s = service.guide.step(t)
+            if service.log is not None:
+                service._write_log(t)
             if not statuses or statuses[-1] != s:
                 statuses.append(s)
     return statuses
@@ -175,3 +177,29 @@ def test_a_goal_behind_a_closed_wall_is_refused(service) -> None:
     with pytest.raises(ValueError, match='no way'):
         service.set_goal({'x': -0.5, 'y': 0.6})
     assert rover.paths == [] and service.guide.goal is None
+
+
+def test_the_drive_is_recorded(tmp_path) -> None:
+    from run_log import summarise
+
+    s = GuideService('http://127.0.0.1:9', FakeRover(Pose2(-0.5, -0.6, math.radians(80))),
+                     finder=None, port=0, log_dir=str(tmp_path))  # fmt: skip
+    s.stream.close()
+    s.clock = lambda: s.rover.t  # the simulated time
+    try:
+        s.mapper = FixedMap(grid_with(WALL))
+        drive(s, s.rover, 1.0)
+        s.set_goal({'x': -0.5, 'y': 0.6})
+        drive(s, s.rover, 40.0)
+        import json
+
+        lines = [json.loads(x) for x in open(s.log.path, encoding='utf-8')]
+        (run,) = summarise(lines)
+        assert run['status'].startswith('arrived') and run['end_error_m'] < 0.06
+        assert run['routes'] >= 1
+        # this rover's odometry is 10 % short on purpose: a correction every 2 s at most
+        assert run['paths_sent'] <= run['duration_s'] / 2.0 + 3
+        assert run['driven_m'] > 2.0  # around the wall, not straight through it (1.2 m)
+        assert run['pauses'] == 0  # corrections and new routes never stop the rover
+    finally:
+        s.server.server_close()

@@ -533,6 +533,33 @@ def test_path_can_be_stopped_or_replaced() -> None:
     assert abs(s.board.wl) < 0.01 and abs(s.board.wr) < 0.01
 
 
+def test_a_corrected_path_keeps_the_rover_rolling() -> None:
+    """A guide sends the same route again, shifted by a correction of its position: the rover
+    goes on at its speed instead of stopping, ramping up again and pivoting to face it."""
+    s = Sim()
+    s.run(2.5)
+    s.start(Step.path([[2.0, 0.0]]))
+    s.run(2.0)  # cruising
+    assert s.ctrl.v_cmd > 0.15
+    slowest = math.inf
+    for shift in (0.04, -0.03, 0.05):  # three corrections, 0.5 s apart
+        s.start(Step.path([[2.0, shift]], frame='odom'))
+        for _ in range(10):
+            s.run(0.05)
+            slowest = min(slowest, s.ctrl.v_cmd)
+    assert s.ctrl.history[0]['status'] == 'replaced by a new command'
+    assert slowest > 0.12, f'slowed down to {slowest:.2f} m/s'
+    # far off the nose, it still turns on the spot first: the route went behind it
+    s.start(Step.path([[-1.0, 0.0]], frame='odom'))
+    s.run(0.2)
+    assert abs(s.ctrl.v_cmd) < 0.01 and abs(s.ctrl.w_cmd) > 0.1
+    # after a stop, a path starts from rest again
+    s.ctrl.stop(s.t)
+    s.start(Step.path([[2.0, 0.0]], frame='odom'))
+    s.run(0.05)
+    assert s.ctrl.v_cmd < 0.1
+
+
 def test_path_aborts_when_the_rover_is_blocked() -> None:
     s = Sim()
     s.run(2.5)

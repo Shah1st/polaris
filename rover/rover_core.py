@@ -1001,6 +1001,7 @@ class Controller:
         self._manual_t = 0.0
         self._t_last: float | None = None
         self._task: dict = {}
+        self._carry: float | None = None  # speed carried over to a path replacing a path
         self._settle_until = 0.0
         self._pending_result: dict | None = None
         self.assist = SteeringAssist(cfg, odom)
@@ -1033,6 +1034,12 @@ class Controller:
         """
         if steps and not self.odom.bias_ready:
             raise NotReadyError('gyro not calibrated yet: keep the rover still until "Gyro OK"')
+        # A path replacing a running path (a guide correcting its route while driving): the new
+        # one starts at the speed the rover has, without stopping to face it unless it is far
+        # off the nose. Otherwise every correction would stop the rover and pivot it.
+        self._carry = (
+            abs(self.v_cmd) if self.mode == 'path' and steps and steps[0].kind == 'path' else None
+        )
         if self.mode in ('move', 'turn', 'path', 'settle'):
             self._abort('replaced by a new command', t)
         self.queue = deque(steps)
@@ -1042,6 +1049,7 @@ class Controller:
             self.fault = None
 
     def stop(self, t: float, reason: str = 'stopped') -> None:
+        self._carry = None  # a path after a stop starts from rest
         try:
             self._abort(reason, t)
         except Exception:  # noqa: BLE001 - a broken step must never prevent a stop
@@ -1153,6 +1161,11 @@ class Controller:
                 pts = [(px, py) for px, py in s.points]
             follower = PathFollower(pts, (x0, y0), self.cfg.path_corner_deg)
             speed = s.speed or self.cfg.path_speed
+            carry = getattr(self, '_carry', None)
+            if carry is not None:  # it continues a running path: keep going (see run())
+                follower.pivoting = False
+                task['v_ramp'] = min(carry, speed)
+            self._carry = None
             task['follower'] = follower
             task['speed'] = speed
             # Generous: pivots and slowing down near the end take time too.

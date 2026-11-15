@@ -27,7 +27,20 @@ cells, `1` obstacle / `0` free / `-1` unknown, row 0 = south; `GET /map.json`). 
   the floor does not (plane sweep over pairs of views a few tens of cm apart); it sees what has
   the floor's colour, but needs texture and many views taken while moving.
 
-The rover itself is left out of both. **The route** (`planner.py`) is the team's: obstacles grown
+What the camera sees again **replaces** what was said of a cell, it is not added to it (the
+team's `--drone-cumul` rule): each view, or pair of views for the heights, says "obstacle",
+"floor" or nothing for each 5 cm cell it sees within about 27 degrees of its vertical; the view
+that saw a cell most from above keeps speaking for it, until a view as good comes (the kept ones
+lose 0.004 of their advantage per view: about 10 s for a view 0.2 more to the side); a cell
+turns obstacle after two views say so, and floor after two views say not. Before that, views
+were added up: seen from the side, a tall box lands farther out once laid flat, and the edges
+of box tops gave false heights, so the boxes grew view after view until the passages closed
+(two 30 cm boxes 45 cm apart: closed after about 140 views; now open, `test_floor_map.py`).
+The rover is left out of both, where it stands in the view (from its place on the floor to its
+leaning top) and in the older view each height is compared with; it is never drawn into the
+floor's picture either, which shows what the camera sees now (the kept views lose their
+advantage fast there: 0.03 per view).
+ **The route** (`planner.py`) is the team's: obstacles grown
 by the rover's radius (exact Minkowski sum, 0.15 m as tested in the small arena, commit a7d09cc)
 and `CarteFusion.astar` from `merging_map/fusion_carte.py`, pulled straight where the way is
 clear. The guide checks the route being driven every 0.5 s and plans again when the grid blocks
@@ -74,16 +87,23 @@ python air_ground/demo_sim.py
 
 ![the top view after a drive in simulation](top_view_example.jpg)
 
-How it steers:
+How it steers, the way the team's chain does (`sim/fusion_reelle.py --segment`): the rover
+drives the whole route on its own odometry, the air camera places it.
 
-* each sighting of the marker corrects the transform floor <- odometry (`OdomLink`) a little;
-  between sightings the rover's own odometry carries the estimate;
-* the goal becomes a route around the obstacles (above), then a path in the odometry frame for
-  the rover's own follower (`POST /path`, 20 Hz on the robot). It is sent again only when the
-  correction moved its end by more than 3 cm or the route changed: a handful of requests per
-  drive, the Wi-Fi is not in the fast loop;
-* the rover is stopped when the air camera has not seen it for 3 s, and goes on when it is
-  seen again;
+* each sighting of the marker corrects the transform floor <- odometry (`OdomLink`) by 15 % of
+  the error: steady against the marker's noise;
+* the goal becomes a route around the obstacles (above), then ONE path in the odometry frame
+  for the rover's own follower (`POST /path`, 20 Hz on the robot). It is sent again only when
+  the route changes (an obstacle on the way), or when the corrections moved its end by more
+  than 8 cm, and then not twice within 2 s. On the rover, a path replacing a running one keeps
+  the rover's speed and does not stop to face it (`rover_core.py`, `Controller.run`): it used
+  to slow down to 0.06 m/s and pivot at every correction, which made the drives jerky;
+* the air camera loses the rover (picture lost, rover out of view): after 1 s the rover goes
+  on along its route on odometry, the planner keeping 5 % of the distance driven blind as an
+  extra margin (the team's `marge_drone` idea); it stops after 1.5 m or 30 s that way, and
+  goes on when it is seen again;
+* every drive is recorded in `air_ground/runs/` (`run_log.py` prints, per goal: time,
+  distance, paths sent, pauses, time blind, end error), to compare one test with the next;
 * the guide gives way: manual driving or a STOP from anyone else ends its goal. It appears as
   `air-guide` in the rover's command log (`GET /commands`).
 
@@ -101,7 +121,14 @@ the team shares it.
   of `rover/rover_server.py` from a camera that keeps circling, real HTTP on both sides, real
   marker detection; a click sends the rover within 5 cm of the point.
 * The route: around a wall, around a box put on the way while driving (more than 10 cm from
-  it), a goal behind a closed wall refused (`test_planner.py`, fake rover with wrong odometry).
+  it), a goal behind a closed wall refused (`test_planner.py`, fake rover with wrong odometry);
+  the drive around the wall ends 3 cm from the goal with no pause, the picture lost for 2 s does
+  not stop it.
+* The rover's follower keeps above 0.12 m/s through three corrections in a row
+  (`rover/tests/test_rover_core.py`); **the robot runs this only once `rover_core.py` is
+  deployed on it**.
+* The grid on the real recording replayed four times: it stops changing after the second pass
+  (980, 1016, 1008 obstacle cells); it used to keep everything it had ever seen.
 * **On a real iPhone** (15 Nov 2026, PC hotspot): the axes are right, the top views of 18
   pictures taken while moving agree within 3 mm; the map of a real scene (boxes, a jacket,
   people) grows as the phone moves, the rover's marker is found, the dashboard reaches the
