@@ -9,6 +9,12 @@
                                                 # "Capteurs" (caméra du robot / D405
                                                 # simulée / les deux) + mesures vs
                                                 # vérité terrain
+    python run.py --d405 http://127.0.0.1:8091 --sensors d405 --d405-height 0.06
+                                                # vraie D405 du rover (d405_server.py par
+                                                # tunnel SSH), tout le calcul ici
+    python run.py --source http://127.0.0.1:8082/video_rect --rgb-fov 100 \\
+        --d405 http://127.0.0.1:8091 --sensors both --d405-mount 0 0.15 0.08 10
+                                                # caméra du robot + profondeur D405
 
 Then open http://localhost:8080
 """
@@ -70,8 +76,29 @@ def main() -> None:
                                   "images de la caméra du robot ET de la D405 simulée d'un même pas de "
                                   "simulation, menu « Capteurs » et mesures vs vérité terrain")
     ap.add_argument("--sensors", choices=("rgb", "d405", "both"), default="rgb",
-                    help="capteurs au démarrage avec --sim (modifiable dans la vue) : caméra du robot, "
-                         "D405 seule, ou les deux")
+                    help="capteurs au démarrage avec --sim ou --d405 (modifiable dans la vue) : caméra du "
+                         "robot, D405 seule, ou les deux")
+    # Real D405: the robot only captures (d405_server.py), alignment and reprojection run here.
+    ap.add_argument("--d405", metavar="URL",
+                    help="serveur de la vraie D405 (rover_mapper/d405_server.py, par tunnel SSH), "
+                         "ex. http://127.0.0.1:8091 ; rend --sensors d405|both disponibles sans --sim")
+    ap.add_argument("--d405-height", type=float, default=0.06,
+                    help="avec --d405 : hauteur de l'objectif de la D405 au-dessus du sol, m (« D405 seule » : "
+                         "fixe le repère du sol ; l'échelle vient du capteur)")
+    ap.add_argument("--d405-mount", type=float, nargs="+", metavar="V",
+                    help="avec --d405, pour « Les deux » : position de la caméra couleur de la D405 dans le "
+                         "repère de la caméra du robot, TX TY TZ en m [TANGAGE [LACET [ROULIS]] en degrés] ; "
+                         "axes OpenCV x à droite, y vers le bas, z devant ; tangage > 0 = la D405 regarde plus "
+                         "bas, lacet > 0 = plus à gauche, roulis > 0 = son côté droit plus bas. Valable "
+                         "tourelle à pan 0 et au tilt de la mesure")
+    ap.add_argument("--rgb-fov", type=float, default=100.0,
+                    help="avec --d405 : champ horizontal (degrés) de l'image de --source, une image sténopé "
+                         "centrée comme /video_rect du tableau de bord (son --rect-fov)")
+    ap.add_argument("--d405-max-age", type=float, default=1.0,
+                    help="avec --d405 : une image D405 plus vieille que ça (s) n'est pas utilisée")
+    ap.add_argument("--rover", metavar="URL",
+                    help="avec --d405 (facultatif) : serveur du rover (GET /state) pour prévenir si la "
+                         "tourelle de la caméra n'est pas à pan 0 en « Les deux »")
     # Outdoors (forest). Without these flags the mapper keeps its indoor defaults.
     ap.add_argument("--outdoor", action="store_true",
                     help="préréglage extérieur (forêt) : " + " ".join(
@@ -100,7 +127,8 @@ def main() -> None:
     ap.add_argument("--live-hz", type=float, default=12.0,
                     help="cadence de l'image caméra dans le panneau de la vue 3D (liaison lente : 2)")
     ap.add_argument("--true-k", action="store_true", default=None,
-                    help="avec --sim : intrinsèques vraies de la caméra au lieu de celles estimées par DA3")
+                    help="avec --sim : intrinsèques vraies de la caméra au lieu de celles estimées par DA3 "
+                         "(avec --d405 : celles d'usine de la D405, ou celles de --rgb-fov)")
     ap.add_argument("--log", help="journal par image (défaut : out/live_log.csv en direct, "
                                   "out/file_log.csv pour un fichier)")
     args = ap.parse_args()
@@ -110,18 +138,28 @@ def main() -> None:
         # core for nothing. Must be set before numpy is first imported.
         os.environ.setdefault("OPENBLAS_NUM_THREADS", str(args.cpu_threads))
 
+    if args.sim and args.d405:
+        ap.error("--d405 (vraie D405) et --sim (D405 simulée) s'excluent")
+    if args.d405_mount is not None and not 3 <= len(args.d405_mount) <= 6:
+        ap.error("--d405-mount : TX TY TZ [TANGAGE [LACET [ROULIS]]] (3 à 6 nombres)")
     if args.sim:
         uri = args.sim
     elif args.robot:
         uri = f"http://{args.robot}:5000/video_feed"
     elif args.source:
         uri = args.source
+    elif args.d405:
+        uri = None              # D405 alone: no robot camera
+        if args.sensors != "d405":
+            ap.error("--sensors rgb|both demande aussi la caméra du robot : --source ou --robot")
     else:
-        ap.error("donner --robot IP, --source ou --sim")
+        ap.error("donner --robot IP, --source, --sim ou --d405")
+    if args.d405 and args.sensors == "both" and args.d405_mount is None:
+        ap.error("--sensors both avec --d405 demande --d405-mount (position de la D405 vue de la caméra du robot)")
 
     from rovermap.mapper import Mapper
-    from rovermap.source import (MODE_BOTH, MODE_D405, MODE_RGB, FrameSource, SimSource,
-                                 TruthTracker, mode_settings, sensor_inputs)
+    from rovermap.source import (MODE_BOTH, MODE_D405, MODE_RGB, D405Source, FrameSource, SimSource,
+                                 TruthTracker, mode_settings, mount_pose, sensor_inputs)
     from rovermap.viewer import CAM_FORWARD, Viewer
 
     # Moving-object masking needs a small segmentation model; use it only if
@@ -147,7 +185,11 @@ def main() -> None:
     mapper = Mapper(model_name=args.model, process_res=args.res, cam_height=args.cam_height,
                     mask_moving=mask_moving, ground_robot=args.ground, **extra)
     sim = bool(args.sim)
-    mode = {"rgb": MODE_RGB, "d405": MODE_D405, "both": MODE_BOTH}[args.sensors] if sim else MODE_RGB
+    real_d405 = bool(args.d405)
+    # Simulator and real D405 both give snapshots (several streams + sensor
+    # mode); only the simulator gives the truth.
+    snaps = sim or real_d405
+    mode = {"rgb": MODE_RGB, "d405": MODE_D405, "both": MODE_BOTH}[args.sensors] if snaps else MODE_RGB
     default_range = tuple(mapper.sensor_range)
     # D405 mount (body frame, metres) as the simulator declares it: an assumption.
     mount = None
@@ -160,20 +202,28 @@ def main() -> None:
             except Exception:
                 time.sleep(1.0)
     viewer = Viewer(mapper, port=args.port, robot_scale=args.robot_scale, render=args.render,
-                    sensor_mode=mode, d405_available=sim, d405_mount=mount)
+                    sensor_mode=mode, d405_available=snaps, d405_mount=mount)
     viewer.live_hz = max(0.2, args.live_hz)
-    print(f"\n  Vue 3D : http://localhost:{args.port}\n  Source : {uri}\n")
+    d405_T = mount_pose(*args.d405_mount) if args.d405_mount else None   # D405 colour cam -> robot cam
+    if real_d405:
+        viewer.sensor_note.content = (
+            "<small>Vraie D405 : alignement et reprojection calculés sur cette machine. "
+            + ("« Les deux » : les deux images ne sont pas prises au même instant (caméra du robot "
+               "~0,5 s en retard), rouler lentement ; tourelle à pan 0." if d405_T is not None
+               else "« Les deux » indisponible sans --d405-mount.") + "</small>")
+    print(f"\n  Vue 3D : http://localhost:{args.port}\n  Source : {uri or '(pas de caméra du robot)'}"
+          + (f"\n  D405 : {args.d405}" if real_d405 else "") + "\n")
     import signal
     os.makedirs("out", exist_ok=True)
-    is_live = uri.isdigit() or "://" in uri
+    is_live = uri is None or uri.isdigit() or "://" in uri
     tracker = TruthTracker() if sim else None
 
     def set_mode(m: str) -> None:
         """What the mapper must know about the camera it is fed (call before a reset)."""
-        d405_h = mount[2] if mount else 0.06
+        d405_h = args.d405_height if real_d405 else (mount[2] if mount else 0.06)
         mapper.cam_height, mapper.sensor_range = mode_settings(m, args.cam_height, d405_h, default_range)
         viewer.cam_forward = mount[0] if (m == MODE_D405 and mount) else CAM_FORWARD
-        if sim:
+        if snaps:
             src.mode = m
 
     def open_source():
@@ -182,10 +232,13 @@ def main() -> None:
             viewer.attach_source(s)
             return s
         rec = None
-        if is_live and not args.no_record:
+        if uri is not None and is_live and not args.no_record:
             rec = time.strftime("out/rec_%Y%m%d_%H%M%S.avi")
             print(f"  Enregistrement : {rec}")
-        s = FrameSource(uri, rotate=args.rotate, record=rec)
+        s = FrameSource(uri, rotate=args.rotate, record=rec) if uri is not None else None
+        if real_d405:
+            s = D405Source(args.d405, mode, rgb_source=s, rgb_fov=args.rgb_fov, mount=d405_T,
+                           max_age=args.d405_max_age, rover_url=args.rover)
         viewer.attach_source(s)
         return s
 
@@ -194,6 +247,10 @@ def main() -> None:
     if sim:
         print(f"  Capteurs : {mode} (menu « Capteurs » dans la vue)"
               + (f" · D405 supposée à x={mount[0]:.3f} m, z={mount[2]:.3f} m" if mount else "") + "\n")
+    elif real_d405:
+        print(f"  Capteurs : {mode} (menu « Capteurs » dans la vue) · D405 à {args.d405_height:.3f} m du sol"
+              + (" · position vue de la caméra du robot : " + " ".join(f"{v:g}" for v in args.d405_mount)
+                 if args.d405_mount else "") + "\n")
     last_reopen = time.time()
 
     # Pose + local points for the ROS side (polaris guidance_rover_vo).
@@ -250,15 +307,18 @@ def main() -> None:
                 last_seq, last_err = -1, None
                 continue
             sd = T_true = d_true = K_true = None
-            if sim:
-                # One simulation step: images, depth and true poses together.
+            if snaps:
+                # One simulation step: images, depth and true poses together
+                # (real D405: the same dict, without any truth).
                 seq, snap = src.snapshot()
                 frame = None
                 if snap is not None and seq != last_seq:
-                    if mount is None:
+                    if sim and mount is None:
                         mount = tuple(float(v) for v in snap["d405_mount"])
                         set_mode(mode)
                     frame, sd, K_true, T_true, d_true = sensor_inputs(snap, mode)
+                    if real_d405:
+                        T_true = d_true = None   # identity placeholders, not a truth to log
             else:
                 seq, frame = src.latest()
             if frame is None or seq == last_seq:
