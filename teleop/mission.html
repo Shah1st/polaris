@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polaris — mission en direct</title>
+<style>
+  /* Made for a projector seen from three metres: large text, strong contrast, no external file. */
+  :root { --bg:#0d1014; --panel:#171b21; --line:#2c333d; --fg:#f2f4f7; --dim:#a7b0bc;
+          --ok:#3ecf73; --warn:#f2b233; --bad:#ff5a52; --acc:#19c2ff; }
+  * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+               font:22px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display:flex; flex-wrap:wrap; align-items:center; gap:10px 24px; padding:12px 20px;
+           border-bottom:2px solid var(--line); }
+  h1 { margin:0; font-size:30px; flex:1; min-width:300px; }
+  #etat { font-size:30px; font-weight:800; padding:6px 18px; border-radius:10px; background:#333; }
+  #etat.en_cours { background:var(--acc); color:#03202b; }
+  #etat.arrive { background:var(--ok); color:#06210f; }
+  #etat.arret_operateur, #etat.abandon { background:var(--warn); color:#2b1d00; }
+  #etat.erreur, #etat.perdu { background:var(--bad); color:#fff; }
+  #age { font-size:22px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  #age.old { color:var(--bad); font-weight:700; }
+  main { display:grid; grid-template-columns:minmax(0, 1.15fr) minmax(0, 1fr); gap:16px; padding:16px; }
+  .box { background:var(--panel); border-radius:12px; padding:12px 16px; min-width:0; }
+  .box h2 { margin:0 0 8px; font-size:22px; color:var(--dim); font-weight:600;
+            display:flex; justify-content:space-between; gap:12px; }
+  .box h2 span { font-variant-numeric:tabular-nums; }
+  #carte { width:100%; height:auto; aspect-ratio:1/1; display:block; background:#1b1f24; border-radius:8px; }
+  .legend { margin-top:8px; font-size:20px; line-height:1.7; color:var(--dim); }
+  .sw { display:inline-block; width:22px; height:22px; border-radius:4px; margin:0 6px 0 14px;
+        vertical-align:-4px; border:1px solid #000a; }
+  .col { display:flex; flex-direction:column; gap:16px; min-width:0; }
+  #action { font-size:44px; font-weight:800; line-height:1.15; }
+  #raison { font-size:32px; margin-top:6px; }
+  #pos { font-size:22px; color:var(--dim); margin-top:8px; font-variant-numeric:tabular-nums; }
+  .imgs { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .imgs canvas { width:100%; aspect-ratio:4/3; height:auto; background:#000; border-radius:8px; display:block; }
+  .msg { color:var(--dim); font-size:20px; padding:30px 8px; text-align:center; }
+  #journal { margin:0; font:20px/1.4 ui-monospace, Menlo, Consolas, monospace; white-space:pre-wrap;
+             overflow-wrap:anywhere; color:#d7dde5; max-height:12.6em; overflow:hidden; }
+  .old { color:var(--bad); font-weight:700; }
+  .err { color:var(--bad); font-size:26px; font-weight:700; }
+  @media (max-width: 1100px) { main { grid-template-columns:1fr; } }
+  @media (max-width: 640px) { html, body { font-size:18px; } .imgs { grid-template-columns:1fr; }
+                              #action { font-size:32px; } #raison { font-size:24px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Polaris — le drone guide le rover vers la victime</h1>
+  <span id="etat">EN ATTENTE</span>
+  <span id="age">–</span>
+</header>
+<main>
+  <section class="box">
+    <h2>Carte fusionnée (drone + rover) <span id="echelle"></span></h2>
+    <canvas id="carte" width="900" height="900"></canvas>
+    <div class="legend">
+      <span class="sw" style="background:#e9edf2"></span>libre
+      <span class="sw" style="background:#3a4049"></span>obstacle vu par le drone
+      <span class="sw" style="background:#ff7a2f"></span>obstacle vu par le rover
+      <span class="sw" style="background:#7d8691"></span>inconnu
+      <br><span class="sw" style="background:#1e7bff"></span>chemin prévu
+      <span class="sw" style="background:#14b88a"></span>trajet parcouru
+      <span class="sw" style="background:#19c2ff"></span>rover (flèche : cap)
+      <span class="sw" style="background:#ff2d2d"></span>victime
+      <span class="sw" style="background:transparent;border:3px dashed #f2b233"></span>zone
+    </div>
+  </section>
+  <div class="col">
+    <section class="box">
+      <h2>Décision en cours <span id="nDec"></span></h2>
+      <div id="action">–</div>
+      <div id="raison">En attente du premier document de la mission…</div>
+      <div id="pos"></div>
+    </section>
+    <div class="imgs">
+      <section class="box">
+        <h2>Caméra du rover <span id="ageCam">–</span></h2>
+        <canvas id="cam" width="640" height="480"></canvas>
+      </section>
+      <section class="box" id="percBox" hidden>
+        <h2>Ce que le rover détecte <span id="agePerc">–</span></h2>
+        <canvas id="perc" width="640" height="480"></canvas>
+      </section>
+    </div>
+    <section class="box">
+      <h2>Journal de la mission</h2>
+      <pre id="journal">–</pre>
+    </section>
+  </div>
+</main>
+<script>
+// One request at a time, about once per second: the mission document (only when it changed),
+// then one camera picture, then one perception picture. Nothing is pushed: the links are slow.
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise(ok => setTimeout(ok, ms));
+const viewer = 'mission-' + Math.random().toString(36).slice(2);
+const ACTIONS = {
+  SUIVRE: 'Le rover suit le chemin',
+  DEMANDER_DRONE: 'Le drone regarde de plus près',
+  OBJECTIF_DEGRADE: 'Pas de passage : point accessible le plus proche',
+  INSPECTER: 'Le rover va voir lui-même',
+  ARRIVE: 'Arrivé près de la victime',
+};
+const ETATS = {
+  en_cours: 'MISSION EN COURS', arrive: 'VICTIME ATTEINTE', arret_operateur: 'ARRÊT OPÉRATEUR',
+  abandon: 'MISSION ABANDONNÉE', erreur: 'ERREUR',
+};
+const COUL = { '0': [233, 237, 242], '1': [58, 64, 73], '2': [255, 122, 47], '?': [125, 134, 145] };
+let version = '', doc = null, docGot = 0, docAge = null, perception = false;
+const cams = { cam: { got: 0, ageMs: 0 }, perc: { got: 0, ageMs: 0 } };
+
+const num = (v) => typeof v === 'number' && isFinite(v);
+const pt = (p) => Array.isArray(p) && p.length >= 2 && num(p[0]) && num(p[1]);
+
+function dessiner(d) {
+  const cv = $('carte'), ctx = cv.getContext('2d'), W = cv.width, H = cv.height;
+  ctx.fillStyle = '#1b1f24'; ctx.fillRect(0, 0, W, H);
+  const g = d.grille && Array.isArray(d.grille.lignes) && num(d.grille.res) && d.grille.res > 0 ? d.grille : null;
+  // Extent: the grid, the zone, the rover and the victim, so nothing falls outside.
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const add = (x, y) => { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
+  const cols = g ? Math.max(0, ...g.lignes.map(l => String(l).length)) : 0, rows = g ? g.lignes.length : 0;
+  if (g && rows && cols) { add(+g.x0 || 0, +g.y0 || 0); add((+g.x0 || 0) + cols * g.res, (+g.y0 || 0) + rows * g.res); }
+  const z = Array.isArray(d.zone) && d.zone.length === 4 && d.zone.every(num) ? d.zone : null;
+  if (z) { add(z[0], z[1]); add(z[2], z[3]); }
+  if (pt(d.rover)) add(d.rover[0], d.rover[1]);
+  if (pt(d.victime)) add(d.victime[0], d.victime[1]);
+  if (!isFinite(x0)) return;
+  const m = 0.04 * Math.max(x1 - x0, y1 - y0, 0.5);
+  x0 -= m; y0 -= m; x1 += m; y1 += m;
+  const s = Math.min(W / (x1 - x0), H / (y1 - y0));
+  const ox = (W - s * (x1 - x0)) / 2, oy = (H - s * (y1 - y0)) / 2;
+  const X = (x) => ox + (x - x0) * s, Y = (y) => H - oy - (y - y0) * s;  // north up
+
+  if (g && rows && cols) {  // one pixel per cell, scaled up without smoothing
+    const off = document.createElement('canvas'); off.width = cols; off.height = rows;
+    const oc = off.getContext('2d'), img = oc.createImageData(cols, rows);
+    for (let i = 0; i < rows; i++) {  // row 0 = south = bottom of the picture
+      const line = String(g.lignes[i]), r = rows - 1 - i;
+      for (let j = 0; j < cols; j++) {
+        const c = COUL[line[j]] || COUL['?'], k = 4 * (r * cols + j);
+        img.data[k] = c[0]; img.data[k + 1] = c[1]; img.data[k + 2] = c[2]; img.data[k + 3] = 255;
+      }
+    }
+    oc.putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    const gx = +g.x0 || 0, gy = +g.y0 || 0;
+    ctx.drawImage(off, X(gx), Y(gy + rows * g.res), cols * g.res * s, rows * g.res * s);
+  }
+  if (z) {
+    ctx.setLineDash([14, 10]); ctx.lineWidth = 4; ctx.strokeStyle = '#f2b233';
+    ctx.strokeRect(X(z[0]), Y(z[3]), (z[2] - z[0]) * s, (z[3] - z[1]) * s); ctx.setLineDash([]);
+  }
+  const ligne = (pts, couleur, largeur, tirets) => {
+    pts = (Array.isArray(pts) ? pts : []).filter(pt);
+    if (pts.length < 2) return;
+    ctx.beginPath(); ctx.moveTo(X(pts[0][0]), Y(pts[0][1]));
+    for (const p of pts.slice(1)) ctx.lineTo(X(p[0]), Y(p[1]));
+    ctx.setLineDash(tirets || []); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.strokeStyle = '#000a'; ctx.lineWidth = largeur + 4; ctx.stroke();
+    ctx.strokeStyle = couleur; ctx.lineWidth = largeur; ctx.stroke(); ctx.setLineDash([]);
+  };
+  ligne(d.traj, '#14b88a', 7);
+  ligne(d.chemin, '#1e7bff', 7, [18, 10]);
+  if (pt(d.victime)) {
+    const vx = X(d.victime[0]), vy = Y(d.victime[1]);
+    ctx.beginPath(); ctx.arc(vx, vy, 22, 0, 2 * Math.PI); ctx.fillStyle = '#ff2d2d'; ctx.fill();
+    ctx.lineWidth = 4; ctx.strokeStyle = '#fff'; ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(vx - 11, vy); ctx.lineTo(vx + 11, vy); ctx.moveTo(vx, vy - 11); ctx.lineTo(vx, vy + 11);
+    ctx.lineWidth = 6; ctx.stroke();
+    etiquette('VICTIME', vx, vy - 34, '#ff2d2d');
+  }
+  if (pt(d.rover)) {
+    const rx = X(d.rover[0]), ry = Y(d.rover[1]), cap = d.rover[2];
+    ctx.save(); ctx.translate(rx, ry);
+    if (num(cap)) {  // radians, counter-clockwise from east; the canvas y axis points down
+      ctx.rotate(-cap);
+      ctx.beginPath(); ctx.moveTo(30, 0); ctx.lineTo(-18, 18); ctx.lineTo(-10, 0); ctx.lineTo(-18, -18); ctx.closePath();
+    } else {
+      ctx.beginPath(); ctx.arc(0, 0, 18, 0, 2 * Math.PI);
+    }
+    ctx.fillStyle = '#19c2ff'; ctx.fill(); ctx.lineWidth = 4; ctx.strokeStyle = '#03202b'; ctx.stroke();
+    ctx.restore();
+    etiquette(num(cap) ? 'ROVER' : 'ROVER (cap inconnu)', rx, ry + 46, '#19c2ff');
+  }
+  // Scale bar: 1 m, or 10 cm on a very small map.
+  const L = (x1 - x0) > 3 ? 1 : 0.1;
+  ctx.fillStyle = '#fff'; ctx.fillRect(20, H - 30, L * s, 8);
+  $('echelle').textContent = 'barre blanche : ' + (L === 1 ? '1 m' : '10 cm') + ' · nord en haut';
+}
+function etiquette(txt, x, y, couleur) {
+  const ctx = $('carte').getContext('2d');
+  ctx.font = 'bold 26px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 6; ctx.strokeStyle = '#000'; ctx.strokeText(txt, x, y);
+  ctx.fillStyle = couleur; ctx.fillText(txt, x, y);
+}
+
+function afficher(d) {
+  const etat = String(d.etat || '');
+  $('etat').textContent = ETATS[etat] || (etat ? etat.toUpperCase() : 'EN ATTENTE');
+  $('etat').className = etat;
+  const dec = d.decision || {}, a = String(dec.action || '');
+  $('action').textContent = a ? (ACTIONS[a] ? `${ACTIONS[a]} (${a})` : a) : '–';
+  $('raison').textContent = dec.raison ? 'Pourquoi : ' + dec.raison : '';
+  const r = d.rover, v = d.victime;
+  let pos = '';
+  if (pt(r)) pos += `Rover (${r[0].toFixed(2)} ; ${r[1].toFixed(2)}) m` + (num(r[2]) ? `, cap ${(r[2] * 180 / Math.PI).toFixed(0)}°` : ', cap inconnu');
+  if (pt(r) && pt(v)) pos += ` · victime à ${Math.hypot(v[0] - r[0], v[1] - r[1]).toFixed(2)} m`;
+  if (Array.isArray(d.chemin) && d.chemin.length > 1) {
+    let l = 0; const c = d.chemin.filter(pt);
+    for (let i = 1; i < c.length; i++) l += Math.hypot(c[i][0] - c[i - 1][0], c[i][1] - c[i - 1][1]);
+    pos += ` · chemin restant ${l.toFixed(2)} m`;
+  }
+  $('pos').textContent = pos;
+  const j = Array.isArray(d.journal) ? d.journal.map(String) : [];
+  $('journal').textContent = j.length ? j.slice(-9).join('\n') : '–';
+  dessiner(d);
+}
+
+async function lireMission() {
+  const r = await fetch('/api/mission?v=' + encodeURIComponent(version), { cache: 'no-store' });
+  const j = await r.json();
+  perception = !!j.perception;
+  $('percBox').hidden = !perception;
+  if (r.status !== 200) {
+    docAge = null; doc = null; version = '';
+    $('etat').textContent = 'EN ATTENTE'; $('etat').className = '';
+    $('action').textContent = '–';
+    $('raison').innerHTML = ''; const e = document.createElement('span'); e.className = 'err';
+    e.textContent = j.erreur || ('HTTP ' + r.status); $('raison').appendChild(e);
+    return;
+  }
+  docAge = j.age_s; docGot = performance.now();
+  if (j.inchange) return;
+  version = j.version || ''; doc = j.doc || {};
+  afficher(doc);
+}
+
+async function lireImage(url, id) {
+  const r = await fetch(url, { cache: 'no-store' });
+  if (r.status !== 200) return false;
+  const bmp = await createImageBitmap(await r.blob());
+  const cv = $(id);
+  if (cv.width !== bmp.width || cv.height !== bmp.height) { cv.width = bmp.width; cv.height = bmp.height; }
+  cv.getContext('2d').drawImage(bmp, 0, 0); bmp.close();
+  cams[id].got = performance.now(); cams[id].ageMs = +(r.headers.get('X-Age-Ms') || 0);
+  return true;
+}
+
+async function boucle() {
+  for (;;) {
+    const t0 = performance.now();
+    try { await lireMission(); } catch (e) { docAge = null; $('age').textContent = 'serveur injoignable'; $('age').className = 'old'; }
+    try { await lireImage(`/frame.jpg?c=${viewer}&p=sd&f=0`, 'cam'); } catch (e) {}
+    if (perception) { try { await lireImage('/perception/debug.jpg', 'perc'); } catch (e) {} }
+    const reste = 1000 - (performance.now() - t0);
+    await sleep(Math.max(reste, 150));
+  }
+}
+boucle();
+
+// Ages shown: age on the server when sent + time since it arrived here.
+setInterval(() => {
+  const now = performance.now();
+  if (docAge !== null) {
+    const a = docAge + (now - docGot) / 1000;
+    $('age').textContent = 'mise à jour il y a ' + a.toFixed(1) + ' s';
+    $('age').className = a > 5 ? 'old' : '';
+  } else if ($('age').textContent !== 'serveur injoignable') { $('age').textContent = '–'; $('age').className = ''; }
+  for (const [id, lab] of [['cam', 'ageCam'], ['perc', 'agePerc']]) {
+    const c = cams[id];
+    if (!c.got) { $(lab).textContent = 'pas d\'image'; $(lab).className = 'old'; continue; }
+    const a = (c.ageMs + now - c.got) / 1000;
+    $(lab).textContent = 'il y a ' + a.toFixed(1) + ' s';
+    $(lab).className = a > 3 ? 'old' : '';
+  }
+}, 250);
+</script>
+</body>
+</html>

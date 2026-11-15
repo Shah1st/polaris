@@ -82,13 +82,16 @@ const viewer = Math.random().toString(36).slice(2);
 // One picture per request, a few requests open: a slow link lowers the frame rate, never the freshness.
 function view(name, label) {
   const cv = $(name), ctx = cv.getContext('2d');
-  let shownSeq = 0, shown = 0;
+  let shownSeq = 0, shown = 0, boot = '';
   async function loop() {
     for (;;) {
       try {
         const r = await fetch(`/frame.jpg?s=${name}&c=${viewer}${name}&p=${$('preset').value}`, { cache: 'no-store' });
         if (r.status !== 200) { await sleep(300); continue; }
         const seq = +r.headers.get('X-Seq');
+        // The server restarted: its frame numbers start again from 1.
+        const b = r.headers.get('X-Boot') || '';
+        if (b !== boot) { boot = b; shownSeq = 0; }
         const bmp = await createImageBitmap(await r.blob());
         if (seq > shownSeq) {
           shownSeq = seq; shown++;

@@ -23,6 +23,12 @@
   POST /fusion/source {"source": "camera"|"d405"}  which rover sensor feeds the fusion
                      (simulation only: never reaches the robot)
   POST /api/client   what the browser measures (frames shown, delays), logged
+  GET  /mission      the live page of the mission for the jury: map, rover, victim, path,
+                     decision and its reason, journal, rover camera, perception picture
+  GET  /api/mission  the mission document written by lancer_overhead.py --suivi FICHIER
+                     (read from that file) with its age; ?v=<version> -> {"inchange": true}
+                     while the file has not changed, so a slow link carries the map once
+  GET  /perception/debug.jpg  one picture relayed from --perception-debug (default: none)
 
 Two ways to drive. "Direct": when the browser is on the robot's own network it
 talks to the robot itself (camera and commands), which avoids two trips across
@@ -34,14 +40,19 @@ through this server (the only way from elsewhere).
   POST /api/stop     stop now
 
 Safety: nothing is sent to the robot until a key is pressed. Speeds are clamped
-here. A wanted speed expires after HOLD seconds without a new browser message
-(closed tab, lost focus, broken tunnel), on top of the robot's own 0.5 s
-timeout and the ESP32 heartbeat.
+here, and anything that is not a finite number is refused (400). A wanted speed
+expires after HOLD seconds without a new browser message (closed tab, lost
+focus, broken tunnel), on top of the robot's own 0.5 s timeout and the ESP32
+heartbeat. A stop latches: a command that left the browser before the stop and
+arrives after it is refused; driving resumes with a new key press (the page
+numbers its presses: "press").
 """
 
 import argparse
 import json
+import math
 import os
+import secrets
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -58,6 +69,11 @@ RESEND = 0.05
 # Picture sizes for the browser: (width or None = as received, JPEG quality).
 PRESETS = {'hd': (None, 0), 'sd': (480, 55), 'ld': (320, 50)}
 HERE = os.path.dirname(os.path.abspath(__file__))
+# Changes at every start of this process: the page restarts its frame numbering when it changes.
+BOOT = secrets.token_hex(6)
+SESSION_IDLE = 5.0  # s without a command after which a browser's delay reference is relearnt
+KEEPALIVE = 2.0  # s: an MJPEG reader gets a byte this often, so a gone reader is noticed
+MISSION_MAX = 8_000_000  # bytes: larger mission documents are refused
 # What /fusion/ relays from the live fusion process (simulation only).
 FUSION_FILES = {
     'rover.png',
@@ -230,33 +246,103 @@ class Robot:
         self.stop_req = False
         self.state, self.state_t, self.state_ms = {}, 0.0, None
         self.cmd_ms, self.cmd_err, self.n_cmd = None, None, 0
-        self._lead, self.n_stale = (
-            None,
-            0,
-        )  # smallest (our clock - browser clock) seen; commands dropped
+        # Per browser session: delay reference, last command time, presses seen, first press
+        # allowed after a stop. Global, one browser's clock blocked every other one.
+        self._sessions: dict[str, dict] = {}
+        self._latch_legacy = False  # stop latch for clients that do not number their presses
+        self.n_stale, self.n_latched, self.n_stop = 0, 0, 0
+        self.refused: tuple[float, str] | None = None  # (time, reason) of the last refusal
         threading.Thread(target=self._sender, daemon=True).start()
         threading.Thread(target=self._poller, daemon=True).start()
 
-    def set(self, v: float, w: float, t_client: float | None = None) -> None:
-        v = max(-V_MAX, min(V_MAX, float(v)))
-        w = max(-W_MAX, min(W_MAX, float(w)))
-        # A "go" that spent seconds in a congested tunnel must not move the robot
-        # when it finally arrives (seen: 12 s round trips). The browser stamps each
-        # command with its own clock; the smallest difference with ours is the
-        # clock offset plus the best transit time, and a command much later than
-        # that is old. Stops are always obeyed.
-        if t_client is not None and (v or w):
-            lead = time.time() - float(t_client) / 1000.0
-            self._lead = lead if self._lead is None else min(self._lead + 0.0005, lead)
-            if lead - self._lead > STALE:
-                self.n_stale += 1
-                return
-        with self.lock:
-            self.want, self.want_t = (v, w), time.monotonic()
+    @staticmethod
+    def _number(x, name: str) -> float:
+        """float(x), or ValueError: NaN would pass the clamp as the full speed."""
+        if isinstance(x, bool):
+            raise ValueError(f'{name}: not a number')
+        try:
+            f = float(x)
+        except OverflowError:
+            f = math.inf
+        if not math.isfinite(f):
+            raise ValueError(f'{name}: not a finite number')
+        return f
 
-    def stop(self) -> None:
+    def _session(self, key: str) -> dict:
+        s = self._sessions.get(key)
+        if s is None:
+            if len(self._sessions) >= 64:  # forget the browser silent for the longest
+                del self._sessions[min(self._sessions, key=lambda k: self._sessions[k]['seen'])]
+            s = self._sessions[key] = {'lead': None, 'seen': -math.inf, 'press': None, 'min': 0}
+        return s
+
+    def set(
+        self,
+        v: float,
+        w: float,
+        t_client: float | None = None,
+        session: str | None = None,
+        press: int | None = None,
+    ) -> bool:
+        """Wanted speed from one browser; False when refused (late, or before a stop)."""
+        v = max(-V_MAX, min(V_MAX, self._number(v, 'v')))
+        w = max(-W_MAX, min(W_MAX, self._number(w, 'omega')))
+        t = None if t_client is None else self._number(t_client, 't')
+        press = None if press is None else int(self._number(press, 'press'))
+        now = time.monotonic()
+        with self.lock:
+            reason = None
+            if v or w:
+                s = self._session('' if session is None else str(session)[:64])
+                # A "go" that spent seconds in a congested tunnel must not move the robot
+                # when it finally arrives (seen: 12 s round trips). The browser stamps each
+                # command with its own clock; the smallest difference with ours is the
+                # clock offset plus the best transit time, and a command much later than
+                # that is old. Per browser, relearnt after a pause: another computer's
+                # clock, or one wrong stamp, must not block driving for good.
+                if t is not None:
+                    lead = time.time() - t / 1000.0
+                    if s['lead'] is None or now - s['seen'] > SESSION_IDLE:
+                        s['lead'] = lead
+                    else:
+                        s['lead'] = min(s['lead'] + 0.0005, lead)
+                    if lead - s['lead'] > STALE:
+                        reason = 'stale'
+                s['seen'] = now
+                if press is not None:
+                    s['press'] = press if s['press'] is None else max(s['press'], press)
+                    if press < s['min']:
+                        reason = reason or 'latched'
+                elif self._latch_legacy:
+                    reason = reason or 'latched'
+            if reason:
+                if reason == 'stale':
+                    self.n_stale += 1
+                else:
+                    self.n_latched += 1
+                self.refused = (time.time(), reason)
+                return False
+            self.want, self.want_t = (v, w), now
+            if not (v or w) and press is None:
+                self._latch_legacy = False  # such a client released its keys
+            return True
+
+    def stop(self, session: str | None = None, press=None) -> None:
+        """Stop now, and refuse every key press made before this stop (all browsers)."""
+        try:
+            press = None if press is None else int(self._number(press, 'press'))
+        except (ValueError, TypeError):
+            press = None  # a stop is obeyed whatever comes with it
         with self.lock:
             self.want, self.stop_req = (0.0, 0.0), True
+            self.n_stop += 1
+            self._latch_legacy = True
+            for s in self._sessions.values():
+                if s['press'] is not None:
+                    s['min'] = max(s['min'], s['press'] + 1)
+            if session is not None and press is not None:
+                s = self._session(str(session)[:64])
+                s['min'] = max(s['min'], press + 1)
 
     def _post(self, sess, path: str, body: dict) -> bool:
         t = time.monotonic()
@@ -307,6 +393,49 @@ class Robot:
             time.sleep(0.5)
 
 
+def _finite_only(x):
+    """The document with every non-finite float replaced by None: the page's JSON.parse
+    refuses NaN, and one NaN must not blank the whole mission page."""
+    if isinstance(x, float):
+        return x if math.isfinite(x) else None
+    if isinstance(x, dict):
+        return {k: _finite_only(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_finite_only(v) for v in x]
+    return x
+
+
+def read_mission(path: str | None, version: str | None = None) -> tuple[int, dict]:
+    """(HTTP status, answer) for GET /api/mission: the document of lancer_overhead --suivi."""
+    if not path:
+        return 404, {'erreur': 'pas de fichier de suivi : lancer server.py avec --suivi FICHIER'}
+    name = os.path.basename(path)
+    try:
+        st = os.stat(path)
+        if st.st_size > MISSION_MAX:
+            return 503, {'erreur': f'document trop gros ({st.st_size} octets)', 'fichier': name}
+        age = time.time() - st.st_mtime
+        if version is not None and version == str(st.st_mtime_ns):
+            return 200, {'inchange': True, 'age_s': age, 'version': version, 'fichier': name}
+        with open(path, 'rb') as f:
+            doc = json.loads(f.read())
+    except FileNotFoundError:
+        return 503, {'erreur': 'en attente du premier document de la mission', 'fichier': name}
+    except (OSError, ValueError) as e:  # written by hand, or not atomically
+        return 503, {'erreur': f'document illisible : {type(e).__name__}', 'fichier': name}
+    if not isinstance(doc, dict):
+        return 503, {'erreur': "le document n'est pas un objet JSON", 'fichier': name}
+    t = doc.get('t')
+    age_doc = time.time() - t if isinstance(t, int | float) and math.isfinite(t) else None
+    return 200, {
+        'age_s': age,
+        'age_doc_s': age_doc,
+        'version': str(st.st_mtime_ns),
+        'fichier': name,
+        'doc': _finite_only(doc),
+    }
+
+
 def make_handler(
     robot: Robot,
     hub: CameraHub,
@@ -314,6 +443,8 @@ def make_handler(
     robot_lan: str,
     sims: dict,
     fusion: str = 'http://127.0.0.1:8094',
+    suivi: str | None = None,
+    perception_debug: str | None = None,
 ):
     class H(BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.1'
@@ -360,6 +491,14 @@ def make_handler(
                         'cmd_err': robot.cmd_err,
                         'n_cmd': robot.n_cmd,
                         'n_stale': robot.n_stale,
+                        'n_latched': robot.n_latched,
+                        # the reason of a refusal in the last 2 s, for the page to show
+                        'refused': (
+                            robot.refused[1]
+                            if robot.refused and time.time() - robot.refused[0] < 2.0
+                            else None
+                        ),
+                        'boot': BOOT,
                         'want': robot.want,
                         'limits': {'v': V_MAX, 'w': W_MAX},
                         'video': {
@@ -375,6 +514,34 @@ def make_handler(
                     self._send(200, f.read(), 'text/html; charset=utf-8')
             elif path == '/api/ping':
                 self._send(200, b'', 'text/plain')
+            elif path == '/mission':
+                with open(os.path.join(HERE, 'mission.html'), 'rb') as f:
+                    self._send(200, f.read(), 'text/html; charset=utf-8')
+            elif path == '/api/mission':
+                q = dict(
+                    x.split('=', 1) for x in self.path.partition('?')[2].split('&') if '=' in x
+                )
+                code, answer = read_mission(suivi, q.get('v'))
+                answer['perception'] = bool(perception_debug)
+                self._json(answer, code)
+            elif path == '/perception/debug.jpg':
+                if not perception_debug:
+                    return self._json({'erreur': 'pas de --perception-debug'}, 404)
+                try:
+                    r = requests.get(perception_debug, timeout=3)
+                except requests.RequestException as e:
+                    err = f'perception injoignable : {type(e).__name__}'
+                    return self._json({'erreur': err}, 503)
+                if r.status_code != 200:
+                    return self._json({'erreur': f'perception : HTTP {r.status_code}'}, 503)
+                self.send_response(200)
+                self.send_header('Content-Type', r.headers.get('Content-Type', 'image/jpeg'))
+                self.send_header('Content-Length', str(len(r.content)))
+                self.send_header('Cache-Control', 'no-store')
+                if 'X-Age-Ms' in r.headers:
+                    self.send_header('X-Age-Ms', r.headers['X-Age-Ms'])
+                self.end_headers()
+                self.wfile.write(r.content)
             elif path.startswith('/fusion/'):
                 name = path[len('/fusion/') :]
                 if name not in FUSION_FILES:
@@ -415,11 +582,12 @@ def make_handler(
                 self.send_header('Cache-Control', 'no-store')
                 self.send_header('X-Seq', str(seq))
                 self.send_header('X-Age-Ms', str(round(1000 * age)))
+                self.send_header('X-Boot', BOOT)  # frame numbers restart with the process
                 # The page fetches frames from the other loopback name
                 # (localhost <-> 127.0.0.1): a second pool of browser
                 # connections, so frames never queue in front of commands.
                 self.send_header('Access-Control-Allow-Origin', '*')
-                self.send_header('Access-Control-Expose-Headers', 'X-Seq, X-Age-Ms')
+                self.send_header('Access-Control-Expose-Headers', 'X-Seq, X-Age-Ms, X-Boot')
                 self.end_headers()
                 self.wfile.write(jpeg)
             elif path in ('/video_feed', '/video_rect'):
@@ -431,9 +599,16 @@ def make_handler(
                 seq = -1
                 try:
                     while True:
-                        seq, jpeg = hub.wait(seq)
-                        if jpeg is None:
+                        got, jpeg = hub.wait(seq, KEEPALIVE)
+                        if jpeg is None or got == seq:
+                            # No new frame: a byte anyway, or a reader that left while the
+                            # robot was offline would hold this thread and its socket for
+                            # ever. Between parts, MJPEG readers skip it.
+                            self.wfile.write(b'\r\n')
+                            self.wfile.flush()
+                            seq = got
                             continue
+                        seq = got
                         if path == '/video_rect':
                             jpeg = hub.rectified(seq, jpeg)
                         else:
@@ -445,20 +620,43 @@ def make_handler(
                             + jpeg
                             + b'\r\n'
                         )
-                except (BrokenPipeError, ConnectionResetError):
+                except OSError:  # the reader left
                     pass
                 self.close_connection = True
             else:
                 self._json({'error': 'not found'}, 404)
 
         def do_POST(self) -> None:  # noqa: N802
-            n = int(self.headers.get('Content-Length') or 0)
+            if self.path == '/api/stop':
+                # Obeyed whatever the body: a malformed stop is still a stop.
+                body = None
+                try:
+                    n = int(self.headers.get('Content-Length') or 0)
+                    if 0 <= n < 65536:
+                        body = json.loads(self.rfile.read(n) or b'{}')
+                    else:
+                        self.close_connection = True  # body left unread
+                except (ValueError, OSError):
+                    self.close_connection = True
+                body = body if isinstance(body, dict) else {}
+                robot.stop(body.get('c'), body.get('press'))
+                return self._json({'ok': True})
             try:
+                n = int(self.headers.get('Content-Length') or 0)
+                if not 0 <= n < 1_000_000:
+                    raise ValueError('bad Content-Length')
                 body = json.loads(self.rfile.read(n) or b'{}')
+                if not isinstance(body, dict):
+                    raise ValueError('the body must be a JSON object')
                 if self.path == '/api/cmd':
-                    robot.set(body.get('v', 0), body.get('omega', 0), body.get('t'))
-                elif self.path == '/api/stop':
-                    robot.stop()
+                    ok = robot.set(
+                        body.get('v', 0),
+                        body.get('omega', 0),
+                        body.get('t'),
+                        body.get('c'),
+                        body.get('press'),
+                    )
+                    return self._json({'ok': True, 'accepted': ok})
                 elif self.path == '/fusion/source':  # simulation only, relayed to the fusion
                     try:
                         r = requests.post(
@@ -474,8 +672,9 @@ def make_handler(
                 else:
                     return self._json({'error': 'not found'}, 404)
                 self._json({'ok': True})
-            except (ValueError, TypeError) as e:
-                self._json({'error': str(e)}, 400)
+            except (ValueError, TypeError, OverflowError) as e:
+                self.close_connection = True  # the body may be left unread
+                self._json({'error': str(e)[:200]}, 400)
 
     return H
 
@@ -504,6 +703,16 @@ if __name__ == '__main__':
     ap.add_argument(
         '--fusion', default='http://127.0.0.1:8094', help='live map fusion shown on /sim'
     )
+    ap.add_argument(
+        '--suivi',
+        default=None,
+        help='mission document of merging_map/lancer_overhead.py --suivi, shown on /mission',
+    )
+    ap.add_argument(
+        '--perception-debug',
+        default=None,
+        help='URL of one debug picture of the rover perception, shown on /mission (default: none)',
+    )
     args = ap.parse_args()
     sims = {
         'rover': CameraHub(args.sim.rstrip('/') + '/video_feed', snapshots=False),
@@ -513,7 +722,14 @@ if __name__ == '__main__':
     srv = ThreadingHTTPServer(
         (args.host, args.port),
         make_handler(
-            Robot(args.robot), hub, args.map_port, args.robot_lan, sims, args.fusion.rstrip('/')
+            Robot(args.robot),
+            hub,
+            args.map_port,
+            args.robot_lan,
+            sims,
+            args.fusion.rstrip('/'),
+            args.suivi,
+            args.perception_debug,
         ),
     )
     srv.daemon_threads = True
