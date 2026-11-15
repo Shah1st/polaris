@@ -548,3 +548,28 @@ def test_path_step_parsing() -> None:
     for bad in ({'path': []}, {'path': [[1, 0]], 'frame': 'map'}, {'path': [[1, 0]], 'speed': 3}):
         with pytest.raises(ValueError):
             Step.parse(bad)
+
+
+# -- gyro bias vs hand rotations ------------------------------------------------------------
+
+
+def test_turning_the_rover_by_hand_is_not_learned_as_bias(sim: Sim) -> None:
+    bias = sim.odom.bias
+    sim.board.hand_rate = 0.5  # rad/s, wheels still, for 2 s
+    sim.run(2.0)
+    sim.board.hand_rate = 0.0
+    sim.run(1.0)
+    assert sim.odom.bias == pytest.approx(bias, abs=0.002)
+    assert sim.odom.heading == pytest.approx(sim.board.yaw, abs=0.05)
+    assert sim.odom.heading == pytest.approx(1.0, abs=0.05)
+
+
+def test_bias_calibration_waits_until_the_rover_is_still() -> None:
+    s = Sim()
+    s.board.hand_rate = 0.4  # carried and turned while the server starts
+    s.run(3.0)
+    assert not s.odom.bias_ready
+    s.board.hand_rate = 0.0
+    s.run(4.5)
+    assert s.odom.bias_ready
+    assert s.odom.bias == pytest.approx(s.board.gyro_bias_raw * s.cfg.gyro_scale, abs=0.003)

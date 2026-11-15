@@ -76,6 +76,12 @@ class Config:
     gyro_scale: float = math.radians(1.0) / 16.4
     track: float = 0.125  # m, wheel track used by the ESP32 firmware for the RaspRover
     bias_calib_time: float = 2.0  # s of stillness to measure the gyro bias
+    # rad/s: a gyro reading further than this from the bias is a real rotation (the rover
+    # carried or pushed by hand, wheels still), never learned as bias. Noise is ~0.008.
+    bias_max_rate: float = 0.03
+    # rad/s: a gyro bias is small (ours: ~0.004). A larger average during the start-up
+    # measure means the rover was turning (carried): measure again.
+    bias_limit: float = 0.05
 
     # Gyro steering assist for manual driving (a software differential): when the input is
     # "straight", hold the heading; when it is a turn, make the measured rotation follow it.
@@ -232,8 +238,10 @@ class Odometry:
             self._calibrate_bias(gz, t)
             return
 
-        # Slowly re-learn the bias whenever the rover has been still for a while.
-        if self._still_since is not None and t - self._still_since > 0.5:
+        # Slowly re-learn the bias whenever the rover has been still for a while, but only
+        # from readings that look like noise: wheels still does not mean not rotating.
+        still = self._still_since is not None and t - self._still_since > 0.5
+        if still and abs(gz - self.bias) < self.cfg.bias_max_rate:
             self.bias += 0.02 * (gz - self.bias)
 
         self.yaw_rate = gz - self.bias
@@ -248,9 +256,15 @@ class Odometry:
             self._bias_start = t
         self._bias_samples.append(gz)
         if t - self._bias_start >= self.cfg.bias_calib_time and len(self._bias_samples) >= 5:
-            self.bias = sum(self._bias_samples) / len(self._bias_samples)
-            self.bias_ready = True
+            n = len(self._bias_samples)
+            mean = sum(self._bias_samples) / n
+            spread = math.sqrt(sum((g - mean) ** 2 for g in self._bias_samples) / n)
             self._bias_samples.clear()
+            self._bias_start = None
+            if spread > self.cfg.bias_max_rate / 2 or abs(mean) > self.cfg.bias_limit:
+                return  # turned during the measure: start over
+            self.bias = mean
+            self.bias_ready = True
 
     def recalibrate_gyro(self) -> None:
         self.bias_ready = False

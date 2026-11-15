@@ -78,15 +78,17 @@ class Camera:
         self._cond = threading.Condition()
         self._last_request = 0.0
         self._thread: threading.Thread | None = None
+        self._start_lock = threading.Lock()  # several viewers may ask at the same moment
 
     def request(self) -> None:
         """Mark that a viewer wants frames; starts the capture thread if needed."""
         self._last_request = time.monotonic()
         if cv2 is None:
             return
-        if self._thread is None or not self._thread.is_alive():
-            self._thread = threading.Thread(target=self._run, name='camera', daemon=True)
-            self._thread.start()
+        with self._start_lock:
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._run, name='camera', daemon=True)
+                self._thread.start()
 
     def wait_frame(self, last_id: int, timeout: float = 2.0) -> tuple[bytes | None, int]:
         self.request()

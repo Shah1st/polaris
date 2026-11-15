@@ -57,6 +57,7 @@ class FakeEsp32:
         self.yaw_drift = yaw_drift
         self.pan = self.tilt = 0.0  # camera pan-tilt, deg (T:133)
         self.blocked = False  # True: wheels stuck (tests the stall detection)
+        self.hand_rate = 0.0  # rad/s: someone turns the rover by hand, wheels still
         self.booted = True  # FakeSerial sets it False while "booting"
 
         self.x = self.y = self.yaw = 0.0  # true pose
@@ -120,6 +121,7 @@ class FakeEsp32:
         self.yaw_rate = w_kin * self.turn_efficiency
         if abs(v) > 0.02:
             self.yaw_rate += self.yaw_drift
+        self.yaw_rate += self.hand_rate
         self.yaw += self.yaw_rate * dt
         self.x += v * math.cos(self.yaw) * dt
         self.y += v * math.sin(self.yaw) * dt
