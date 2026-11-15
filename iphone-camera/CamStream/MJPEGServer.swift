@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import QuartzCore
 import os
 
 /// Informations publiées sur `/status`.
@@ -10,6 +11,8 @@ struct StreamInfo: Codable, Sendable, Equatable {
     var camera = "back"
     /// Lens in use: "wide" (1×), "ultrawide" (0.5×) or "none" (no camera, test pattern).
     var lens = "none"
+    /// LiDAR depth: "lidar" (captured, on /depth), "off" (switched off) or "unavailable".
+    var depth = "unavailable"
 }
 
 /// Petit serveur HTTP qui diffuse les images JPEG de la caméra en MJPEG
@@ -30,6 +33,10 @@ final class MJPEGServer: @unchecked Sendable {
     let serviceName: String
     var onStateChange: (@Sendable (State) -> Void)?
     var onClientCountChange: (@Sendable (Int) -> Void)?
+    /// The newest LiDAR depth map, for `/depth` (set once at start).
+    var depthProvider: (@Sendable () -> DepthFrame?)?
+    /// The same as a grey JPEG, for `/depth.jpg` (set once at start).
+    var depthPreview: (@Sendable () -> Data?)?
 
     private let queue = DispatchQueue(label: "camstream.server", qos: .userInitiated)
     private var listener: NWListener?
@@ -242,6 +249,37 @@ final class MJPEGServer: @unchecked Sendable {
                              body: Data("Aucune image disponible pour le moment.".utf8), headOnly: headOnly)
             }
 
+        case "/depth", "/depth.bin":
+            // Raw LiDAR depth: Float32 little-endian metres, row after row; size, intrinsics,
+            // video rotation and age in the headers (see README).
+            if let frame = depthProvider?() {
+                var headers = [
+                    "X-Depth-Width": "\(frame.width)",
+                    "X-Depth-Height": "\(frame.height)",
+                    "X-Depth-Format": "float32-le-metres",
+                    "X-Video-Rotation": "\(frame.videoRotation)",
+                    "X-Age-Ms": "\(Int((CACurrentMediaTime() - frame.time) * 1000))",
+                ]
+                if let k = frame.intrinsics {
+                    headers["X-Depth-Intrinsics"] = k.map { String(format: "%.3f", $0) }.joined(separator: ",")
+                }
+                sendResponse(on: connection, status: "200 OK", contentType: "application/octet-stream",
+                             body: frame.metres, headOnly: headOnly, headers: headers)
+            } else {
+                sendResponse(on: connection, status: "503 Service Unavailable", contentType: "text/plain; charset=utf-8",
+                             body: Data("Pas de profondeur : LiDAR coupé dans les réglages ou absent de cet iPhone.".utf8),
+                             headOnly: headOnly)
+            }
+
+        case "/depth.jpg":
+            if let jpeg = depthPreview?() {
+                sendResponse(on: connection, status: "200 OK", contentType: "image/jpeg", body: jpeg, headOnly: headOnly)
+            } else {
+                sendResponse(on: connection, status: "503 Service Unavailable", contentType: "text/plain; charset=utf-8",
+                             body: Data("Pas de profondeur : LiDAR coupé dans les réglages ou absent de cet iPhone.".utf8),
+                             headOnly: headOnly)
+            }
+
         case "/status", "/status.json":
             struct Status: Encodable {
                 let viewers: Int
@@ -250,9 +288,10 @@ final class MJPEGServer: @unchecked Sendable {
                 let fps: Int
                 let camera: String
                 let lens: String
+                let depth: String
             }
             let status = Status(viewers: streamClients.count, width: info.width, height: info.height,
-                                fps: info.fps, camera: info.camera, lens: info.lens)
+                                fps: info.fps, camera: info.camera, lens: info.lens, depth: info.depth)
             let body = (try? JSONEncoder().encode(status)) ?? Data("{}".utf8)
             sendResponse(on: connection, status: "200 OK", contentType: "application/json", body: body, headOnly: headOnly)
 
@@ -266,12 +305,19 @@ final class MJPEGServer: @unchecked Sendable {
     }
 
     private func sendResponse(on connection: NWConnection, status: String, contentType: String,
-                              body: Data, headOnly: Bool = false) {
+                              body: Data, headOnly: Bool = false, headers: [String: String] = [:]) {
         var head = "HTTP/1.1 \(status)\r\n"
         head += "Content-Type: \(contentType)\r\n"
         head += "Content-Length: \(body.count)\r\n"
         head += "Cache-Control: no-cache, no-store, must-revalidate\r\n"
         head += "Access-Control-Allow-Origin: *\r\n"
+        if !headers.isEmpty {
+            // a browser page on another address may read them too
+            head += "Access-Control-Expose-Headers: \(headers.keys.sorted().joined(separator: ", "))\r\n"
+            for (name, value) in headers.sorted(by: { $0.key < $1.key }) {
+                head += "\(name): \(value)\r\n"
+            }
+        }
         head += "Connection: close\r\n\r\n"
 
         var payload = Data(head.utf8)

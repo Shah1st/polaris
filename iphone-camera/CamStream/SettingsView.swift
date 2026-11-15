@@ -26,6 +26,15 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Toggle("Profondeur LiDAR", isOn: $model.lidar)
+                        .disabled(!model.canUseLiDAR)
+                } header: {
+                    Text("LiDAR")
+                } footer: {
+                    Text(lidarFooter)
+                }
+
+                Section {
                     Picker("Résolution", selection: $model.resolution) {
                         ForEach(StreamResolution.allCases) { Text($0.rawValue).tag($0) }
                     }
@@ -76,7 +85,23 @@ struct SettingsView: View {
         .presentationDetents([.medium, .large])
     }
 
+    private var lidarFooter: String {
+        if !model.lidarAvailable {
+            return "Cet iPhone n'a pas de LiDAR (seuls les modèles Pro en ont un, depuis l'iPhone 12 Pro)."
+        }
+        if model.position == .front {
+            return "Le LiDAR n'existe qu'à l'arrière."
+        }
+        if model.lidar && model.isLive && !model.depthActive {
+            return "Profondeur indisponible avec cette caméra : le flux continue sans."
+        }
+        return "Mesure la distance de chaque point (en mètres, jusqu'à environ 5 m), servie sur /depth ; aperçu sur /depth.jpg. Le flux vidéo passe alors par l'objectif 1× : le grand angle n'est pas disponible avec le LiDAR."
+    }
+
     private var lensFooter: String {
+        if model.lidar && model.position == .back {
+            return "Avec le LiDAR, la caméra arrière est en 1×."
+        }
         if !model.ultraWideAvailable {
             return "Cet iPhone n'a pas d'objectif grand angle : la caméra arrière reste en 1×."
         }
