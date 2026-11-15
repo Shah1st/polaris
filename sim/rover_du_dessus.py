@@ -14,8 +14,8 @@ its ArUco marker is too small to be read (a phone a few metres up: the marker is
 - scale: the box is about the size of the rover, which gives the metres per pixel.
 
 Needs `transformers` (pip install transformers) and about 620 MB of weights at the first run.
-Measured on the two real pictures from above we have: the rover found in both (scores 0.44
-and 0.36), 0.7 s per picture on an Apple M5.
+Measured on the five real pictures from above we have: the rover found in all five (scores
+0.32 to 0.59), nothing found in four pictures without it, 0.7 s per picture on an Apple M5.
 """
 
 import math
@@ -25,8 +25,11 @@ import cv2
 import numpy as np
 
 MODELE = 'google/owlv2-base-patch16-ensemble'
-ROVER = ['a small black robot car', 'a toy tank robot']
-AUTRES = ['a shoe', 'a cardboard box', 'a bag', 'a person']
+# Measured on 5 real pictures with the rover and 4 without: "a robot" scores 0.32 to 0.59 on
+# the rover and 0.16 at most anywhere else; the longer descriptions tried first ("a small black
+# robot car") dropped to 0.03 on the rover seen from further away.
+ROVER = ['a robot', 'a small black robot', 'a remote controlled car']
+AUTRES = ['a shoe', 'a cardboard box', 'a bag', 'a person', 'a backpack']
 
 
 @dataclass
@@ -72,7 +75,7 @@ def iou(a, b):
 
 
 class DetecteurRover:
-    def __init__(self, seuil=0.25, appareil=None, marqueur_devant=False):
+    def __init__(self, seuil=0.2, appareil=None, marqueur_devant=False):
         import torch
         from transformers import Owlv2ForObjectDetection, Owlv2Processor
 
@@ -101,27 +104,30 @@ class DetecteurRover:
         )
         with self.torch.no_grad():
             sortie = self.modele(**entree)
-        res = self.proc.post_process_grounded_object_detection(
-            sortie, threshold=0.1, target_sizes=[(h, w)]
-        )[0]
-        trouves = list(
-            zip(res['scores'].tolist(), res['labels'].tolist(), res['boxes'].tolist(), strict=True)
-        )
+        # every box with its score for every name (the usual post-processing keeps only the
+        # best name of a box: the rover under its cables is as much "a bag" as "a robot")
+        scores = self.torch.sigmoid(sortie.logits[0]).cpu().numpy()
+        cote = max(h, w)  # the picture is padded to a square; boxes are fractions of it
+        cx, cy, bw, bh = (sortie.pred_boxes[0].cpu().numpy() * cote).T
+        n = len(ROVER)
+        trouves = [
+            (float(scores[i, :n].max()), float(scores[i, n:].max()),
+             (cx[i] - bw[i] / 2, cy[i] - bh[i] / 2, cx[i] + bw[i] / 2, cy[i] + bh[i] / 2))
+            for i in np.nonzero(scores[:, :n].max(axis=1) >= 0.1)[0]
+        ]  # fmt: skip
         return choisir(image, trouves, self.seuil, self.marqueur_devant)
 
 
-def choisir(image, trouves, seuil=0.25, marqueur_devant=False):
-    """The rover among the model's boxes (score, label index, box): the best "robot" box above
-    `seuil` that no other name claims with a better score, and that is not huge."""
+def choisir(image, trouves, seuil=0.2, marqueur_devant=False):
+    """The rover among the model's boxes (score as a robot, best score as something else,
+    box): the best "robot" box above `seuil`, that is not clearly something else (a shoe, a
+    bag...) and not huge."""
     h, w = image.shape[:2]
-    autres = [(s, b) for s, e, b in trouves if e >= len(ROVER)]
-    for score, etiquette, boite in sorted(trouves, reverse=True):
-        if etiquette >= len(ROVER) or score < seuil:
+    for score, autre, boite in sorted(trouves, reverse=True):
+        if score < seuil or score < 0.8 * autre:
             continue
         bw, bh = boite[2] - boite[0], boite[3] - boite[1]
         if bw <= 4 or bh <= 4 or bw * bh > 0.15 * w * h or max(bw, bh) > 3 * min(bw, bh):
-            continue
-        if any(s > score and iou(boite, b) > 0.5 for s, b in autres):
             continue
         cap = cap_par_papier(image, boite)
         if cap is not None and marqueur_devant:
