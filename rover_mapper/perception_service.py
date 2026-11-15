@@ -29,6 +29,7 @@ import os
 import sys
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -64,6 +65,7 @@ class Camera:
         self._frame: tuple[float, int, np.ndarray] | None = None
         self._seq = 0
         self._stop = False
+        self._detected = threading.Event()
         if self.mode == 'file':
             img = cv2.imread(source, cv2.IMREAD_COLOR)
             if img is None:
@@ -72,30 +74,31 @@ class Camera:
         else:
             threading.Thread(target=self._run, daemon=True).start()
 
-    def _publish(self, rgb: np.ndarray) -> None:
+    def _publish(self, rgb: np.ndarray) -> tuple[float, int, np.ndarray]:
         with self._cond:
             self._seq += 1
             self._frame = (time.time(), self._seq, rgb)
             self._cond.notify_all()
+            return self._frame
 
     def _run(self) -> None:
-        import requests
-
         while not self._stop:
             try:
-                with requests.get(self.source, stream=True, timeout=5) as r:
-                    r.raise_for_status()
+                with urllib.request.urlopen(self.source, timeout=5) as r:
                     if not r.headers.get('Content-Type', '').startswith('multipart'):
                         self.mode = 'snapshot'
                         self.error = None
+                        self._detected.set()
                         return
                     self.mode = 'stream'
                     self.error = None
+                    self._detected.set()
                     buf = b''
-                    for chunk in r.iter_content(chunk_size=16384):
-                        if self._stop:
-                            return
-                        buf += chunk
+                    while not self._stop:
+                        chunk = r.read1(16384)
+                        if not chunk:
+                            break  # stream closed by the server: reconnect
+                        buf = (buf + chunk)[-(4 << 20) :]
                         end = buf.rfind(b'\xff\xd9')
                         if end < 0:
                             continue
@@ -109,29 +112,26 @@ class Camera:
                             self._publish(rgb)
             except Exception as e:  # network hiccup or source not up yet: retry
                 self.error = f'{type(e).__name__}: {e}'
-                time.sleep(1.0)
+            time.sleep(1.0)
 
     def grab(self, not_before: float, wait: float) -> tuple[float, int, np.ndarray] | None:
         """(arrival time, sequence number, RGB) of a frame that arrived at or after
         `not_before`, waiting up to `wait` s for it; None if there is none."""
         if self.mode == 'file':
-            self._seq += 1
-            return time.time(), self._seq, self._still
+            return self._publish(self._still)
+        if self.mode is None:
+            self._detected.wait(wait)
         if self.mode == 'snapshot':
-            import requests
-
             try:
-                r = requests.get(self.source, timeout=self.timeout)
-                r.raise_for_status()
-                rgb = decode_image(r.content)
+                with urllib.request.urlopen(self.source, timeout=self.timeout) as r:
+                    rgb = decode_image(r.read())
             except Exception as e:
                 self.error = f'{type(e).__name__}: {e}'
                 return None
             if rgb is None:
                 self.error = 'undecodable image'
                 return None
-            self._publish(rgb)
-            return self._frame
+            return self._publish(rgb)
         deadline = time.time() + wait
         with self._cond:
             while self._frame is None or self._frame[0] < not_before:
