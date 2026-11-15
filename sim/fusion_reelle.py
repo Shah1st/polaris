@@ -92,6 +92,49 @@ def sans_rover(m, res, rover, rayon):
     return out
 
 
+def marqueurs_tolerants(detecter, identifiant):
+    """`detect_markers` of the overhead pipeline, with a second look for the rover's marker
+    when the standard one misses it: the marker on the rover is small in the phone's picture
+    (20 px or less), tilted and a little blurred. The second look enlarges the picture and
+    loosens the detector, and only keeps the marker `identifiant`. On simulated markers of 14
+    to 20 px it reads 16 of 16 where the standard detector reads 11; none found in 8 real
+    pictures without a marker."""
+
+    def detecter_mieux(image, dictionary_name='DICT_4X4_50'):
+        trouves = detecter(image, dictionary_name)
+        ancien = not hasattr(cv2.aruco, 'ArucoDetector')  # OpenCV 4.6: no second look
+        if identifiant is None or identifiant in trouves or ancien:
+            return trouves
+        gris = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        dico = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, dictionary_name))
+        for echelle in (1, 2, 3):
+            g = gris
+            if echelle > 1:
+                g = cv2.resize(gris, None, fx=echelle, fy=echelle, interpolation=cv2.INTER_CUBIC)
+            for souple in (False, True):
+                p = cv2.aruco.DetectorParameters()
+                p.adaptiveThreshWinSizeMin, p.adaptiveThreshWinSizeMax = 5, 45
+                p.adaptiveThreshWinSizeStep = 8
+                p.minMarkerPerimeterRate = 0.01
+                p.polygonalApproxAccuracyRate = 0.06
+                p.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+                if souple:
+                    p.errorCorrectionRate = 0.9
+                    p.perspectiveRemoveIgnoredMarginPerCell = 0.2
+                coins, ids, _ = cv2.aruco.ArucoDetector(dico, p).detectMarkers(g)
+                if ids is None:
+                    continue
+                for i, quad in zip(ids.flatten(), coins, strict=True):
+                    if int(i) == identifiant:
+                        trouves[identifiant] = (
+                            np.asarray(quad, dtype=np.float64).reshape(4, 2) / echelle
+                        )
+                        return trouves
+        return trouves
+
+    return detecter_mieux
+
+
 class Odometrie:
     """Stands in for the overhead camera of RaspRoverReel: the rover pose in the frame of the
     maps, from GET /state."""
@@ -140,8 +183,15 @@ class FusionReelle:
 
     # ---- the drone: the overhead camera, read only ------------------------------------------
     def ouvrir_camera(self):
+        from guidance_global_map import pipeline
         from guidance_global_map.drone import OverheadDrone, camera_reader
         from guidance_global_map.pipeline import OverheadSettings
+
+        if not getattr(pipeline.detect_markers, 'tolerant', False):
+            pipeline.detect_markers = marqueurs_tolerants(
+                pipeline.detect_markers, self.args.drone_marqueur
+            )
+            pipeline.detect_markers.tolerant = True
 
         a = self.args
         mpp = a.drone_mpp
@@ -158,6 +208,12 @@ class FusionReelle:
             marker_height=a.drone_hauteur_marqueur,
         )
         self.lecteur = camera_reader(a.drone_source, max_age=5.0)  # a slow Wi-Fi link
+        self.ia = None
+        if a.drone_detecteur == 'ia':
+            from rover_du_dessus import DetecteurRover
+
+            self.drone = {'etat': 'loading the rover detector (OWLv2)'}
+            self.ia = DetecteurRover(marqueur_devant=a.drone_marqueur_devant)
         self.camera = OverheadDrone(self.lecteur, self.reglages_camera, period=0.0)
         self.drone = {'etat': 'waiting for the first picture'}
         threading.Thread(target=self.boucle_drone, daemon=True).start()
@@ -189,17 +245,26 @@ class FusionReelle:
                 self.camera.settings = dataclasses.replace(
                     self.camera.settings, metres_per_pixel=mpp
                 )
-        r = self.camera.refresh(force=True)
-        if r is None:
-            self.drone = {'etat': f'picture not usable: {self.camera.problem or "no picture"}'}
-            return
-        m = np.asarray(grid_to_fusion(r.grid), dtype=np.int8)  # row 0 = south, 5 cm cells
-        m = sans_traits(m, self.args.drone_largeur_min / self.camera.settings.cell_size)
+        if self.ia is not None:
+            trouve = self.tour_drone_ia()
+            if trouve is None:
+                return
+            m, vu, score = trouve
+            objets = None  # the vision model sets the scale per picture: no placing by a move
+        else:
+            score = None
+            r = self.camera.refresh(force=True)
+            if r is None:
+                probleme = self.camera.problem or 'no picture'
+                self.drone = {'etat': f'picture not usable: {probleme}'}
+                return
+            m = np.asarray(grid_to_fusion(r.grid), dtype=np.int8)  # row 0 = south, 5 cm cells
+            m = sans_traits(m, self.args.drone_largeur_min / self.camera.settings.cell_size)
+            vu = None
+            if r.rover_position is not None:
+                vu = (r.rover_position[0], r.rover_position[1], r.rover_heading)
+            objets = self.camera.seen_in(r)
         res = self.camera.settings.cell_size
-        vu = None
-        if r.rover_position is not None:
-            vu = (r.rover_position[0], r.rover_position[1], r.rover_heading)
-        objets = self.camera.seen_in(r)
         with self.verrou:
             pose = self.pose
             # The camera may be held by hand: a picture is placed in the frame of the maps by
@@ -209,7 +274,7 @@ class FusionReelle:
             calage, par, echelle_changee = None, None, False
             if vu is not None and vu[2] is not None and pose is not None and self.immobile:
                 calage, par = (angle(pose[2] - vu[2]), vu[0], vu[1], pose[0], pose[1]), 'marker'
-            else:
+            elif objets is not None:
                 if self.calage_mvt is not None and not self.camera_immobile(objets):
                     self.calage_mvt, self.appui = None, None
                     self.info_mouvement = 'the camera moved: waiting for a new move of the rover'
@@ -242,6 +307,8 @@ class FusionReelle:
             'age_calage_s': None if self.calage is None else round(time.time() - self.t_calage),
             'mouvement': self.info_mouvement,
             'rover_vu': vu is not None,
+            'detecteur': 'marker' if self.ia is None else 'OWLv2',
+            'score_rover': score,
             'cap_vu': vu is not None and vu[2] is not None,
             'obstacles': int((m == 1).sum()),
             'libres': int((m == 0).sum()),
@@ -347,6 +414,43 @@ class FusionReelle:
         c, s = math.cos(th), math.sin(th)
         dx, dy = pose[0] - mx, pose[1] - my
         return cx + c * dx + s * dy, cy - s * dx + c * dy, angle(pose[2] - th)
+
+    def tour_drone_ia(self):
+        """One picture with the vision model: (matrix, rover seen or None, score) or None.
+        The rover's box gives where it is, the scale of the picture (the box is about
+        --drone-taille-rover wide) and, with the marker's white paper, its heading."""
+        import dataclasses
+
+        from guidance_global_map.pipeline import frame_problem, process_image
+        from guidance_global_map.segmentation import grid_to_fusion
+
+        a = self.args
+        image = self.lecteur()
+        probleme = 'no picture' if image is None else frame_problem(image)
+        if probleme is not None:
+            self.drone = {'etat': f'picture not usable: {probleme}'}
+            return None
+        r = self.ia(image)
+        reglages = self.camera.settings
+        if r is not None and a.drone_mpp is None:
+            mpp = a.drone_taille_rover / r.taille
+            reglages = dataclasses.replace(reglages, metres_per_pixel=mpp)
+            self.camera.settings = reglages  # kept for the pictures where it is not found
+            self.mpp_auto = False  # the rover's size is a better scale than the lens and height
+        reglages = dataclasses.replace(reglages, rover_marker_id=None)
+        mpp, res = reglages.metres_per_pixel, reglages.cell_size
+        m = np.asarray(grid_to_fusion(process_image(image, reglages).grid), dtype=np.int8)
+        m = sans_traits(m, a.drone_largeur_min / res)
+        if r is None:
+            return m, None, None
+        x, y = r.x * mpp, (image.shape[0] - r.y) * mpp  # camera frame: y up from the bottom
+        cap = None if r.cap is None else angle(-r.cap)
+        # the rover is not an obstacle on its own map
+        ys = (np.arange(m.shape[0]) + 0.5) * res
+        xs = (np.arange(m.shape[1]) + 0.5) * res
+        pres = np.hypot(xs[None, :] - x, ys[:, None] - y) <= 0.7 * a.drone_taille_rover + res
+        m[pres & (m == 1)] = 0
+        return m, (x, y, cap), round(r.score, 2)
 
     @staticmethod
     def placer_vue(m, res, calage):
@@ -949,6 +1053,25 @@ def options(argv=None):
         type=float,
         default=0.15,
         help='m: what the drone sees thinner than this is a line on the floor, not an obstacle',
+    )
+    p.add_argument(
+        '--drone-detecteur',
+        choices=('marqueur', 'ia'),
+        default='marqueur',
+        help="how the rover is found in the drone's picture. marqueur: its ArUco marker, read "
+        '(it must be about 25 px wide). ia: a vision model (OWLv2, sim/rover_du_dessus.py; '
+        "needs transformers) finds the rover, the marker's white paper gives the heading",
+    )
+    p.add_argument(
+        '--drone-taille-rover',
+        type=float,
+        default=0.25,
+        help='m: size of the rover seen from above, for the scale with --drone-detecteur ia',
+    )
+    p.add_argument(
+        '--drone-marqueur-devant',
+        action='store_true',
+        help='the marker paper is at the front of the rover (default: at the back)',
     )
     p.add_argument('--drone-marqueur', type=int, default=10, help="ArUco id on the rover's top")
     p.add_argument(

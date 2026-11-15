@@ -25,6 +25,7 @@
 #   FUSION_PERIOD  s between two looks of the fusion (default 1.0)
 #   DRONE_HEIGHT   height of the phone above the floor, m (default 1.8): scale of the drone map
 #   DRONE_MPP      metres per pixel of the phone's picture, measured (replaces DRONE_HEIGHT)
+#   DRONE_DETECTOR ia (default: a vision model finds the rover, needs transformers) or marqueur
 #   DRONE_MARKER   ArUco id on the rover's top (default 10): places the drone map on the rover's
 
 set -u
@@ -38,6 +39,7 @@ FUSION_PERIOD="${FUSION_PERIOD:-1.0}"
 DRONE_HEIGHT="${DRONE_HEIGHT:-1.8}"
 DRONE_MARKER="${DRONE_MARKER:-10}"
 DRONE_MPP="${DRONE_MPP:-}"
+DRONE_DETECTOR="${DRONE_DETECTOR:-ia}"
 PHONE_HOST="$(printf '%s' "$PHONE" | sed -E 's#^[a-z]+://([^@/]*@)?([^:/]+).*#\2#')"
 PHONE_NAME="${PHONE_NAME:-iPhone CamStream ($PHONE_HOST)}"
 ALL="dashboard perception fusion mapper"
@@ -127,7 +129,8 @@ start_one() {
       if [ -n "$PHONE" ]; then
         # the phone is read through the dashboard (one connection to the phone)
         set -- "$@" --drone-nom "$PHONE_NAME" --drone-source http://127.0.0.1:8082/drone_feed \
-          --drone-hauteur "$DRONE_HEIGHT" --drone-marqueur "$DRONE_MARKER"
+          --drone-hauteur "$DRONE_HEIGHT" --drone-marqueur "$DRONE_MARKER" \
+          --drone-detecteur "$DRONE_DETECTOR"
         if [ -n "$DRONE_MPP" ]; then set -- "$@" --drone-mpp "$DRONE_MPP"; fi
       fi
       launch "$name" "$ROOT" "$@"
