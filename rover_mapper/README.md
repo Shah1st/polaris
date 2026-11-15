@@ -84,6 +84,8 @@ Le robot ne fait que capturer et envoyer (`d405_server.py` sur l'ordinateur du r
 - **« Les deux » : les deux images ne sont pas prises ensemble.** La caméra du robot arrive par le tableau de bord avec ~0,5 s de retard, la D405 est la plus récente : en tournant ou en roulant vite, la profondeur tombe sur les mauvais pixels. Rouler lentement.
 - **Tourelle** : la caméra du robot est sur une tourelle ; `--d405-mount` ne vaut qu'à pan 0 et au tilt de la mesure. Avec `--rover URL` (serveur du rover, `GET /state`), un pan non nul est signalé.
 
+Sans caméra branchée, `d405_server.py` la recherche après 2 s, puis 4, 8 et 15 s au plus (chaque essai énumère l'USB : un essai toutes les 2 s prenait 23 % d'un cœur du robot) ; dès que des images arrivent, l'attente revient à 2 s. L'attente en cours est dans `/health` (`retry_s`).
+
 Sans le robot : `scripts/fake_d405.py` sert le même contrat HTTP à partir du simulateur de l'appartement (`--sim http://127.0.0.1:8090`, 2 images/s au plus ; jamais celui de la forêt sur 5050). Tests : `test_d405_source.py` (faux serveur D405 avec extrinsèques non triviales, sans appareil ni modèle).
 
 ## Perception du rover pour la mission (une seule image, sans suivi)
@@ -98,6 +100,22 @@ Sans le robot : `scripts/fake_d405.py` sert le même contrat HTTP à partir du s
 ```
 
 `--fov 100` : `/video_rect` est par construction une image sténopé centrée de 100° (option `--rect-fov` du dashboard) ; sans `--fov`/`--k`, les intrinsèques estimées par DA3 sont utilisées. Liaison 127.0.0.1 seulement.
+
+**Vrai rover sur une liaison lente (commande recommandée).** Par le tunnel SSH, chaque requête au robot coûte 1,3 à 4 s quelle que soit sa taille : le service lit directement l'image brute du robot, une requête par regard, sans passer par le tableau de bord (qui tire le flux en continu) :
+
+```bash
+/home/romaindcrl/rovermap/.venv/bin/python rover_mapper/perception_service.py \
+    --source http://127.0.0.1:18080/snapshot.jpg --calib teleop/calib/plumbline.json \
+    --rect-fov 100 --fov 100 --cam-height 0.22 --range 1.5 --port 8095
+```
+
+- `--calib FICHIER` : modèle de l'objectif fisheye (`teleop/calib/plumbline.json`). La source donne alors des images BRUTES (le `/snapshot.jpg` du robot, fisheye 640x480) et le service redresse chacune lui-même, avec la même K et les mêmes tables `cv2.fisheye.initUndistortRectifyMap` que `CameraHub` de `teleop/server.py` (le test compare octet par octet avec `/video_rect`). Une image d'une autre taille que celle du modèle est refusée.
+- `--rect-fov DEG` (100 par défaut) : champ horizontal de l'image redressée ; avec `--calib` c'est aussi le champ connu (`--fov`, s'il est donné, doit être égal ; `--k` est refusé).
+- `--fetch-timeout 10` : délai d'un GET de l'image (la liaison prend 1,3 à 4 s ; l'ancien délai de 3 s prenait une réponse lente pour une panne).
+- Une URL qui finit par `.jpg`, `.jpeg`, `.png` ou `.npz` est une image unique : pas de requête de sondage au démarrage (sur liaison lente, ce sondage faisait répondre 503 à la première demande).
+- `GET /obstacles?fresh=1` : avec une telle source, UN nouveau GET de l'image par demande (frais par construction) ; sa durée est dans `fetch_s` (le coût de la liaison, visible par l'appelant). Sans `fresh=1`, une image de moins de `--max-age` s est réutilisée sans requête, et `GET /debug.jpg` juste après montre la même image et le même résultat, sans nouvelle requête.
+- `POST /obstacles` (corps : un JPEG, brut avec `--calib`, déjà redressé sinon) : pour un pilote qui a déjà téléchargé l'image ; même JSON que `GET /obstacles`, avec `age_s` 0, `t` = heure de réception et `fetch_s` null. Le service n'ouvre alors aucune connexion vers le robot. Image illisible ou de mauvaise taille : 400.
+- Côté appelant : un délai d'au moins `--fetch-timeout` + l'inférence (~0,6 s) pour `?fresh=1` ; le panoramique de la tourelle n'est pas pris en compte ici (l'appelant tourne la vue, `cap - pan`).
 
 **Mesures en simulation** (`scripts/eval_perception.py`, 30 images de la forêt enregistrée + 30 de l'appartement, même classification appliquée à la profondeur exacte, portée 2 m, cases à 1 case près ; inférence 0,08-0,1 s sur la L4 partagée, 0,57 s par requête dans le service en direct) :
 
