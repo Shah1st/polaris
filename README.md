@@ -150,7 +150,8 @@ This is the same grid that `/map` carries. `out/scene_fusion.npy` is that grid i
 convention of the map fusion (`merging_map`): 1 obstacle, 0 free, -1 not seen.
 
 The whole pipeline, its outputs, what has been verified and what comes next are described in
-[docs/overhead-camera.md](docs/overhead-camera.md).
+[docs/overhead-camera.md](docs/overhead-camera.md). What runs today, how well each part
+is proven and the settings that matter are in [docs/state.md](docs/state.md).
 
 **Running a saved photo or video through the nodes**
 
