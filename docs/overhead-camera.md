@@ -1,7 +1,7 @@
 # Overhead camera pipeline
 
-Status on 2026-11-15 (live camera reader, scale per image size, marker height, bad-frame
-check). This file is the reference for the overhead
+Status on 2026-11-15, evening. What runs today and how well it is proven is in
+[state.md](state.md). This file is the reference for the overhead
 (top, drone) camera part of Polaris: what it does, what it outputs, what has been checked, and
 what comes next. It is written for the team and for coding agents working on the repo. When the
 pipeline or its outputs change, update this file in the same commit.
@@ -248,6 +248,43 @@ A marker setup on the floor also exists (`calib_node` `mode: markers`) for a til
 It only exists in the ROS node, which has never been launched; the plain-Python path assumes a
 camera looking straight down.
 
+## The maps server and the dashboard
+
+The demo does not go through the ROS nodes. `sim/fusion_reelle.py` reads the phone's picture
+with `OverheadDrone`, places the result on the rover's maps and plans with `merging_map`.
+What decides how the drone map is placed:
+
+| Situation | How the map is placed |
+|---|---|
+| "No marker" off, tag read in the picture | From that one picture: position, heading and scale from the tag |
+| "No marker" on (the default), tag detector | By the rover's move: two stops at least 12 cm apart, camera still in between |
+| Vision model (`--drone-detecteur ia`), heading seen and "No marker" off | From that one picture |
+| Vision model, no heading (or "No marker" on) | The model gives the rover's place and the scale in every picture; two stops of the rover give the direction |
+| "Calibrate direction" button | The rover drives 30 cm forward and back by itself; needs the vision model |
+
+A heading read in the picture is ignored while "No marker on the rover" is on, because the
+vision model takes any white patch in the rover's box for the marker's paper.
+
+Before planning, an obstacle is grown by, in order: shadows (removed by default), the 5 cm
+cell it touches, then the planner's `--rayon` (0.15 m). The camera-side `margin` stays 0: the
+planner grows obstacles itself. On photo IMG_4109, a radius of 0.20 m blocked 93 % of the
+floor and 0.15 m 89 %; the gap between two boxes only opened at 0.11 m, which is below what
+the rover needs to turn (0.124 m for the chassis alone).
+
+The rover's own parts are sometimes marked as obstacles: the code frees a 20 cm disc around
+the tag's centre, the tag is not at the rover's centre, and cables stick out. Proposed and not
+built: free the whole blob under the tag when it is no larger than about 35 cm, free the
+cells the rover has driven over, and set `marker_height`.
+
+## The rover's tag
+
+AprilTag family 25h9, id 10, read by `guidance_calib.aruco_compat.detect_markers` with a
+detector loosened for small blurred tags (figures in that file's header). The black square
+must be about 48 pixels wide in the picture. `generate_markers --side-cm 12` writes a PNG
+that prints at the right size at 100 %. A recent OpenCV is needed for blurred pictures; the
+dev container's 4.6 is not enough. Markers printed in the old family need
+`dictionary: DICT_4X4_50`.
+
 ## Live camera procedure
 
 1. **Camera.** Fixed above the arena, looking straight down, high enough to see the whole
@@ -355,15 +392,16 @@ through the launched nodes; anything outdoors.
 
 ## Next steps, in order
 
-1. A first run on the real rover with the live camera and the marker (procedure above):
-   check the stream's scale and delay, and the planner's margin.
-2. The rover's own map on the real rover (see "Still open" above).
-3. Check the scale with a tape measure on the floor.
-4. Make rover detection sturdier than size alone (colour, or tracking from the last
-   position); mask the rover's rectangle instead of a 0.20 m disc.
-5. A reference image of the empty arena, to see grey/white obstacles and ignore floor marks.
-6. Later: tilted or moving camera without markers, uneven ground, a learned segmentation for
-   outdoor scenes.
+1. Decide the defaults now that the tag is read live: "No marker on the rover" on or off, and
+   which detector (tag or vision model). See "Open decisions" in [state.md](state.md).
+2. The rover's own parts marked as obstacles (see "The maps server and the dashboard").
+3. Track the rover from one picture to the next with its odometry, instead of looking for it
+   from scratch in every picture: a lookalike object elsewhere then stops mattering.
+4. The rover's own map on the real rover, and turning the local map back on.
+5. Check the scale with a tape measure on the floor.
+6. A small detector trained on our own pictures (the rover's move labels them automatically),
+   as a variant to the tag.
+7. Later: tilted or moving camera, uneven ground, a learned segmentation for outdoor scenes.
 
 ## For coding agents
 
@@ -374,11 +412,12 @@ through the launched nodes; anything outdoors.
   depend on. Do not change them without updating this file and telling the team.
 - Check a change on real photos with `segment_image`, and look at the overlay, before calling
   it done. The unit tests use synthetic scenes and did not catch the lighting problem.
-- Tests: in the dev container, `colcon build --symlink-install && colcon test &&
-  colcon test-result --verbose`. Outside it, the logic tests run with plain pytest once
+- Tests: `scripts/test_fast.sh` (about 30 s, no workspace build) for the plain modules; in
+  the dev container `colcon build --symlink-install && colcon test && colcon test-result
+  --verbose` for the nodes. Outside the container the plain tests run with pytest once
   `opencv-contrib-python` and `numpy` are installed and `src/guidance_calib`,
-  `src/guidance_global_map` and `src/guidance_rover_pose` are on `PYTHONPATH`; the node tests
-  need ROS.
-- `ruff check . && ruff format --check .` must pass.
+  `src/guidance_global_map`, `src/guidance_rover_pose` are on `PYTHONPATH`.
+- `ruff check` must pass. Format only the files you changed: `ruff format .` also rewrites
+  other people's folders.
 - Say plainly what was run and what was not. The ROS nodes were untested for most of this
   work because the container could not be built; that was reported each time.
