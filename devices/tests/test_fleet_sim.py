@@ -110,9 +110,6 @@ def test_sources_carry_role_and_device_id_when_the_fusion_accepts_them():
     assert fleet.plan('rover-b', VICTIM)['action'] == 'SUIVRE'
 
 
-@pytest.mark.xfail(
-    reason='interface 7: merging_map accepts "drone:<id>" after integration', strict=False
-)
 def test_the_real_fusion_accepts_device_ids():
     fleet = build(CONFIG, log=quiet)
     assert fleet.ids
