@@ -1,6 +1,6 @@
 """
 rover_reel.py - Implementation de robot.Robot pour le vrai RaspRover, a travers le serveur de
-RBDRB (rover/rover_server.py, branche rover-teleop). Ce serveur tourne sur l'ordinateur du
+RBDRB (rover/rover_server.py, dans main). Ce serveur tourne sur l'ordinateur du
 rover (RDK X5) et parle a la carte ESP32 ; c'est par lui que le cerveau (cerveau.mission)
 conduit le robot.
 
@@ -14,8 +14,8 @@ Partage du travail
 - Le serveur du rover : COMMENT y aller. Il suit le pas sur ses roues et son gyroscope, et
   l'abandonne si les roues ne tournent plus (statut "stalled").
 
-Il faut le serveur de la branche rover-teleop : POST /path y est arrive avec le commit
-5a7277d et n'est pas encore dans main (le serveur de main repond 404, et on le dit).
+POST /path est dans rover/rover_server.py de main (commit 5a7277d) ; un serveur plus ancien
+repond 404, et on le dit. La version qui tourne sur le robot n'a pas ete comparee au depot.
 
 Deux reperes
 ------------
@@ -45,6 +45,22 @@ erreur de programme : elle leve ServeurRoverError au lieu de declencher le secou
 l'ordinateur se tait, le serveur finit le pas en cours puis s'arrete : il n'y a PAS de
 programme de retour embarque, l'ordinateur attend que la liaison revienne.
 
+Securite
+--------
+- Arret operateur : un pas qui finit 'stopped', 'cancelled by manual control' ou
+  'replaced by a new command' sans que l'adaptateur l'ait cause (STOP de la page du rover ou
+  du tableau de bord, conduite au clavier, commande d'un autre client) leve ArretOperateur.
+  C'est definitif : le cerveau ne renvoie pas de pas, lancer_overhead envoie /stop et finit.
+- Redemarrage du serveur (ou /reset_odom) : detecte a chaque lecture de GET /state (boot_id
+  qui change ; sans boot_id, odom.odometer ou link.rx_count qui diminue). L'odometrie est
+  alors repartie de zero : avant le pas suivant on attend que l'ESP32 et le gyroscope soient
+  prets, puis on recale le repere carte <- odometrie sur une image neuve (le cap aussi est
+  oublie si la camera ne le donne pas : il est remesure).
+- Borne : un POST /path dont la cible est plus loin de la pose odometrique actuelle que le pas
+  demande + marge_pas n'est jamais envoye (ServeurRoverError).
+- Le pas de mesure du cap est un /path vers un point absolu de l'odometrie : le renvoyer apres
+  une reponse perdue ne le fait pas deux fois (un /move relatif le refaisait).
+
 Ce qui se branche de l'exterieur
 --------------------------------
   - requete(methode, chemin, corps) -> dict, ou None sans reponse : client_http(url) ;
@@ -53,9 +69,11 @@ Ce qui se branche de l'exterieur
     camera.refresh(force=True)). Sans lui, on attend `attente_image` s apres l'arret ;
   - percevoir(position, cap) -> (matrice -1/0/1, x0, y0) ou None : la camera du rover, dans
     le repere de la carte (perception a ecrire) ;
-  - drone : objet avec disponible() -> bool et zoomer(tuile) -> liste de messages-tuiles.
+  - drone : objet avec disponible() -> bool et zoomer(tuile) -> liste de messages-tuiles ;
+  - signaler(texte) (facultatif) : journal des evenements de securite (redemarrage...).
 """
 
+import http.client
 import json
 import math
 import time
@@ -70,9 +88,42 @@ class ServeurRoverError(RuntimeError):
     pas une coupure de liaison."""
 
 
+class ArretOperateur(Exception):  # noqa: N818 - nom fixe par l'interface entre les parties
+    """Un operateur a arrete le rover ou l'a repris en main : la mission s'arrete la."""
+
+
+# Statuts de ctrl.history qui, si l'adaptateur ne les a pas causes, viennent d'un operateur
+ARRETS_OPERATEUR = ('stopped', 'cancelled by manual control', 'replaced by a new command')
+
+
+def serveur_redemarre(avant, apres):
+    """True si deux reponses de GET /state viennent de deux vies differentes du serveur (ou si
+    l'odometrie a ete remise a zero entre les deux)."""
+    b0, b1 = avant.get('boot_id'), apres.get('boot_id')
+    if b0 is not None or b1 is not None:
+        return b0 != b1
+    # serveur sans boot_id : des compteurs qui ne font que croitre pendant une vie
+    for bloc, cle in (('odom', 'odometer'), ('link', 'rx_count')):
+        v0, v1 = (avant.get(bloc) or {}).get(cle), (apres.get(bloc) or {}).get(cle)
+        if v0 is not None and v1 is not None and float(v1) < float(v0) - 1e-6:
+            return True
+    return False
+
+
+def nouvelles_entrees(historique, dernier):
+    """Entrees de ctrl.history (la plus recente d'abord) arrivees apres `dernier`."""
+    if dernier is None:
+        return list(historique)
+    for k, entree in enumerate(historique):
+        if entree == dernier:
+            return list(historique[:k])
+    return list(historique)
+
+
 def client_http(url, delai=1.0):
     """Fonction requete(methode, chemin, corps=None) -> dict pour le serveur du rover, par
-    exemple url = 'http://192.168.1.42:8080'. Renvoie None si le serveur ne repond pas."""
+    exemple url = 'http://192.168.1.42:8080'. Renvoie None si le serveur ne repond pas dans
+    `delai` s (ou si la reponse arrive coupee)."""
     url = url.rstrip('/')
 
     def requete(methode, chemin, corps=None):
@@ -90,11 +141,13 @@ def client_http(url, delai=1.0):
             detail = e.read().decode(errors='replace')[:200]
             if e.code == 404 and chemin == '/path':
                 raise ServeurRoverError(
-                    'Le serveur du rover ne connait pas POST /path : il faut celui de la '
-                    'branche rover-teleop (commit 5a7277d), pas encore dans main.'
+                    'Le serveur du rover ne connait pas POST /path : rover_server.py trop ancien '
+                    'sur le robot, deployer celui de main (commit 5a7277d ou plus recent).'
                 ) from e
             raise ServeurRoverError(f'{methode} {chemin} -> HTTP {e.code} {detail}') from e
-        except (OSError, ValueError):  # delai depasse, connexion impossible, reponse coupee
+        # delai depasse, connexion impossible, reponse coupee (IncompleteRead n'est pas un
+        # OSError) : une reponse perdue, pas une erreur de programme
+        except (OSError, ValueError, http.client.HTTPException):
             return None
 
     return requete
@@ -160,6 +213,8 @@ class RaspRoverReel(RobotOdometrie):
         delai_retour=60.0,
         inclinaison_camera=-20,
         portee_camera=2.0,
+        marge_pas=0.2,
+        signaler=None,
         horloge=time.monotonic,
         dormir=time.sleep,
     ):
@@ -178,27 +233,66 @@ class RaspRoverReel(RobotOdometrie):
         self.delai_liaison = delai_liaison
         self.inclinaison_camera, self.portee_camera = inclinaison_camera, portee_camera
         self.horloge, self.dormir = horloge, dormir
+        # m : un /path ne part jamais vers un point plus loin que le pas demande + marge_pas
+        # de la pose odometrique actuelle (repere faux apres un redemarrage non vu...)
+        self.marge_pas = marge_pas
+        self.signaler = signaler or (lambda texte: None)
         self.joignable, self.pret = True, False
+        self._dernier_etat = None  # derniere reponse de GET /state
+        self._redemarrage = False  # le serveur a redemarre depuis le dernier recalage
+        self.redemarrages = 0
         super().__init__(carte)  # appelle placer((0, 0)), qui ne parle pas encore au rover
 
     # ---- liaisons et temps -------------------------------------------------
     def _demander(self, methode, chemin, corps=None):
         reponse = self.requete(methode, chemin, corps)
         self.joignable = reponse is not None
+        if reponse is not None and (methode, chemin) == ('GET', '/state'):
+            if self._dernier_etat is not None and serveur_redemarre(self._dernier_etat, reponse):
+                self._redemarrage = True
+            self._dernier_etat = reponse
         return reponse
 
     def _insister(self, methode, chemin, corps=None):
-        """Comme _demander, en reessayant pendant delai_liaison s. Renvoyer un pas deja recu
-        est sans danger : le serveur remplace le pas en cours par le nouveau."""
-        debut = self.temps()
+        """Comme _demander, en reessayant pendant delai_liaison s. A reserver aux requetes
+        qu'on peut renvoyer sans danger (GET, /path en repere odometrie)."""
+        return self._envoyer(methode, chemin, corps)[0]
+
+    def _envoyer(self, methode, chemin, corps=None):
+        """(reponse, nombre d'envois) : on reessaie pendant delai_liaison s. Un /path deja recu
+        et renvoye remplace le pas en cours par le meme ('replaced by a new command' : le
+        nombre d'envois dit combien de ces statuts viennent de nous)."""
+        debut, envois = self.temps(), 0
         while True:
             reponse = self._demander(methode, chemin, corps)
+            envois += 1
             if reponse is not None or self.temps() - debut >= self.delai_liaison:
-                return reponse
+                return reponse, envois
             self.dormir(self.periode)
 
     def _etat(self):
         return self._insister('GET', '/state')
+
+    @staticmethod
+    def _est_pret(etat):
+        return bool((etat.get('link') or {}).get('connected')) and bool(
+            etat['odom'].get('gyro_ready')
+        )
+
+    def _apres_redemarrage(self):
+        """Le serveur a redemarre (ou l'odometrie a ete remise a zero) : le repere carte <-
+        odometrie ne vaut plus rien. On attendra l'ESP32 et le gyroscope, puis on recalera sur
+        une image neuve ; le cap sera remesure si la camera ne le donne pas."""
+        self._redemarrage = False
+        self.redemarrages += 1
+        self.pret = False
+        self._a_recaler = True
+        self.repere = Repere()
+        self._appui = self._vue = None
+        self.signaler(
+            'serveur du rover redemarre (odometrie remise a zero) -> attente du rover, '
+            'nouveau recalage sur la camera avant tout mouvement'
+        )
 
     def arreter(self):
         self._demander('POST', '/stop')
@@ -232,6 +326,8 @@ class RaspRoverReel(RobotOdometrie):
     def recaler(self):
         mesure = self._mesure_fraiche()
         etat = self._etat()
+        if self._redemarrage:
+            self._apres_redemarrage()  # sinon on recalerait avec le cap de l'ancienne odometrie
         if mesure is None or etat is None:
             return 0.0
         erreur = math.dist(self.est, mesure[:2])
@@ -303,15 +399,34 @@ class RaspRoverReel(RobotOdometrie):
                 )
             self.dormir(0.5)
 
+    def _borner(self, corps, avant, longueur):
+        """Refuse un /path qui irait plus loin que le pas demande : la cible est comparee a la
+        pose odometrique lue juste avant, pas a ce que l'adaptateur croit."""
+        but = corps['points'][-1]
+        ici = pose_odom(avant)[:2]
+        ecart = math.dist(but, ici)
+        if ecart > longueur + self.marge_pas:
+            raise ServeurRoverError(
+                f'Pas refuse : la cible est a {ecart:.2f} m de la pose odometrique du rover '
+                f'pour un pas de {longueur:.2f} m (marge {self.marge_pas:.2f} m). Repere '
+                'carte <- odometrie faux (serveur redemarre, /reset_odom ?) : rien envoye.'
+            )
+
     def _faire_un_pas(self, chemin, corps, longueur):
         """Envoie un pas au serveur et le suit jusqu'a l'arret. Renvoie (statut, etat) : le
-        statut du serveur ('done', 'stalled', 'timeout', 'stopped'...), 'delai' s'il ne finit
-        pas, ou (None, None) si la liaison est perdue."""
+        statut du serveur ('done', 'stalled', 'timeout'...), 'delai' s'il ne finit pas,
+        'redemarrage' si le serveur a redemarre, ou (None, None) si la liaison est perdue.
+        Leve ArretOperateur si un operateur a arrete ou remplace le pas."""
         avant = self._etat()
         if avant is None:
             return None, None
+        if self._redemarrage:
+            return 'redemarrage', avant  # le repere a perime : rien n'est envoye
+        if chemin == '/path':
+            self._borner(corps, avant, longueur)
         dernier = (avant['ctrl'].get('history') or [None])[0]
-        if self._insister('POST', chemin, corps) is None:
+        reponse, envois = self._envoyer('POST', chemin, corps)
+        if reponse is None:
             return None, None
         # le serveur abandonne un pas apres max(20 s, 3 x longueur / vitesse + 10 s) : on lui
         # laisse 5 s de plus pour le faire lui-meme
@@ -327,18 +442,40 @@ class RaspRoverReel(RobotOdometrie):
                     continue  # une reponse perdue : le serveur continue le pas sans nous
                 return None, None  # liaison perdue : le serveur finit le pas puis s'arrete
             derniere_reponse = self.temps()
+            if self._redemarrage:
+                return 'redemarrage', etat  # l'historique et l'odometrie sont repartis a zero
             self._suivre(etat)
             ctrl = etat['ctrl']
+            if ctrl.get('mode') == 'manual':
+                raise ArretOperateur(
+                    'rover repris en main (commande manuelle /cmd) pendant un pas'
+                )
             # en attente, en cours, ou a l'arret le temps de mesurer (settle, 0,4 s)
             en_cours = ctrl.get('mode') in ('move', 'turn', 'path', 'settle')
             if en_cours or ctrl.get('queued') or ctrl.get('current') is not None:
                 vu_en_cours = True
                 continue
-            historique = ctrl.get('history') or []
-            if historique and (vu_en_cours or historique[0] != dernier):
-                return historique[0].get('status'), etat
+            nouvelles = nouvelles_entrees(ctrl.get('history') or [], dernier)
+            if nouvelles:
+                self._controler_operateur(nouvelles, envois)
+                return nouvelles[0].get('status'), etat
+            if vu_en_cours:  # parti de la file sans laisser de trace : un /stop l'a videe
+                raise ArretOperateur("pas annule avant de partir (/stop d'un autre client)")
         self.arreter()
         return 'delai', self._etat() or etat
+
+    @staticmethod
+    def _controler_operateur(nouvelles, envois):
+        """Statuts arrives pendant notre pas. Seuls nos propres renvois (envois - 1) peuvent
+        expliquer un 'replaced by a new command' ; tout le reste vient d'un operateur."""
+        statuts = [h.get('status') for h in nouvelles]
+        remplaces = statuts.count('replaced by a new command')
+        autres = [s for s in statuts if s in ARRETS_OPERATEUR[:2]]
+        if autres or remplaces > envois - 1:
+            cause = autres[0] if autres else 'replaced by a new command'
+            raise ArretOperateur(
+                f"pas interrompu par un operateur (statut serveur '{cause}') : fin de mission"
+            )
 
     def _arret(self, statut, etat):
         """Pas fini, rover arrete : recalage sur une image prise maintenant. Renvoie True si
@@ -367,8 +504,22 @@ class RaspRoverReel(RobotOdometrie):
         arriere. Renvoie le point d'impact s'il etait bloque en avancant, sinon None."""
         bloque = None
         for distance in (self.pas_cap, -self.pas_cap):
-            statut, etat = self._faire_un_pas('/move', {'distance': distance}, abs(distance))
-            if statut is None:
+            # Un /path vers un point ABSOLU de l'odometrie, calcule sur la pose lue juste
+            # avant : renvoye apres une reponse perdue, il ne fait pas le pas deux fois (un
+            # /move relatif repartait de la ou le rover en etait). En arriere, le rover pivote
+            # sur place puis avance : la camera et l'odometrie voient le meme deplacement.
+            etat = self._etat()
+            if etat is None or self._redemarrage:
+                return None
+            xo, yo, ho = pose_odom(etat)
+            but = (xo + distance * math.cos(ho), yo + distance * math.sin(ho))
+            corps = {
+                'points': [[round(but[0], 4), round(but[1], 4)]],
+                'frame': 'odom',
+                'speed': self.vitesse,
+            }
+            statut, etat = self._faire_un_pas('/path', corps, abs(distance))
+            if statut is None or statut == 'redemarrage':
                 return None
             patine = self._arret(statut, etat)
             if distance > 0 and (patine or statut == 'stalled'):
@@ -388,9 +539,28 @@ class RaspRoverReel(RobotOdometrie):
     def deplacer(self, cible):
         """Envoie le pas jusqu'a `cible` au serveur (POST /path, repere de l'odometrie) et
         attend qu'il soit fini. Renvoie le point d'impact si le rover a touche un obstacle
-        (roues bloquees, ou qui patinent d'apres la camera), sinon None."""
-        if not self.pret and not self._attendre_le_rover():
+        (roues bloquees, ou qui patinent d'apres la camera), sinon None. Leve ArretOperateur
+        si un operateur a arrete le rover pendant le pas."""
+        etat = self._etat()
+        if etat is None:
             return None
+        if (etat.get('ctrl') or {}).get('mode') == 'manual':
+            raise ArretOperateur('rover conduit a la main (commande manuelle /cmd) entre deux pas')
+        for _ in range(3):  # redemarrages a la suite : on finit par abandonner
+            if self._redemarrage:
+                self._apres_redemarrage()
+            elif not self._est_pret(etat):
+                self.pret = False  # ESP32 deconnecte ou gyroscope a recalibrer
+                self._a_recaler = True
+            if self.pret:
+                break
+            if not self._attendre_le_rover():
+                return None
+            etat = self._dernier_etat
+            if not self._redemarrage:
+                break
+        else:
+            raise ServeurRoverError('Le serveur du rover redemarre sans arret : mission arretee.')
         if self._a_recaler:
             etat, mesure = self._etat(), self._mesure_fraiche()
             if etat is None:
@@ -405,8 +575,8 @@ class RaspRoverReel(RobotOdometrie):
                     'quelle direction partir.'
                 )
             impact = self._mesurer_le_cap()
-            if impact is not None or not self.joignable:
-                return impact
+            if impact is not None or not self.joignable or self.repere.angle is None:
+                return impact  # choc, liaison perdue, ou redemarrage : le pas suivant reprend
         but = self.repere.vers_odom(*cible)
         corps = {
             'points': [[round(but[0], 4), round(but[1], 4)]],
@@ -416,6 +586,8 @@ class RaspRoverReel(RobotOdometrie):
         statut, etat = self._faire_un_pas('/path', corps, math.dist(self.est, cible))
         if statut is None:
             return None  # liaison perdue : le cerveau le voit avec rover_joignable()
+        if statut == 'redemarrage':
+            return None  # rien n'a bouge ; le pas suivant attend le rover et recale tout
         patine = self._arret(statut, etat)
         if not (patine or statut == 'stalled'):
             return None  # 'done', ou arrete sans choc ('timeout', 'stopped', 'delai'...)
@@ -437,6 +609,8 @@ class RaspRoverReel(RobotOdometrie):
             etat = self._etat()
             if etat is None:
                 continue
+            if self._redemarrage:
+                return True  # repere perime : le prochain pas attend le rover et recale tout
             mesure = self._mesure_fraiche()
             if mesure is not None:
                 self._recaler_a_l_arret(mesure, etat)
