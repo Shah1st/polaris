@@ -270,6 +270,8 @@ def main() -> None:
 
     last_seq, fps, last_err = -1, 0.0, None
     last_truth_print = 0.0
+    n_real = n_lost = 0
+    import numpy as np
     # One line per processed frame, to understand tracking losses afterwards.
     # Live sessions and file replays get separate logs (a replay must not
     # overwrite the log of a live session running at the same time).
@@ -364,6 +366,16 @@ def main() -> None:
                               if met.get("ready") else "")
                           + (f"err. prof. {100 * met['depth_err']:.1f} %" if met.get("depth_err") is not None
                              else ""), flush=True)
+            elif real_d405:
+                # No truth on the robot: what the D405 says about the map, every 30 s.
+                n_real, n_lost = n_real + 1, n_lost + int(result.lost)
+                if time.time() - last_truth_print > 30.0:
+                    last_truth_print = time.time()
+                    r = mapper.sensor_ratios
+                    print(f"[D405] {time.strftime('%H:%M:%S')} {mode} · images {n_real} perdues {n_lost} · "
+                          f"images clés {len(mapper.keyframes)} · échelle "
+                          + (f"calée sur le capteur, capteur/carte récent {np.median(r[-10:]):.2f}"
+                             if mapper.sensor_scaled else f"pas encore calée ({len(r)} mesures)"), flush=True)
             if bridge is not None and bridge.n_clients:
                 bridge.publish(rover_state(mapper, result, time.time(), cam_forward=viewer.cam_forward))
             dt = time.time() - t0
