@@ -93,6 +93,18 @@ class Config:
     assist_settle: float = 0.3  # s after a turn ends before the new heading is held
     assist_min_speed: float = 0.02  # m/s, no help while standing still
 
+    # Path following ("follow this trajectory"): pure pursuit on the odometry pose
+    path_speed: float = 0.2  # m/s, cruise speed (a path step can ask for another one)
+    path_lookahead: float = 0.2  # m, smallest look-ahead distance (shorter: tighter, may wobble)
+    path_lookahead_time: float = 1.0  # s, look-ahead grows with speed: max(above, time * v)
+    path_w_max: float = 1.5  # rad/s, sharpest rotation while following
+    path_pivot_deg: float = 60.0  # turn on the spot when the path is this far off the nose
+    path_pivot_exit_deg: float = 10.0  # ... until it is back within this angle
+    path_goal_tol: float = 0.02  # m, the end point counts as reached within this distance
+    # A waypoint where the path bends more than this is a corner: the rover slows down,
+    # stops on it and pivots instead of cutting it (0 = never, cut every corner).
+    path_corner_deg: float = 45.0
+
     # Camera pan-tilt (UGV firmware T:133: pan -180 left .. 180 right, tilt -30 down .. 90 up)
     gimbal_speed: float = 90.0  # deg/s while a ZQSD key is held
     gimbal_hz: float = 20.0  # at most this many pan-tilt commands per second
@@ -287,8 +299,27 @@ class Odometry:
 
 @dataclasses.dataclass
 class Step:
-    kind: str  # 'move' (metres, + = forward) or 'turn' (degrees, + = left)
-    value: float
+    kind: str  # 'move' (metres, + = forward), 'turn' (degrees, + = left) or 'path'
+    value: float  # path: its length, m
+    # Path only: waypoints [[x, y], ...] in metres. frame 'local' = relative to the rover
+    # when the step starts (x forward, y left); 'odom' = the odometry frame (pose in /state).
+    points: list[list[float]] | None = None
+    frame: str = 'local'
+    speed: float | None = None  # path cruise speed, m/s (default: path_speed)
+
+    @classmethod
+    def path(cls, points, frame: str = 'local', speed: float | None = None) -> Step:
+        pts = [[float(p[0]), float(p[1])] for p in points]
+        if not pts:
+            raise ValueError('a path needs at least one point')
+        if frame not in ('local', 'odom'):
+            raise ValueError(f'path frame must be "local" or "odom", not {frame!r}')
+        if speed is not None and not 0.0 < float(speed) <= 1.0:
+            raise ValueError('path speed must be in ]0, 1] m/s')
+        start = [[0.0, 0.0]] if frame == 'local' else []
+        chain = start + pts
+        length = sum(math.dist(a, b) for a, b in zip(chain, chain[1:], strict=False))
+        return cls('path', round(length, 3), pts, frame, None if speed is None else float(speed))
 
     @classmethod
     def parse(cls, d: dict) -> Step:
@@ -296,7 +327,134 @@ class Step:
             return cls('move', float(d['move']))
         if 'turn' in d:
             return cls('turn', float(d['turn']))
-        raise ValueError(f'unknown step {d!r}, expected {{"move": m}} or {{"turn": deg}}')
+        if 'path' in d:
+            return cls.path(d['path'], d.get('frame', 'local'), d.get('speed'))
+        raise ValueError(
+            f'unknown step {d!r}, expected {{"move": m}}, {{"turn": deg}} '
+            'or {"path": [[x, y], ...]}'
+        )
+
+
+def wrap_angle(a: float) -> float:
+    return (a + math.pi) % (2 * math.pi) - math.pi
+
+
+class PathFollower:
+    """Pure pursuit along a polyline given in the odometry frame.
+
+    The path is resampled every 2 cm. Each update finds the closest path point ahead of the
+    last one (progress only goes forward, so a path may cross itself), aims at the point one
+    look-ahead distance further, and returns the (v, w) that drives an arc through it. When
+    that point is far off the nose (a sharp corner, or the start), the rover turns on the spot
+    first.
+    """
+
+    RESOLUTION = 0.02  # m
+    SEARCH = 0.5  # m, how far ahead of the last progress the closest point is looked for
+
+    def __init__(
+        self,
+        points: list[tuple[float, float]],
+        start: tuple[float, float],
+        corner_deg: float = 0.0,
+    ) -> None:
+        chain = [tuple(start)] if math.dist(start, points[0]) > self.RESOLUTION else []
+        chain += [tuple(p) for p in points]
+        chain = [p for k, p in enumerate(chain) if k == 0 or math.dist(p, chain[k - 1]) > 1e-6]
+        self.pts: list[tuple[float, float]] = [chain[0]]
+        self.corners: list[int] = []  # indices in pts of the waypoints to stop and pivot on
+        for k, (a, b) in enumerate(zip(chain, chain[1:], strict=False)):
+            if 0 < k and corner_deg > 0:
+                before = math.atan2(a[1] - chain[k - 1][1], a[0] - chain[k - 1][0])
+                after = math.atan2(b[1] - a[1], b[0] - a[0])
+                if abs(wrap_angle(after - before)) > math.radians(corner_deg):
+                    self.corners.append(len(self.pts) - 1)
+            n = max(1, math.ceil(math.dist(a, b) / self.RESOLUTION))
+            self.pts += [
+                (a[0] + (b[0] - a[0]) * j / n, a[1] + (b[1] - a[1]) * j / n)
+                for j in range(1, n + 1)
+            ]
+        self.s = [0.0]
+        for a, b in zip(self.pts, self.pts[1:], strict=False):
+            self.s.append(self.s[-1] + math.dist(a, b))
+        self.length = self.s[-1]
+        self.i = 0  # progress: index of the closest path point
+        self.target = self.pts[-1]
+        self.cte = 0.0  # m, distance from the rover to the path (cross-track error)
+        self.max_cte = 0.0
+        # Start by facing the path (the first update ends this at once if already aligned).
+        self.pivoting = True
+
+    @property
+    def end(self) -> tuple[float, float]:
+        return self.pts[-1]
+
+    @property
+    def remaining(self) -> float:
+        return self.length - self.s[self.i]
+
+    def update(
+        self, x: float, y: float, heading: float, v_now: float, v_cap: float, cfg: Config
+    ) -> tuple[float, float, bool]:
+        """(v, w, done) for the rover at (x, y, heading); v_cap = speed allowed by the ramp."""
+        c = cfg
+        pos = (x, y)
+        last = min(len(self.pts) - 1, self.i + int(self.SEARCH / self.RESOLUTION))
+        self.i = min(range(self.i, last + 1), key=lambda j: math.dist(pos, self.pts[j]))
+        self.cte = math.dist(pos, self.pts[self.i])
+        self.max_cte = max(self.max_cte, self.cte)
+
+        # End: close enough to the last point, or just past it.
+        d_end = math.dist(pos, self.end)
+        lookahead = max(c.path_lookahead, c.path_lookahead_time * abs(v_now))
+        if self.remaining < lookahead:
+            ahead = (self.end[0] - x) * math.cos(heading) + (self.end[1] - y) * math.sin(heading)
+            if d_end - abs(v_now) * c.lag <= c.path_goal_tol or (ahead < 0 and d_end < lookahead):
+                return 0.0, 0.0, True
+
+        # Next corner still ahead: it is the look-ahead's limit and the place to slow down for.
+        while self.corners and (
+            self.i >= self.corners[0]
+            or (math.dist(pos, self.pts[self.corners[0]]) <= c.path_goal_tol + abs(v_now) * c.lag)
+        ):
+            self.i = max(self.i, self.corners.pop(0))  # corner reached: go on to the next leg
+            self.pivoting = True
+        stop_at = self.corners[0] if self.corners else len(self.pts) - 1
+        j = self.i
+        while j < stop_at and self.s[j] - self.s[self.i] < lookahead:
+            j += 1
+        self.target = self.pts[j]
+        to_stop = self.s[stop_at] - self.s[self.i] + self.cte
+        dx, dy = self.target[0] - x, self.target[1] - y
+        alpha = wrap_angle(math.atan2(dy, dx) - heading)
+
+        if self.pivoting:
+            self.pivoting = abs(alpha) > math.radians(c.path_pivot_exit_deg)
+        else:
+            self.pivoting = abs(alpha) > math.radians(c.path_pivot_deg)
+        if self.pivoting:
+            w = math.copysign(clamp(c.k_turn * abs(alpha), c.w_min, c.w_max), alpha)
+            return 0.0, w, False
+
+        curvature = 2.0 * math.sin(alpha) / max(math.hypot(dx, dy), 1e-3)
+        v = min(v_cap, c.k_dist * (to_stop if self.corners else (self.remaining + d_end) / 2))
+        if curvature:
+            v = min(v, c.path_w_max / abs(curvature))
+        v = max(v, c.v_min)
+        return v, clamp(v * curvature, -c.path_w_max, c.path_w_max), False
+
+    def snapshot(self) -> dict:
+        step = max(1, len(self.pts) // 150)  # at most ~150 points for the page
+        pts = self.pts[::step] + ([self.pts[-1]] if (len(self.pts) - 1) % step else [])
+        return {
+            'points': [[round(px, 3), round(py, 3)] for px, py in pts],
+            'target': [round(self.target[0], 3), round(self.target[1], 3)],
+            'length': round(self.length, 3),
+            'done_m': round(self.s[self.i], 3),
+            'cte': round(self.cte, 3),
+            'max_cte': round(self.max_cte, 3),
+            'pivoting': self.pivoting,
+        }
 
 
 class SteeringAssist:
@@ -491,7 +649,7 @@ class Controller:
 
     def run(self, steps: list[Step], t: float) -> None:
         """Replace whatever runs with this list of steps."""
-        if self.mode in ('move', 'turn', 'settle'):
+        if self.mode in ('move', 'turn', 'path', 'settle'):
             self._abort('replaced by a new command', t)
         self.queue = deque(steps)
         self.current = None
@@ -542,6 +700,8 @@ class Controller:
             v, w = self._move(t, dt)
         elif self.mode == 'turn':
             v, w = self._turn(t)
+        elif self.mode == 'path':
+            v, w = self._path(t, dt)
 
         self.v_cmd, self.w_cmd = v, w
         return v, w
@@ -554,6 +714,7 @@ class Controller:
             'step': s,
             't0': t,
             'dist0': o.distance,
+            'odo0': o.odometer,
             'cnt0': o.counter_distance,
             'head0': o.heading,
             'x0': o.x,
@@ -566,11 +727,31 @@ class Controller:
             'v_ramp': 0.0,
             'stall_since': None,
         }
+        if s.kind == 'path':
+            h, x0, y0 = o.heading, o.x, o.y
+            if s.frame == 'local':  # x forward, y left of the rover now -> odometry frame
+                pts = [
+                    (
+                        x0 + px * math.cos(h) - py * math.sin(h),
+                        y0 + px * math.sin(h) + py * math.cos(h),
+                    )
+                    for px, py in s.points
+                ]
+            else:
+                pts = [(px, py) for px, py in s.points]
+            follower = PathFollower(pts, (x0, y0), self.cfg.path_corner_deg)
+            speed = s.speed or self.cfg.path_speed
+            self._task['follower'] = follower
+            self._task['speed'] = speed
+            # Generous: pivots and slowing down near the end take time too.
+            self._task['timeout'] = max(
+                self.cfg.task_timeout, 3.0 * follower.length / speed + 10.0
+            )
 
     def _needs_correction(self) -> bool:
         """The rover stopped too early or too late: move or turn again towards the goal."""
         k = self._task
-        if self.current is None:
+        if self.current is None or self.current.kind == 'path':
             return False
         if (self._pending_result or {}).get('status') != 'done':
             return False
@@ -610,10 +791,20 @@ class Controller:
             return 0.0, 0.0
         return 0.0, direction * clamp(c.k_turn * remaining, c.w_min, c.w_max)
 
+    def _path(self, t: float, dt: float) -> tuple[float, float]:
+        c, o, k = self.cfg, self.odom, self._task
+        k['v_ramp'] = min(k['speed'], k['v_ramp'] + c.accel * dt)
+        v, w, done = k['follower'].update(o.x, o.y, o.heading, o.v, max(k['v_ramp'], c.v_min), c)
+        if done:
+            return self._done('done', t)
+        if self._failed(t):
+            return 0.0, 0.0
+        return v, w
+
     def _failed(self, t: float) -> bool:
         """Timeout, or wheels not turning for `stall_time` while commanded."""
         k = self._task
-        if t - k['t0'] > self.cfg.task_timeout:
+        if t - k['t0'] > k.get('timeout', self.cfg.task_timeout):
             self._done('timeout', t)
             return True
         wheels_turn = abs(self.odom.L) > 0.01 or abs(self.odom.R) > 0.01
@@ -658,6 +849,12 @@ class Controller:
             entry['error'] = round(dist - s.value, 4)
             if k.get('cnt0') is not None and o.counter_distance is not None:
                 entry['counter_distance'] = round(o.counter_distance - k['cnt0'], 3)
+        elif s.kind == 'path':
+            f: PathFollower = k['follower']
+            entry['target'] = round(f.length, 3)  # including the way to the first point
+            entry['error'] = round(math.dist((o.x, o.y), f.end), 4)  # end point miss, m
+            entry['max_cte'] = round(f.max_cte, 4)  # largest distance from the path, m
+            entry['distance'] = round(o.odometer - k['odo0'], 4)
         else:
             entry['error'] = round(turned - s.value, 2)
         self.history.appendleft(entry)
@@ -665,7 +862,7 @@ class Controller:
         self._pending_result = None
 
     def _abort(self, reason: str, t: float) -> None:
-        if self.mode in ('move', 'turn'):
+        if self.mode in ('move', 'turn', 'path'):
             self._pending_result = {'status': reason, 'duration': t - self._task['t0']}
             self._finish_result()
         elif self.mode == 'settle':
@@ -675,11 +872,14 @@ class Controller:
     def snapshot(self) -> dict:
         k = self._task
         progress = None
-        if self.mode in ('move', 'turn') and k:
+        if self.mode in ('move', 'turn', 'path') and k:
             if self.mode == 'move':
                 progress = self.odom.distance - k['dist0']
-            else:
+            elif self.mode == 'turn':
                 progress = math.degrees(self.odom.heading - k['head0'])
+            else:
+                progress = k['follower'].s[k['follower'].i]
+        follower = k.get('follower') if self.current is not None else None
         return {
             'mode': self.mode,
             'current': dataclasses.asdict(self.current) if self.current else None,
@@ -688,6 +888,7 @@ class Controller:
             'v_cmd': self.v_cmd,
             'w_cmd': self.w_cmd,
             'assist': self.assist.snapshot(),
+            'path': follower.snapshot() if follower else None,
             'history': list(self.history),
         }
 

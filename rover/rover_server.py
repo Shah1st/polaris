@@ -17,7 +17,11 @@ HTTP API (JSON bodies). The first two match the shared simulation in sim/run_wor
   GET  /state          telemetry: link, battery, pose, wheel speeds, gyro, current step
   POST /move           {"distance": m}            (+ forward, - backward)
   POST /turn           {"angle": deg}             (+ left, - right)
-  POST /sequence       {"steps": [{"move": 0.5}, {"turn": 90}, ...]}
+  POST /sequence       {"steps": [{"move": 0.5}, {"turn": 90}, {"path": [[x, y], ...]}, ...]}
+  POST /path           follow a trajectory: {"points": [[x, y], ...], "frame": "local"|"odom",
+                       "speed": m/s}. local (default) = metres relative to the rover now, x
+                       forward, y left; odom = the odometry frame (x, y in /state). Sent again,
+                       it replaces the running one. Progress and errors in /state ctrl.path.
   POST /stop           stop now and drop the queued steps
   POST /reset_odom     pose back to (0, 0, 0 deg)
   POST /calibrate_gyro measure the gyro bias again (rover must stand still 2 s)
@@ -227,7 +231,12 @@ class App:
         s['sim'] = self.sim_board is not None
         if self.sim_board is not None:
             b = self.sim_board
-            s['sim_truth'] = {'x': b.x, 'y': b.y, 'heading_deg': math.degrees(b.yaw)}
+            s['sim_truth'] = {
+                'x': b.x,
+                'y': b.y,
+                'heading_deg': math.degrees(b.yaw),
+                'drift': b.yaw_drift,
+            }
         return s
 
 
@@ -296,6 +305,10 @@ def make_handler(app: App):
                     rover.run([Step('turn', float(body['angle']))])
                 elif path == '/sequence':
                     rover.run([Step.parse(s) for s in body['steps']])
+                elif path == '/path':
+                    rover.run(
+                        [Step.path(body['points'], body.get('frame', 'local'), body.get('speed'))]
+                    )
                 elif path == '/stop':
                     rover.stop()
                 elif path == '/reset_odom':

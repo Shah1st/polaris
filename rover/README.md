@@ -9,6 +9,8 @@ guidance stack drives the rover.
 - Gyro steering assist while driving by hand: keeps the rover straight on slopes and slippery
   ground (see below).
 - Camera pan-tilt: hold `Z` `Q` `S` `D` (W A S D on QWERTY), `C` = center.
+- Trajectory following: draw points on the map (or pick a shape) and the rover follows them,
+  or send a list of points to `POST /path` (the entry point for the future planner).
 - Measured moves: "forward 50 cm", "turn left 90°", or a sequence such as `F50 L90 F50 L90`.
 - After each move or turn the rover stops and measures what it did. The page lists the
   result and the error, which is what the calibration below relies on.
@@ -82,6 +84,48 @@ Options: `--port 8080`, `--camera 0`, `--width 640 --height 480 --fps 15 --quali
 3. **Turns**: run "Turn left 90°" a few times. If the rover does not pivot, raise `w_min`. If
    it often needs corrections ("Fix" column), adjust `lag` (higher if it overshoots).
 4. **Square**: `F50 L90 F50 L90 F50 L90 F50 L90` must end close to the start mark on the floor.
+
+## Trajectory following
+
+The rover follows a list of waypoints, on its own odometry (wheel encoders + gyro), with no
+outside position yet. It is the hook for the autonomous mode: a planner (drone + rover map,
+obstacles) will send the trajectory, and send a new one whenever it changes its mind.
+
+```http
+POST /path
+{"points": [[1.0, 0.0], [1.0, 0.5]], "frame": "local", "speed": 0.2}
+```
+
+- `frame: "local"` (default): metres relative to the rover when the step starts, x forward,
+  y left. `"odom"`: the odometry frame, the `x`/`y` given by `/state` (`odom`), which the planner
+  will map to its own frame once the overhead camera gives the rover's absolute pose.
+- A new `POST /path` replaces the running trajectory; `POST /stop` stops it. A path is also a
+  step in a sequence: `{"steps": [{"turn": 90}, {"path": [[...]]}, {"move": 0.1}]}`.
+- `/state` → `ctrl.path`: the path being followed (odometry frame), the point aimed at, the
+  distance done, and the distance to the path now and at most (`cte`, `max_cte`). The results
+  table gives, once stopped, the length, the largest distance to the path and the end miss.
+
+How: **pure pursuit**. The path is resampled every 2 cm; 20 times a second the rover finds the
+closest path point ahead of its last progress, aims at the point `path_lookahead` further on
+and drives the arc through it. It slows down before the end and before **corners** (waypoints
+where the path bends more than `path_corner_deg`), stops on them and turns on the spot, and
+it first turns to face the path if it starts the wrong way.
+
+In simulation (with a 0.1 rad/s slope drift): 1 to 3 cm from the path on straight lines,
+corners, a square and a circle, 3 cm on an S curve; the end point is reached within 2 to 3 cm.
+
+| Setting | Default | Effect |
+|---|---|---|
+| `path_speed` | 0.2 m/s | Cruise speed (a path can ask for another one) |
+| `path_lookahead` | 0.2 m | Shorter: follows curves more tightly, but may wobble |
+| `path_lookahead_time` | 1.0 s | The look-ahead grows with speed: max(`path_lookahead`, time × v) |
+| `path_corner_deg` | 45° | Bends sharper than this are corners: stop and pivot (0 = cut them) |
+| `path_pivot_deg`, `path_pivot_exit_deg` | 60°, 10° | Turn on the spot when the path is this far off the nose |
+| `path_w_max` | 1.5 rad/s | Sharpest rotation while following |
+| `path_goal_tol` | 0.02 m | The end point counts as reached within this distance |
+
+Not yet: obstacles (a planner or the depth camera will have to replace or stop the path), and
+the odometry drifts over long runs (no absolute position until the overhead camera).
 
 ## Gyro steering assist (manual driving)
 
