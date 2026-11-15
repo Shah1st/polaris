@@ -93,14 +93,14 @@ def render(pose, floor: np.ndarray, marker=None) -> np.ndarray:
     return out
 
 
-def marker_image(marker_id: int = 0, px: int = 240) -> np.ndarray:
-    """The printed marker with its white margin (a quarter of the side all around)."""
+def marker_image(marker_id: int = 10, px: int = 240, family: str = 'DICT_APRILTAG_25h9'):
+    """The printed marker (the team's AprilTag 25h9 by default) with its white margin, a
+    quarter of the side all around: its black square is 2/3 of the picture's side."""
     code = cv2.aruco.generateImageMarker(
-        cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), marker_id, px
+        cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, family)), marker_id, px
     )
-    return cv2.copyMakeBorder(
-        code, px // 4, px // 4, px // 4, px // 4, cv2.BORDER_CONSTANT, value=255
-    )
+    m = px // 4
+    return cv2.copyMakeBorder(code, m, m, m, m, cv2.BORDER_CONSTANT, value=255)
 
 
 def header(d: dict) -> str:

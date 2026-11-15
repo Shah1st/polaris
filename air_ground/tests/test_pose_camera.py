@@ -107,10 +107,10 @@ def test_the_rover_stays_put_while_the_camera_moves() -> None:
     side, height = 0.10, 0.12
     x, y, forward = 0.25, -0.15, math.radians(40)
     # the top of the printed marker points to the rover's front: its top edge is 90 deg right
-    printed = syn.marker_image(0)
+    printed = syn.marker_image()  # the team's AprilTag 25h9 id 10
     marker = (printed, x, y, forward - math.pi / 2, side * 1.5, height)  # 1.5: white margin
-    finder = RoverFinder(marker_id=0, size=side, height=height)
-    flat = RoverFinder(marker_id=0, size=side, height=0.0)  # forgetting the roof's height
+    finder = RoverFinder(size=side, height=height)
+    flat = RoverFinder(size=side, height=0.0)  # forgetting the roof's height
     errors, flat_errors = [], []
     for view in VIEWS:
         pose = pose_of(view)
@@ -132,3 +132,13 @@ def test_the_rover_stays_put_while_the_camera_moves() -> None:
         RoverFinder(marker_id=7)(syn.render(pose_of(VIEWS[0]), floor, marker), pose_of(VIEWS[0]))
         is None
     )
+
+
+def test_the_marker_drawn_by_hand_on_the_real_rover() -> None:
+    """A photo of the rover's roof: an AprilTag 25h9 id 10 drawn with a pen on squared paper."""
+    photo = cv2.imread(os.path.join(HERE, 'data', 'drawn_marker_on_rover.png'))
+    quad = RoverFinder().corners(photo)
+    assert quad is not None
+    side = np.mean([np.linalg.norm(quad[(i + 1) % 4] - quad[i]) for i in range(4)])
+    assert 280 < side < 360  # the black square, about 320 px wide in that photo
+    assert RoverFinder(dictionary='DICT_4X4_50', marker_id=0).corners(photo) is None
