@@ -158,9 +158,9 @@ def part_ombre(image, mpp, forme, res=0.05):
     cos = (a * a0 + b * b0) / (np.maximum(c, 1e-3) * c0)  # 1: the floor's hue
     ombre = (L < L0 - 8.0) & (L > 0.25 * L0) & (cos > 0.9) & (c > 0.45 * c0 * L / L0)
     k = mpp / res
-    petit = cv2.resize(
-        ombre.astype(np.float32), None, fx=k, fy=k, interpolation=cv2.INTER_AREA
-    )[::-1]
+    petit = cv2.resize(ombre.astype(np.float32), None, fx=k, fy=k, interpolation=cv2.INTER_AREA)[
+        ::-1
+    ]
     out = np.zeros(forme, np.float32)
     h, w = min(forme[0], petit.shape[0]), min(forme[1], petit.shape[1])
     out[:h, :w] = petit[:h, :w]
@@ -334,6 +334,11 @@ class FusionReelle:
                 self.drone = {'etat': f'picture not usable: {probleme}'}
                 return
             m = np.asarray(grid_to_fusion(r.grid), dtype=np.int8)  # row 0 = south, 5 cm cells
+            reglages = self.camera.settings
+            image = self.lecteur() if self.args.drone_ombres else None
+            if image is not None:  # a shadow on the floor is not an obstacle
+                ombre = part_ombre(image, reglages.metres_per_pixel, m.shape, reglages.cell_size)
+                m[(m == 1) & (ombre > 0.6)] = 0
             m = sans_traits(m, self.args.drone_largeur_min / self.camera.settings.cell_size)
             vu = None
             if r.rover_position is not None:
@@ -1460,7 +1465,13 @@ def options(argv=None):
     p.add_argument(
         '--age-max', type=float, default=3.0, help='an older perception picture is ignored (s)'
     )
-    p.add_argument('--pas', type=float, default=0.25, help='m per mission step')
+    p.add_argument(
+        '--pas',
+        type=float,
+        default=0.15,
+        help='m per mission step. The rover drives straight to the end of a step and cuts the '
+        "path's corners inside it: short steps go with a small --rayon",
+    )
     p.add_argument(
         '--segment',
         type=float,
@@ -1488,7 +1499,14 @@ def options(argv=None):
         'unseen cells may be crossed, as step by step',
     )
     p.add_argument('--vitesse', type=float, default=0.12, help='m/s')
-    p.add_argument('--rayon', type=float, default=0.20, help='rover radius + margin (m)')
+    p.add_argument(
+        '--rayon',
+        type=float,
+        default=0.15,
+        help='m kept between the centre of the rover and any obstacle: the circle around the '
+        'whole rover seen from above (20 x 23 cm gives 0.152), with no margin on top. Two '
+        'obstacles must be twice this apart for the rover to pass',
+    )
     p.add_argument('--tolerance', type=float, default=0.25, help='arrived within (m)')
     p.add_argument('--marge-zone', type=float, default=1.5, help='m around the planned route')
     p.add_argument('--max-pas', type=int, default=80, help='steps at most per mission')
@@ -1552,8 +1570,8 @@ def options(argv=None):
         '--drone-ombres',
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="with the vision model: cells of the drone's picture that are only a shadow on "
-        'the floor (darker, but of the floor colour) are free, not obstacles',
+        help="cells of the drone's picture that are only a shadow on the floor (darker, but of "
+        'the floor colour) are free, not obstacles, with either detector',
     )
     p.add_argument(
         '--drone-cumul',
