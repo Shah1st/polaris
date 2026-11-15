@@ -288,6 +288,8 @@ def test_command_line_wires_camera_scale_and_options(faux_modules, monkeypatch) 
             '720',
             '--marqueur',
             '10',
+            '--hauteur-marqueur',
+            '0.15',
             '--perception',
             'http://127.0.0.1:8103',
             '--suivi',
@@ -309,6 +311,7 @@ def test_command_line_wires_camera_scale_and_options(faux_modules, monkeypatch) 
         'focal_length_35mm': 24.0,
         'sensor_size': (1280, 720),
         'rover_marker_id': 10,
+        'marker_height': 0.15,
     }
     assert faux_modules['client'] == ('http://127.0.0.1:8102', 2.5)
     appel = faux_modules['lancer']

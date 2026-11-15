@@ -445,6 +445,12 @@ def analyser(argv=None):
     p.add_argument('--focale-35mm', type=float, help='focale equivalente 35 mm (mm)')
     p.add_argument('--capteur', type=int, nargs=2, metavar=('L', 'H'), help='capteur (pixels)')
     p.add_argument('--marqueur', type=int, help='id ArUco sur le rover, pour avoir son cap')
+    p.add_argument(
+        '--hauteur-marqueur',
+        type=float,
+        help='hauteur du marqueur au-dessus du sol (m) : corrige la parallaxe de la position '
+        'du rover (avec --hauteur, hauteur de la camera) ; 0 par defaut, sans correction',
+    )
     p.add_argument('--perception', help='service de perception du rover (percevoir_http)')
     p.add_argument('--suivi', help='fichier JSON de suivi, reecrit a chaque decision et pas')
     p.add_argument(
@@ -479,6 +485,8 @@ def reglages_camera(args):
         reglages['sensor_size'] = tuple(args.capteur)
     if args.marqueur is not None:
         reglages['rover_marker_id'] = args.marqueur
+    if getattr(args, 'hauteur_marqueur', None) is not None:
+        reglages['marker_height'] = args.hauteur_marqueur
     return reglages
 
 

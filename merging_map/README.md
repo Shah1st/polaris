@@ -74,8 +74,9 @@ adapter says so. The server running on the robot has not been compared with the 
   dashboard), `cancelled by manual control` (someone drives with the keyboard) or
   `replaced by a new command` (another client) without the adapter causing it raises
   `rover_reel.ArretOperateur`; the brain lets it through and `lancer_overhead.py` sends
-  `/stop` and ends. Limit: a STOP pressed while the rover stands still between two steps
-  leaves no trace in `/state` with today's server, so it is not seen.
+  `/stop` and ends. A STOP pressed while the rover stands still between two steps leaves no
+  trace in `ctrl.history`: it is seen before the next step through `stop_count` in `/state`
+  (stops received, minus the adapter's own); a server without that field does not show it.
 * **Server restart.** Every `GET /state` is compared with the previous one: a new `boot_id`
   (or, on a server without it, `odom.odometer` or `link.rx_count` going down, which a
   `/reset_odom` also does) means the odometry restarted from zero. Before the next motion
@@ -152,6 +153,7 @@ python merging_map/lancer_overhead.py --camera 0 --metres-par-pixel 0.0021 --mar
 | `--dry-run` | no POST, stop after the first decision; `--rover` optional |
 | `--metres-par-pixel M` | ground size of a pixel, measured with a ruler (best); otherwise `--hauteur`, `--focale-35mm`, `--capteur L H` |
 | `--marqueur ID` | ArUco id on the rover (heading from the camera, no blind 15 cm move) |
+| `--hauteur-marqueur H` | marker height above the floor (m): parallax correction of the rover's position, with `--hauteur` (default 0: none) |
 | `--perception URL` | rover perception service (`perception_rover.percevoir_http`) |
 | `--suivi FILE` | JSON document rewritten (atomically) after every decision and step |
 | `--tolerance`, `--vitesse`, `--delai-http` | arrival distance (0.15 m), cruise speed (0.2 m/s), HTTP timeout (1 s) |
