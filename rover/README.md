@@ -6,6 +6,9 @@ No ROS, no overhead camera. Used to check the hardware and the motion accuracy b
 guidance stack drives the rover.
 
 - Arrow keys (or the on-screen pad) to drive, `Shift` = fast, `Space`/`Esc` = stop.
+- Gyro steering assist while driving by hand: keeps the rover straight on slopes and slippery
+  ground (see below).
+- Camera pan-tilt: hold `Z` `Q` `S` `D` (W A S D on QWERTY), `C` = center.
 - Measured moves: "forward 50 cm", "turn left 90°", or a sequence such as `F50 L90 F50 L90`.
 - After each move or turn the rover stops and measures what it did. The page lists the
   result and the error, which is what the calibration below relies on.
@@ -33,7 +36,9 @@ python rover/rover_server.py --sim
 
 Open http://localhost:8080. The simulated rover has the real one's defects (wheels slip in
 turns, ground distance 2 % shorter than the encoders say, gyro bias), and the page also shows
-its true pose in green.
+its true pose in green. `--sim-drift 0.15` (or the "Sim drift" slider) makes it turn by itself
+while it moves, like on a slope, to try the steering assist; the simulated camera view shows
+where the pan-tilt points.
 
 ## Run it on the rover (RDK X5)
 
@@ -77,6 +82,49 @@ Options: `--port 8080`, `--camera 0`, `--width 640 --height 480 --fps 15 --quali
 3. **Turns**: run "Turn left 90°" a few times. If the rover does not pivot, raise `w_min`. If
    it often needs corrections ("Fix" column), adjust `lag` (higher if it overshoots).
 4. **Square**: `F50 L90 F50 L90 F50 L90 F50 L90` must end close to the start mark on the floor.
+
+## Gyro steering assist (manual driving)
+
+A software differential: the server adds a small rotation command to yours, which the ESP32
+turns into a left/right wheel speed difference.
+
+- **Straight input** (↑ or ↓ alone): the rover keeps the heading it had when you started going
+  straight (or `assist_settle` s after a turn ended, once the rotation has died out). A PI
+  correction on the heading error, with a dead band.
+- **Turn input**: the rotation measured by the gyro follows the one you ask for (the rover skids
+  in turns and turns slower than asked without it).
+- It runs on the RDK, in the 20 Hz control loop: the ESP32 receives the same commands as before.
+- Only rotations show on the gyro: a sideways slide on a slope, without rotation, is not
+  corrected.
+
+Settings to tune together on the real rover (Settings panel, saved on the robot):
+
+| Setting | Default | Effect |
+|---|---|---|
+| `assist` | 1 | 1 on, 0 off (also the switch under the drive pad) |
+| `assist_hz` | 20 | Corrections per second (at most 20, the loop rate) |
+| `assist_deadband_deg` | 1.0 | Heading errors below this are ignored (avoids reacting to gyro noise) |
+| `assist_k` | 3.0 | Heading hold: rad/s of correction per rad of error. Too high: the rover wiggles |
+| `assist_ki` | 1.0 | Heading hold: integral, removes a steady pull (slope). Too high: slow swaying |
+| `assist_k_rate`, `assist_ki_rate` | 0.6, 1.5 | Turns: how hard the rotation speed is corrected |
+| `assist_w_max` | 0.8 rad/s | Largest correction |
+| `assist_settle` | 0.3 s | Wait after a turn before holding the new heading |
+
+In simulation with a 0.15 rad/s pull, 4 s straight end at 34° off course without the assist
+and 2° with it.
+
+## Camera pan-tilt
+
+UGV firmware command `{"T":133,"X":pan,"Y":tilt,"SPD":..,"ACC":..}`: pan -180 (left) to 180
+(right), tilt -30 (down) to 90 (up), bus servos ID 2 (pan) and 1 (tilt). The firmware does not
+report the angles, so the page shows the commanded ones. The server sends at most `gimbal_hz`
+(10) commands per second, only when the angles change, and centers the camera when the ESP32
+connects. Settings: `gimbal_speed` (deg/s while a key is held), limits `pan_min`..`tilt_max`,
+`pan_sign`/`tilt_sign` (-1 if an axis goes the wrong way), `gimbal_spd`/`gimbal_acc` (firmware
+servo speed and acceleration, 0 = fastest). API: `POST /gimbal` (see `rover_server.py`).
+
+Checked on our rover (2026-11-15): T:133 moves both servos although the boot mission sets
+`{"T":900,"main":1,"module":0}` (no module). Pan +45 turns the camera right, tilt +30 up.
 
 ## Safety
 

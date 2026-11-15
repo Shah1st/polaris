@@ -53,6 +53,10 @@
          gap: 6px; justify-content: center; margin: 4px 0 10px; }
   .pad button { font-size: 20px; padding: 0; }
   .help { color: var(--muted); font-size: 12px; text-align: center; }
+  .switch { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .switch input { width: 16px; height: 16px; accent-color: var(--accent); }
+  .status { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; }
+  .status b { color: var(--text); font-weight: 600; }
   kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px;
         padding: 0 5px; font-size: 11px; }
   .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 12px; }
@@ -118,6 +122,34 @@
       </div>
       <div class="help">Hold <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> (combine them for curves),
         <kbd>Shift</kbd> = fast, <kbd>Space</kbd>/<kbd>Esc</kbd> = stop</div>
+      <div class="row" style="margin-top:10px">
+        <label class="switch" title="Uses the gyro to keep the rover straight (or turning at the asked speed) despite slopes and slipping wheels">
+          <input type="checkbox" id="assist"> Gyro steering assist
+        </label>
+        <span class="spacer"></span>
+        <span class="status" id="assistInfo"></span>
+      </div>
+      <div class="row" id="simRow" hidden>
+        <span class="unit">Sim drift</span>
+        <input type="range" id="simDrift" min="-0.4" max="0.4" step="0.05" value="0" style="flex:1">
+        <span class="status" id="simDriftVal">0.00 rad/s</span>
+      </div>
+    </section>
+
+    <section>
+      <h2>Camera pan-tilt</h2>
+      <div class="pad" id="gpad">
+        <span></span><button data-gkey="KeyW" title="Tilt up">Z</button><span></span>
+        <button data-gkey="KeyA" title="Pan left">Q</button><button data-gkey="KeyS" title="Tilt down">S</button>
+        <button data-gkey="KeyD" title="Pan right">D</button>
+      </div>
+      <div class="row">
+        <span class="status">Pan <b id="gPan">–</b> · Tilt <b id="gTilt">–</b></span>
+        <span class="spacer"></span>
+        <button id="bCenter" title="C">Center</button>
+      </div>
+      <div class="help">Hold <kbd>Z</kbd> up, <kbd>S</kbd> down, <kbd>Q</kbd> left, <kbd>D</kbd> right
+        (W/A/S/D on a QWERTY keyboard), <kbd>C</kbd> = center</div>
     </section>
 
     <section>
@@ -221,7 +253,7 @@ function manualCommand() {
   return { v: f * (vmax || 0.15), omega: t * (wmax || 1.2) * (f ? 0.6 : 1) };
 }
 function refreshPad() {
-  document.querySelectorAll('.pad button').forEach(b =>
+  document.querySelectorAll('.pad button[data-key]').forEach(b =>
     b.classList.toggle('held', held.has(b.dataset.key)));
 }
 setInterval(() => {  // repeat while held: the server stops the rover after manual_timeout
@@ -246,7 +278,7 @@ document.addEventListener('keyup', (e) => {
   if (held.delete(e.key)) refreshPad();
 });
 window.addEventListener('blur', () => { held.clear(); refreshPad(); });
-document.querySelectorAll('.pad button').forEach(b => {
+document.querySelectorAll('.pad button[data-key]').forEach(b => {
   const on = (e) => { e.preventDefault(); b.setPointerCapture?.(e.pointerId);
                       held.add(b.dataset.key); refreshPad(); post('/cmd', manualCommand()); };
   const off = () => { held.delete(b.dataset.key); refreshPad(); };
@@ -255,7 +287,56 @@ document.querySelectorAll('.pad button').forEach(b => {
   b.addEventListener('pointercancel', off);
   b.addEventListener('lostpointercapture', off);
 });
-function stopAll() { held.clear(); refreshPad(); post('/stop'); }
+// ---------------------------------------------------------------- camera pan-tilt
+// e.code is the key's position, so Z/Q/S/D on AZERTY and W/A/S/D on QWERTY both work.
+const GKEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD'];
+const gheld = new Set();
+let wasPanning = false;
+function gimbalCommand() {
+  return { pan_rate: (gheld.has('KeyD') ? 1 : 0) - (gheld.has('KeyA') ? 1 : 0),
+           tilt_rate: (gheld.has('KeyW') ? 1 : 0) - (gheld.has('KeyS') ? 1 : 0) };
+}
+function refreshGpad() {
+  document.querySelectorAll('#gpad button').forEach(b =>
+    b.classList.toggle('held', gheld.has(b.dataset.gkey)));
+}
+setInterval(() => {
+  if (gheld.size) { post('/gimbal', gimbalCommand()); wasPanning = true; }
+  else if (wasPanning) { post('/gimbal', { pan_rate: 0, tilt_rate: 0 }); wasPanning = false; }
+}, 100);
+document.addEventListener('keydown', (e) => {
+  if (typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (GKEYS.includes(e.code)) {
+    e.preventDefault();
+    if (!gheld.has(e.code)) { gheld.add(e.code); refreshGpad(); post('/gimbal', gimbalCommand()); }
+  } else if (e.code === 'KeyC' && !e.repeat) {
+    post('/gimbal', { center: true });
+  }
+});
+document.addEventListener('keyup', (e) => { if (gheld.delete(e.code)) refreshGpad(); });
+window.addEventListener('blur', () => { gheld.clear(); refreshGpad(); });
+document.querySelectorAll('#gpad button').forEach(b => {
+  const on = (e) => { e.preventDefault(); b.setPointerCapture?.(e.pointerId);
+                      gheld.add(b.dataset.gkey); refreshGpad(); post('/gimbal', gimbalCommand()); };
+  const off = () => { gheld.delete(b.dataset.gkey); refreshGpad(); };
+  b.addEventListener('pointerdown', on);
+  b.addEventListener('pointerup', off);
+  b.addEventListener('pointercancel', off);
+  b.addEventListener('lostpointercapture', off);
+});
+$('bCenter').onclick = () => post('/gimbal', { center: true });
+
+// ---------------------------------------------------------------- steering assist
+$('assist').onchange = async () => {
+  await post('/config', { assist: $('assist').checked ? 1 : 0 });
+  await loadConfig();
+};
+$('simDrift').oninput = () => {
+  $('simDriftVal').textContent = (+$('simDrift').value).toFixed(2) + ' rad/s';
+  post('/sim', { drift: +$('simDrift').value });
+};
+
+function stopAll() { held.clear(); refreshPad(); gheld.clear(); refreshGpad(); post('/stop'); }
 $('bStop').onclick = stopAll;
 
 // ---------------------------------------------------------------- measured moves
@@ -291,6 +372,7 @@ $('seq').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('bSeq').c
 // ---------------------------------------------------------------- settings
 async function loadConfig() {
   cfg = await (await fetch('/config')).json();
+  $('assist').checked = !!cfg.assist;
   const box = $('settings'); box.innerHTML = '';
   for (const [k, v] of Object.entries(cfg)) {
     const l = document.createElement('label');
@@ -328,6 +410,18 @@ function render(s) {
   $('pSim').hidden = !s.sim;
   $('camInfo').textContent = s.camera.error ? '— ' + s.camera.error : s.camera.fps ? `— ${s.camera.fps} fps` : '';
   if (s.camera.error) { $('videoMsg').hidden = false; $('videoMsg').textContent = s.camera.error; }
+
+  // steering assist and pan-tilt
+  const a = c.assist;
+  const amode = { off: 'off', idle: 'ready', hold: 'holding heading', settling: 'settling',
+                  rate: 'tracking turn' }[a.mode] || a.mode;
+  $('assistInfo').innerHTML = !cfg.assist ? 'off'
+    : a.mode === 'hold' || a.mode === 'rate'
+      ? `<b>${amode}</b> · error ${fmt(a.err, 1)} ${a.err_unit === 'deg' ? '°' : '°/s'} · fix ${fmt(a.w_corr, 2)} rad/s`
+      : amode;
+  if (s.gimbal) { $('gPan').textContent = fmt(s.gimbal.pan, 0) + '°';
+                  $('gTilt').textContent = fmt(s.gimbal.tilt, 0) + '°'; }
+  $('simRow').hidden = !s.sim;
 
   // current step
   let t = 'Idle';
