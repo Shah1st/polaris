@@ -88,11 +88,14 @@ avant la mission.
 - Toujours lancer la mission avec `--marqueur 10`. Sans marqueur, le rover est cherché comme un
   objet de sa taille : sur la photo d'essai, une boîte de 20 x 26 cm a été prise pour le rover
   (0,84 ; 0,75) alors que le vrai rover était en (0,62 ; 1,33), et le cap est inconnu.
-- Hauteur du marqueur : `lancer_overhead.py` **n'a pas d'option pour elle** (pas de
-  correction de parallaxe). La position vue est décalée vers l'extérieur d'environ
-  distance au centre de l'image x h / (H - h) (h hauteur du marqueur, H hauteur de la caméra) :
-  8 à 9 cm à 1 m du centre pour h = 0,15 m et H = 1,9 m. Centrez l'arène sous la caméra, mettez la
-  caméra haut et le marqueur bas.
+- Hauteur du marqueur : mesurez-la au mètre (sol -> surface du marqueur) et donnez-la avec
+  `--hauteur-marqueur h`, **avec `--hauteur H`** (sol -> objectif de la caméra, 1,9 m par
+  défaut) : la correction de parallaxe utilise les deux. Sans `--hauteur-marqueur`, aucune
+  correction : la position vue est décalée vers l'extérieur d'environ distance au centre de
+  l'image x h / (H - h), soit 8 à 9 cm à 1 m du centre pour h = 0,15 m et H = 1,9 m. Vérifié
+  seulement sur la photo d'essai (le rover passe de (0,62 ; 1,33) à (0,66 ; 1,30) avec
+  `--hauteur-marqueur 0.15`, vers le centre de l'image) ; au mètre sur le vrai rover : *non
+  vérifié*.
 
 Contrôle sur une image (écrit `salle_overlay.jpg` : obstacles en rouge, rover en bleu, rien
 d'autre en rouge) :
@@ -115,7 +118,8 @@ curl -s http://<IP du rover>:8080/state
 | `link.connected` | l'ESP32 répond par l'USB ; `false` : rien ne bougera |
 | `odom.gyro_ready` | biais du gyroscope mesuré ; `false` pendant ~10 s après un démarrage (ESP32 ~7 s + 2 s) : **ne pas toucher le rover** ; tout pas est refusé (HTTP 409) avant |
 | `boot_id`, `uptime_s` | identité du processus serveur et depuis quand il tourne ; un `boot_id` qui change = serveur redémarré. **Absent** = le robot a encore l'ancien serveur (voir section 6) |
-| `ctrl.mode`, `ctrl.fault` | `idle` au repos ; `fault` dit pourquoi un pas a été coupé (`no ESP32 feedback`, `ESP32 link lost`) |
+| `ctrl.mode`, `ctrl.fault` | `idle` au repos ; `fault` dit pourquoi le serveur a coupé un pas de lui-même (`no ESP32 feedback`, `ESP32 link lost`, `controller error: ...`) ; la page du rover l'affiche dans un bandeau rouge |
+| `stop_count` | nombre de STOP reçus (`POST /stop`, `/cmd {"T":0}`) depuis le démarrage du serveur ; la mission s'en sert pour voir un STOP entre deux pas. **Absent** = ancien serveur : ce STOP n'est pas vu (section 4) |
 | `loop_errors`, `link.handler_errors` | erreurs de la boucle de commande ; doivent rester à 0 |
 
 (Champs vérifiés sur `rover_server.py --sim` du dépôt ; la version du robot n'a jamais été
@@ -125,8 +129,8 @@ comparée.)
 
 ```bash
 python merging_map/lancer_overhead.py --camera http://<IP du téléphone>:8080/video \
-    --metres-par-pixel 0.0030 --marqueur 10 --rover http://<IP du rover>:8080 \
-    --victime 1.8 1.5 --suivi $HOME/suivi.json --dry-run
+    --metres-par-pixel 0.0030 --marqueur 10 --hauteur <H> --hauteur-marqueur <h> \
+    --rover http://<IP du rover>:8080 --victime 1.8 1.5 --suivi $HOME/suivi.json --dry-run
 ```
 
 `--victime X Y` et `--depart X Y` sont dans le repère de la caméra : origine au **coin en bas à
@@ -167,8 +171,10 @@ place tout autour.
 Même commande sans `--dry-run`. Options utiles : `--vitesse 0.15` (m/s, défaut 0,2),
 `--delai-http 2` si le Wi-Fi est lent, `--latence 0.8` si le flux du téléphone a plus de 0,5 s
 de retard (la caméra attend une image arrivée au moins `--latence` s après l'arrêt du rover),
-`--tolerance 0.15` (arrivée à moins de, en m). Fin normale : `Fin de mission (arrive) : x m
-parcourus.` ou `(abandon)`.
+`--tolerance 0.15` (arrivée à moins de, en m). En fin de mission, deux lignes :
+`Fin de mission (arrive) : x m parcourus.` (ou `(abandon)`, `(erreur)`, `(arret_operateur)`),
+puis `Issue : <issue> ; raison : <raison>` qui dit pourquoi elle s'est arrêtée (`arrivee`,
+`objectif_degrade`, `erreur_robot`, `rover_injoignable`, `sans_progres`, `arret_operateur`...).
 
 ### 3.8 La page du jury
 
@@ -220,10 +226,16 @@ de 2 s est ignorée : le rover roule alors sur la seule carte du dessus, sans er
 - STOP de la page du rover **pendant un pas** : la mission affiche `ARRET OPERATEUR` et
   s'arrête pour de bon (testé sur le banc simulé). Tenir une flèche de la page (reprise en main)
   fait de même.
-- STOP de la page **entre deux pas** (rover immobile) : **non vu** par le serveur de ce dépôt ;
-  la mission enverra le pas suivant et le rover repartira. Un compteur de `/stop` dans
-  `/state` est en cours d'ajout côté serveur ; tant qu'il n'est pas déployé et vérifié, c'est
-  Ctrl-C.
+- STOP de la page **entre deux pas** (rover immobile) : vu **si le serveur du rover a
+  `stop_count` dans `/state`** (le serveur de ce dépôt, pas encore sur le robot : section 6).
+  Avant d'envoyer chaque pas, la mission compare ce compteur aux `/stop` qu'elle a envoyés
+  elle-même ; s'il y en a plus, elle affiche `ARRET OPERATEUR : STOP recu par le serveur du
+  rover entre deux pas ...` et n'envoie plus rien (testé contre un faux serveur et le vrai
+  serveur avec un ESP32 simulé, jamais sur le robot). Limites : un STOP pressé entre le
+  lancement et le **premier** pas n'est pas vu ; si la réponse d'un `/stop` de la mission se perd
+  sur le Wi-Fi, la mission peut s'arrêter comme sur un STOP (fausse alerte, dans le sens sûr).
+  **Sans `stop_count`** (ancien serveur sur le robot) : non vu, la mission enverra le pas
+  suivant et le rover repartira ; c'est alors Ctrl-C.
 - Côté robot : l'ESP32 coupe les moteurs après 3 s sans ordre, une conduite manuelle s'arrête
   0,5 s après la dernière touche, et le serveur de ce dépôt (pas encore sur le robot) arrête
   aussi le rover après 0,5 s sans retour de l'ESP32.
@@ -243,7 +255,8 @@ de 2 s est ignorée : le rover roule alors sur la seule carte du dessus, sans er
 | `Rover pas pret apres 15 s` | ESP32 non connecté ou gyroscope pas calibré | `GET /state` : `link.connected`, `odom.gyro_ready` ; ne pas bouger le rover au démarrage |
 | `LIAISON ROVER PERDUE` puis `abandon: rover injoignable` | Wi-Fi coupé plus de 2 s ; abandon après ~60 s sans retour | le rover finit son pas puis s'arrête seul ; rapprocher le routeur, `--delai-http 2` |
 | `abandon: le rover n'avance plus` | 8 pas sans bouger de 5 cm, ou 4 chocs au même endroit | dégager, vérifier les chenilles |
-| Pas finis en `no ESP32 feedback` sans raison | retour de l'ESP32 avec des trous > 0,5 s sur le RDK chargé | regarder `link.rx_age` dans `/state` ; prévenir Raphaël |
+| `ERREUR du rover -> arret, nouvel essai : Pas abandonne par le serveur du rover (statut 'no ESP32 feedback' ...` (ou `ESP32 link lost`, `controller error`) | le serveur a arrêté le rover de lui-même ; pour `no ESP32 feedback` sans raison visible : retour de l'ESP32 avec des trous > 0,5 s sur le RDK chargé | la mission réessaie après une image neuve, puis s'arrête en `erreur_robot` après 4 erreurs de suite ; regarder `ctrl.fault` et `link.rx_age` dans `/state` (bandeau rouge de la page du rover) ; prévenir Raphaël |
+| `ARRET OPERATEUR : STOP recu par le serveur du rover entre deux pas` | quelqu'un a appuyé sur STOP (page du rover, tableau de bord), ou réponse d'un `/stop` de la mission perdue | voulu : c'est fini ; sinon relancer la mission |
 
 Les nombres de cette table (3 essais, 0,2 m, 15 cm, 60 s, 8 pas) viennent de `merging_map/`
 (`rover_reel.py`, `cerveau.py`, `mission_settings.py`) au 15 nov. et peuvent changer : Paco y
@@ -268,7 +281,8 @@ diff -ru /tmp/rover-robot rover | less                   # reprendre ce que le r
   serveur dès que le port est libre 5 s : pour lancer `rover_server.py` à la main, d'abord
   `sudo systemctl stop polaris-rover-api`, et `sudo systemctl start polaris-rover-api` après.
 - Après copie : `sudo systemctl restart polaris-rover-api`, attendre `gyro_ready`, vérifier que
-  `/state` contient `boot_id`. Au démarrage, un message `Settings file ... using the default`
+  `/state` contient `boot_id` et `stop_count` (puis : STOP sur la page, rover immobile ->
+  `stop_count` augmente de 1). Au démarrage, un message `Settings file ... using the default`
   signifie qu'un réglage du robot sort des nouvelles bornes : vérifier les réglages dans la page.
 - Puis les 6 essais roues en l'air de `rover/README.md` (section « Deploying to the robot »).
 - À vérifier : que le `SIGTERM` de `systemctl` atteint bien `rover_server.py` à travers le script
@@ -281,11 +295,14 @@ diff -ru /tmp/rover-robot rover | less                   # reprendre ce que le r
 - La lecture du flux d'un téléphone (`camera_reader`) et le réglage `--latence` ; l'échelle au
   mètre ruban ; la détection du marqueur ArUco sur le vrai rover ; le rejet des mauvaises images
   sur l'éclairage de la salle.
-- L'arrêt opérateur (STOP de la page pendant un pas, reprise en main), la détection d'un
-  redémarrage du serveur, le pas borné (`Pas refuse`), la mesure du cap par une ligne droite.
+- L'arrêt opérateur (STOP de la page pendant un pas ou entre deux pas avec `stop_count`,
+  reprise en main), la détection d'un redémarrage du serveur, le pas borné (`Pas refuse`), la
+  mesure du cap par une ligne droite, la reprise après une panne du serveur (`no ESP32
+  feedback`...), la correction de parallaxe `--hauteur-marqueur`.
 - Le serveur du rover de ce dépôt : surveillance de l'ESP32 (0,5 s), refus avant `gyro_ready`,
-  validation des nombres et de `/config`, `boot_id`, arrêt sur `SIGTERM`, `/snapshot.jpg` avec
-  `X-Age-Ms`. Pas encore déployé sur le robot.
+  validation des nombres et de `/config`, `boot_id`, `stop_count`, arrêt sur `SIGTERM`,
+  `/snapshot.jpg` avec `X-Age-Ms`, le bandeau rouge des pannes de sa page (servi, jamais
+  affiché dans un navigateur). Pas encore déployé sur le robot.
 - La page `/mission` dans un navigateur, et sur une vraie mission.
 - Le service de perception sur la caméra du vrai rover (évalué seulement en simulation) et son
   branchement `--perception`.
@@ -303,3 +320,7 @@ diff -ru /tmp/rover-robot rover | less                   # reprendre ce que le r
 `--dry-run` ; une image noire (rejet affiché) ; `measure_scale --points` et `--save` sur la même
 photo ; `GET /state` de `rover_server.py --sim` ; `demo_mission.py` et `teleop/server.py --suivi`
 (`/mission`, `/api/mission`).
+
+Relu après la fusion de `fin/integration` (sécurité, banc de bout en bout, restes) : options et
+messages cités vérifiés dans le code fusionné, `--hauteur-marqueur` essayé en `--dry-run` sur la
+photo d'essai.
