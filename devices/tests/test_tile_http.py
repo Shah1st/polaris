@@ -3,6 +3,7 @@ the MuJoCo simulator's drone (sim/run_world.py API), against a mock of that API.
 
 import importlib.util
 import json
+import time
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
@@ -104,8 +105,10 @@ def test_levels_and_pre_cut_tiles():
     with pytest.raises(ValueError):
         level_of(0.07, carte)
     tile = np.zeros((32, 32), int).tolist()
+    before = time.monotonic()
     msgs = messages_from_answer({'t': 5, 'tiles': [{'z': 2, 'x': 1, 'y': 0, 'data': tile}]}, carte)
-    assert msgs == [{'t': 5.0, 'z': 2, 'x': 1, 'y': 0, 'data': tile}]
+    assert before <= msgs[0].pop('t') <= time.monotonic()  # received now, not the device's t
+    assert msgs == [{'z': 2, 'x': 1, 'y': 0, 'data': tile}]
 
 
 # ---- the MuJoCo simulator's drone ------------------------------------------------------------

@@ -87,6 +87,11 @@ def make_overhead_camera(spec, fleet):
             f'camera_reader), and {source!r} is not an image file'
         )
     settings = OverheadSettings(**_tuples(spec.settings.get('overhead', {})))
+    if settings.metres_per_pixel is None and not os.path.isfile(str(source)):
+        # As lancer_overhead --camera: the lens model is a guess, the scale must be measured.
+        raise DeviceUnavailable(
+            f'{spec.id}: a live camera needs settings.overhead.metres_per_pixel (measured)'
+        )
     camera = drone.OverheadDrone(reader, settings, period=float(spec.settings.get('period', 0.5)))
     return OverheadCamera(camera, reader, spec.settings.get('tracks'), fleet)
 

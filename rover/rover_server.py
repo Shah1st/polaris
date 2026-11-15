@@ -53,6 +53,7 @@ HTTP 400 and nothing moves or changes. Steps before "Gyro OK": HTTP 409.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import math
 import os
@@ -287,6 +288,7 @@ class App:
         self._switch_lock = threading.Lock()
         d405 = getattr(args, 'd405', D405_URL)
         self.d405 = D405View(None if d405 in (None, '', 'off') else d405)
+        self.save_lock = threading.Lock()  # POST /config: one settings file write at a time
 
     def set_mode(self, mode: str) -> None:
         """Start driving the real rover ('real') or the simulated one ('sim')."""
@@ -503,11 +505,14 @@ def make_handler(app: App):
                             finite(body.get('tilt_rate', 0), 'tilt_rate', 1.0),
                         )
                 elif path == '/config':
-                    # All or nothing (Config.update), saved under the lock: two pages saving at
-                    # once cannot interleave their writes.
-                    with rover.lock:
-                        changed = rover.cfg.update(body)
-                        rover.cfg.save(app.cfg_path)
+                    # All or nothing (Config.update). The file is written from a copy outside
+                    # rover.lock (a slow SD card must not freeze the 20 Hz loop), under a lock of
+                    # its own: two pages saving at once cannot interleave their writes.
+                    with app.save_lock:
+                        with rover.lock:
+                            changed = rover.cfg.update(body)
+                            snapshot = dataclasses.replace(rover.cfg)
+                        snapshot.save(app.cfg_path)
                     self._json({'ok': True, 'changed': changed})
                     return
                 else:
