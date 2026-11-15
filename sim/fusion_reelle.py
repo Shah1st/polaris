@@ -143,6 +143,36 @@ def marqueurs_tolerants(detecter, identifiant):
     return detecter_mieux
 
 
+def troncon(chemin, grille, carte, longueur_max, depart):
+    """The start of the planned path, `longueur_max` m at most, in a few points: each chord
+    stays out of the obstacles grown by the rover's radius. Cells nobody has seen may be
+    crossed, as the planner itself allows (avancer_esquive.troncon_vu is the strict version:
+    only cells seen free)."""
+    import avancer_esquive as ae
+
+    points = ae.couper(chemin, longueur_max)
+    plan = carte.grille_plan(grille)
+    rayon = carte.rayon_effectif
+
+    def libre(a, b):
+        for _, p in ae.echantillons([a, b], grille.res / 2):
+            if math.dist(p, depart) <= rayon:
+                continue  # under the rover at the start
+            i, j = plan.ij(*p)
+            if not plan.dedans(i, j) or plan.bloque[i, j]:
+                return False
+        return True
+
+    simples, i = [points[0]], 0
+    while i < len(points) - 1:
+        j = len(points) - 1
+        while j > i + 1 and not libre(points[i], points[j]):
+            j -= 1
+        simples.append(points[j])
+        i = j
+    return simples
+
+
 class Odometrie:
     """Stands in for the overhead camera of RaspRoverReel: the rover pose in the frame of the
     maps, from GET /state."""
@@ -837,9 +867,12 @@ class FusionReelle:
                 chemin = [tuple(p) for p in dec.get('chemin') or []]
                 # the part of the path that only crosses cells seen free (by the drone, or by
                 # the rover with the local map), in a few points, --segment m at most
-                points, raison = ae.troncon_vu(
-                    chemin or [pos], dec['grille'], self.carte, a.segment, pos
-                )
+                if a.segment_vu:
+                    points, raison = ae.troncon_vu(
+                        chemin or [pos], dec['grille'], self.carte, a.segment, pos
+                    )
+                else:
+                    points = troncon(chemin or [pos], dec['grille'], self.carte, a.segment, pos)
             bloque = dec['action'] == 'OBJECTIF_DEGRADE' and math.dist(dec.get('point', pos), pos)
             if bloque is not False and bloque < 0.05:
                 self.journal_mission(texte='BLOCKED: no way to the goal')
@@ -860,8 +893,8 @@ class FusionReelle:
                     )
                     return 'arrive'
                 self.journal_mission(
-                    texte=f'BLOCKED: nothing seen free ahead ({a_rouler:.2f} m): the rover '
-                    'drives only where the map has seen'
+                    texte=f'BLOCKED: nothing to drive ahead ({a_rouler:.2f} m)'
+                    + (': --segment-vu, only where the map has seen' if a.segment_vu else '')
                 )
                 return 'bloque'
             duree = ae.duree_prevue(points, rover.cap, a.vitesse)
@@ -1279,7 +1312,14 @@ def options(argv=None):
         type=float,
         default=0.0,
         help='m: drive in segments of this length at most, several points in one command, '
-        'without stopping every --pas m; only through cells seen free. 0: step by step',
+        'without stopping every --pas m. 0: step by step',
+    )
+    p.add_argument(
+        '--segment-vu',
+        action='store_true',
+        help='with --segment: drive only through cells seen free (by the drone, or by the '
+        'rover with the local map); a goal in what nobody has seen is then refused. Default: '
+        'unseen cells may be crossed, as step by step',
     )
     p.add_argument('--vitesse', type=float, default=0.12, help='m/s')
     p.add_argument('--rayon', type=float, default=0.20, help='rover radius + margin (m)')

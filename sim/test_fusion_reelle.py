@@ -405,7 +405,7 @@ def with_a_drone_map(extra=()):
     """A FusionReelle in segment mode whose drone has seen a free strip 3 m long and 1 m wide
     along x from the rover, and nothing else. Local map off: the rover's camera is not used."""
     f = fr.FusionReelle(
-        fr.options(['--segment', '2.0', *extra]),
+        fr.options(['--segment', '2.0', '--segment-vu', *extra]),
         requete=lambda *a: None,
         percevoir=lambda *a: None,
         percevoir_frais=lambda *a: None,
@@ -472,3 +472,48 @@ def test_the_drone_map_grows_with_a_camera_that_moves() -> None:
                     f.carte.recevoir(msg)
         total, x0, y0 = f.matrice_drone()
         assert int((total != -1).sum()) == seen
+
+
+def test_in_segments_unseen_cells_are_crossed_unless_segment_vu() -> None:
+    """No drone map at all and no local map: step by step the rover drives to the clicked
+    point on its odometry alone; in segments it must do the same (--segment-vu refuses)."""
+    import avancer_esquive as ae
+
+    f = fr.FusionReelle(
+        fr.options(['--segment', '2.0']),
+        requete=lambda *a: None,
+        percevoir=lambda *a: None,
+        percevoir_frais=lambda *a: None,
+    )
+    f.objectif = (21.8, 20.6)
+    rover = SegmentRover(20.0, 20.0)
+
+    assert f._boucle_segments(rover, ae) == 'arrive'
+    assert 1 <= len(rover.segments) <= 2
+
+
+def test_in_segments_a_segment_goes_round_an_obstacle_of_the_drone() -> None:
+    """A box of the drone map across the straight line: no point of a segment, and no chord
+    between two points, comes within the rover's radius of it."""
+    import avancer_esquive as ae
+
+    f = fr.FusionReelle(
+        fr.options(['--segment', '2.0']),
+        requete=lambda *a: None,
+        percevoir=lambda *a: None,
+        percevoir_frais=lambda *a: None,
+    )
+    m = np.zeros((60, 80), np.int8)  # 4 m x 3 m seen free, a 30 cm box on the way
+    m[27:33, 37:43] = 1
+    for msg in fr.decouper(m, 19.0, 18.5, 4, f.carte, 'drone', t=1.0):
+        f.carte.recevoir(msg)
+    f.objectif = (22.0, 20.0)
+    rover = SegmentRover(20.0, 20.0)
+
+    assert f._boucle_segments(rover, ae) == 'arrive'
+    box = (21.0, 20.0)  # its centre; half side 0.15 m, rover radius 0.20 m
+    trace = [(20.0, 20.0)] + [p for s in rover.segments for p in s]
+    for a, b in zip(trace, trace[1:], strict=False):
+        for k in range(21):
+            x, y = a[0] + (b[0] - a[0]) * k / 20, a[1] + (b[1] - a[1]) * k / 20
+            assert max(abs(x - box[0]), abs(y - box[1])) > 0.15 + 0.15
