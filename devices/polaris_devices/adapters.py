@@ -100,10 +100,13 @@ def make_rasprover(spec, fleet):
         raise DeviceUnavailable(f'{spec.id}: rasprover needs "address" (rover_server.py URL)')
     percevoir = lambda position, cap: None  # noqa: E731  (no rover camera: drone map only)
     name = spec.settings.get('perception')
-    if name is not None:
+    if name in fleet.skipped:
+        # Same as lancer_overhead without --perception: the rover drives on the drone's map.
+        fleet.log(f'{spec.id}: perception {name!r} skipped, the rover will not see by itself')
+    elif name is not None:
         sensor = fleet.devices.get(name)
         if sensor is None:
-            raise DeviceUnavailable(f'{spec.id}: perception {name!r} is not plugged')
+            raise DeviceUnavailable(f'{spec.id}: perception {name!r} is not declared before it')
         percevoir = sensor.percevoir
     locator = fleet.devices.get(spec.settings.get('locator'))
     if locator is not None and callable(getattr(locator, 'refresh', None)):

@@ -12,7 +12,7 @@
 
 ```bash
 python devices/examples/run_fleet_sim.py --drive     # 2 drones + 2 rovers, no hardware
-python -m pytest devices -q -p no:cacheprovider      # 25 tests
+python -m pytest devices -q -p no:cacheprovider      # 26 tests + 1 waiting for interface 7
 ```
 
 ## The three roles (`polaris_devices/roles.py`: the docstrings are the specification)
@@ -121,4 +121,6 @@ Not yet:
   crossings, and each rover's position published as a moving obstacle for the others.
 * One overhead camera locates one rover (`tracks`); two rovers need two markers.
 * `rover-perception` needs `merging_map/perception_rover.py` (another part, in progress).
+  Without it the RaspRover is still plugged and drives on the drone's map alone (as
+  `lancer_overhead.py` without `--perception`), with a message saying so.
 * `sim-rover` is merging_map's simulated rover; the MuJoCo rover is only seen, not driven.

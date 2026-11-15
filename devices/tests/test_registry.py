@@ -175,6 +175,33 @@ def test_rasprover_needs_its_declared_locator_and_sensor():
             build(cfg, log=quiet, strict=True)
 
 
+def test_a_rover_whose_sensor_is_unavailable_still_drives_on_the_drone_map():
+    def no_sensor(spec, fleet):
+        raise DeviceUnavailable('perception service module missing')
+
+    register('test-no-sensor', no_sensor)
+    try:
+        cfg = {
+            'devices': [
+                {'id': 'eye', 'role': 'rover', 'kind': 'test-no-sensor'},
+                {
+                    'id': 'r1',
+                    'role': 'rover',
+                    'kind': 'rasprover',
+                    'address': 'http://127.0.0.1:8179',
+                    'settings': {'perception': 'eye'},
+                },
+            ]
+        }
+        messages = []
+        fleet = build(cfg, log=messages.append)
+        assert set(fleet.skipped) == {'eye'} and 'r1' in fleet.devices
+        assert fleet.devices['r1'].percevoir((1.0, 1.0), 0.0) is None
+        assert any('will not see by itself' in m for m in messages)
+    finally:
+        KINDS.pop('test-no-sensor')
+
+
 def test_overhead_camera_from_a_still_image(tmp_path):
     cv2 = pytest.importorskip('cv2')
     image = np.full((600, 800, 3), 200, np.uint8)
