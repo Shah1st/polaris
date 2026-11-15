@@ -32,6 +32,8 @@
   POST /fusion/objectif {"panneau": "fused"|"drone", "fx", "fy"} | {}   the point clicked on a
                      map (fractions of the picture), or none; POST /fusion/aller: the rover
                      drives there by itself; POST /fusion/arreter: end of that mission + /stop
+  POST /fusion/carte_locale {"carte_locale": true|false}  build the rover's local map from
+                     its own camera, or not (the "Local map" box of the maps)
   POST /fusion/marqueur {"sans_marqueur": true|false}  ignore or trust the rover's marker
                      in the drone's picture (the "No marker" box of the maps)
                      (sim/fusion_reelle.py)
@@ -107,6 +109,7 @@ FUSION_POSTS = {
     '/fusion/aller': (),
     '/fusion/arreter': (),
     '/fusion/marqueur': ('sans_marqueur',),
+    '/fusion/carte_locale': ('carte_locale',),
 }
 SNAPSHOT_PERIOD = 0.1  # s: a camera that answers one picture per request is asked this often
 SNAPSHOT_MAX = 10_000_000  # bytes: a larger "picture" is refused

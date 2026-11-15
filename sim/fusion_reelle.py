@@ -10,6 +10,9 @@ same format as sim/fusion_live.py, and a mission to a point picked on the map.
     POST /aller              the rover drives to the point by itself (bounded steps, one look of
                              its camera at each stop, around the obstacles it saw)
     POST /arreter            end of the mission and POST /stop to the rover
+    POST /carte_locale       {"carte_locale": true|false}: build (true) or not (false) the
+                             rover's local map from its own camera, while running; same
+                             as --carte-locale / --no-carte-locale. Off empties it.
     POST /marqueur           {"sans_marqueur": true|false}: ignore (true) or trust (false)
                              the rover's marker in the drone's picture, while running;
                              same as --drone-sans-marqueur / --no-drone-sans-marqueur
@@ -333,6 +336,26 @@ class FusionReelle:
             'zone_m': [round(m.shape[1] * res, 2), round(m.shape[0] * res, 2)],
         }
 
+    def regler_carte_locale(self, corps):
+        """POST /carte_locale: build the rover's local map or not, while running. (code, answer)
+
+        Off: the rover's camera is no longer asked, outside a mission and at the stops of a
+        mission, and what it had put on the maps is removed, so the planner works from the
+        drone's map alone. What the rover bumped into stays out too: it is on the same map."""
+        valeur = corps.get('carte_locale')
+        if not isinstance(valeur, bool):
+            return 400, {'error': '{"carte_locale": true or false} is expected'}
+        with self.verrou:
+            self.args.carte_locale = valeur
+            if not valeur:
+                self.carte.tuiles['rover'] = {}
+                self.carte.maj['rover'] = {}
+                self.vues = 0
+                self.derniere_vue = None
+                self.n_scan = {'points': 0, 'free': 0, 'obstacle': 0}
+        print(time.strftime('%H:%M:%S'), 'local map', 'on' if valeur else 'off', flush=True)
+        return 200, {'ok': True, 'carte_locale': valeur}
+
     def regler_marqueur(self, corps):
         """POST /marqueur: turn --drone-sans-marqueur on or off while running. (code, answer)
 
@@ -627,7 +650,9 @@ class FusionReelle:
         )
         self.precedente = pose
         self.immobile = immobile
-        if self.en_mission():
+        if not self.args.carte_locale:
+            info = "local map off: the rover's camera is not used"
+        elif self.en_mission():
             info = 'mission running: the rover looks at each stop'
         elif not immobile:
             info = 'rover moving: view not fused'
@@ -689,7 +714,10 @@ class FusionReelle:
                 self.carte,
                 self.requete,
                 position_drone=odo.pose,
-                percevoir=self.percevoir_frais,
+                # no local map: the rover's camera is not asked, at any stop
+                percevoir=lambda position, cap: (
+                    self.percevoir_frais(position, cap) if self.args.carte_locale else None
+                ),
                 drone=odo,
                 vitesse=a.vitesse,
                 delai_liaison=a.delai_liaison,
@@ -730,18 +758,19 @@ class FusionReelle:
             if reste <= a.tolerance:
                 self.journal_mission(texte=f'ARRIVED {reste:.2f} m from the goal, {k} steps')
                 return 'arrive'
-            pan = math.radians(self.pan(self.dernier_etat))
-            cap = None if rover.cap is None else angle(rover.cap - pan)
-            vue = self.percevoir_frais(rover.est, cap)
-            if vue is None:
-                sans_vue += 1
-                self.journal_mission(texte=f'perception unavailable ({sans_vue}/3): waiting')
-                if sans_vue >= 3:
-                    return 'perception_indisponible'
-                time.sleep(1.0)
-                continue
-            sans_vue = 0
-            self.publier(vue)
+            if a.carte_locale:  # a look of the rover's camera at each stop
+                pan = math.radians(self.pan(self.dernier_etat))
+                cap = None if rover.cap is None else angle(rover.cap - pan)
+                vue = self.percevoir_frais(rover.est, cap)
+                if vue is None:
+                    sans_vue += 1
+                    self.journal_mission(texte=f'perception unavailable ({sans_vue}/3): waiting')
+                    if sans_vue >= 3:
+                        return 'perception_indisponible'
+                    time.sleep(1.0)
+                    continue
+                sans_vue = 0
+                self.publier(vue)
             with self.verrou:
                 dec = self.carte.decider(
                     pos,
@@ -908,8 +937,11 @@ class FusionReelle:
             'genere_a': now,
             'rover': {'x': pose[0] - DECALAGE, 'y': pose[1] - DECALAGE, 'cap': pose[2]},
             'objectif': [c - DECALAGE for c in objectif] if objectif else [],
+            'carte_locale': bool(self.args.carte_locale),
             'source_rover': 'REAL rover: rover camera (DA3 perception on the VM) and odometry, '
-            'views fused while standing still',
+            'views fused while standing still'
+            if self.args.carte_locale
+            else "local map OFF: the rover's camera is not used, odometry only",
             'drone': {
                 'source': (
                     f'{self.args.drone_nom or "overhead camera"} (REAL drone): '
@@ -1063,6 +1095,8 @@ def handler(fr):
                     return self._json(*fr.aller())
                 if nom == '/arreter':
                     return self._json(*fr.arreter())
+                if nom == '/carte_locale':
+                    return self._json(*fr.regler_carte_locale(corps))
                 if nom == '/marqueur':
                     return self._json(*fr.regler_marqueur(corps))
             except (KeyError, TypeError, ValueError) as e:
@@ -1077,6 +1111,14 @@ def options(argv=None):
     p.add_argument('--rover', default='http://127.0.0.1:18080')
     p.add_argument('--perception', default='http://127.0.0.1:8095')
     p.add_argument('--port', type=int, default=8096)
+    p.add_argument(
+        '--carte-locale',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="build the rover's local map from its own camera (the perception service), "
+        'outside a mission and at each stop of a mission. Off for now: the maps come from '
+        'the drone camera only. Also the "Local map" box of the dashboard',
+    )
     p.add_argument('--periode', type=float, default=2.0, help='s between two reads')
     p.add_argument('--delai-http', type=float, default=8.0, help='s per request to the rover')
     p.add_argument(

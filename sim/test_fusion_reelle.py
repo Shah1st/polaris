@@ -326,3 +326,54 @@ def test_the_switch_changes_how_the_next_picture_is_placed() -> None:
     f.regler_marqueur({'sans_marqueur': False})
     model_stop(f, reader, found, 0.50, (20.0, 20.0, 0.0), cap=0.0)
     assert f.drone['cale'] and f.drone['cale_par'] == 'marker'
+
+
+# ---- the rover's local map, on or off -----------------------------------------------------------
+
+
+def test_the_local_map_is_off_by_default_and_the_rover_camera_is_not_asked() -> None:
+    asked = []
+    f = fr.FusionReelle(
+        fr.options([]),
+        requete=lambda methode, chemin, corps=None: {
+            'odom': {'x': 0.0, 'y': 0.0, 'heading_deg': 0.0, 'v': 0.0}
+        },
+        percevoir=lambda *a: asked.append(a),
+        percevoir_frais=lambda *a: asked.append(a),
+    )
+    assert f.args.carte_locale is False
+
+    f.tour()
+    f.tour()  # the rover stands still: with the local map on, its camera would be asked now
+
+    assert asked == []
+    assert f.status['carte_locale'] is False
+    assert 'local map off' in f.status['info']
+
+
+def test_the_local_map_can_be_turned_on_and_off_while_running() -> None:
+    view = (np.zeros((4, 4), np.int8), 20.0, 20.0)
+    f = fr.FusionReelle(
+        fr.options(['--carte-locale']),
+        requete=lambda methode, chemin, corps=None: {
+            'odom': {'x': 0.0, 'y': 0.0, 'heading_deg': 0.0, 'v': 0.0}
+        },
+        percevoir=lambda *a: view,
+        percevoir_frais=lambda *a: view,
+    )
+    f.tour()
+    f.tour()
+    assert f.carte.tuiles['rover'] and f.vues == 1  # fused once the rover stood still
+
+    assert f.regler_carte_locale({'carte_locale': False}) == (
+        200,
+        {'ok': True, 'carte_locale': False},
+    )
+    assert not f.carte.tuiles['rover'] and f.vues == 0  # emptied
+    f.tour()
+    assert not f.carte.tuiles['rover']
+
+    assert f.regler_carte_locale({'carte_locale': True})[0] == 200
+    f.tour()
+    assert f.carte.tuiles['rover']
+    assert f.regler_carte_locale({'carte_locale': 'no'})[0] == 400
