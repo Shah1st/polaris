@@ -3,6 +3,7 @@ service de perception (127.0.0.1, ports 8130-8139). Ni GPU ni modele."""
 
 import json
 import math
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -221,3 +222,28 @@ def test_branche_dans_rasprover_reel(service):
     rover.observer()
     assert len(publiees) == 1
     assert valeur(publiees[0], 1.52, 1.02) == 1
+
+
+def test_client_none_si_reponse_coupee():
+    """Corps JSON coupe (service relance, tunnel) : IncompleteRead n'est ni OSError ni
+    ValueError, il remontait jusqu'a la mission. Port 8261."""
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind(('127.0.0.1', 8261))
+    except OSError:
+        s.close()
+        pytest.skip('port 8261 occupe')
+    s.listen(1)
+
+    def servir():
+        conn, _ = s.accept()
+        conn.recv(4096)
+        conn.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\n{"grid": [[0')
+        conn.close()
+
+    threading.Thread(target=servir, daemon=True).start()
+    try:
+        assert percevoir_http('http://127.0.0.1:8261', delai=2.0)((0.0, 0.0), 0.0) is None
+    finally:
+        s.close()

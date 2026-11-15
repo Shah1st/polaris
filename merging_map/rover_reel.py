@@ -69,7 +69,14 @@ Securite
 - Borne : un POST /path dont la cible est plus loin de la pose odometrique actuelle que le pas
   demande + marge_pas n'est jamais envoye (ServeurRoverError).
 - Le pas de mesure du cap est un /path vers un point absolu de l'odometrie : le renvoyer apres
-  une reponse perdue ne le fait pas deux fois (un /move relatif le refaisait).
+  une reponse perdue ne le fait pas deux fois (un /move relatif le refaisait). En arriere
+  (avant bloque), c'est un /move : un /path vers un point derriere le rover a moins de
+  path_lookahead (0,2 m) finit 'done' sans bouger. Il n'est renvoye apres une reponse perdue
+  que si GET /state n'en montre aucune trace.
+- Un redemarrage vu pendant un pas (/reset_odom : meme processus, le controleur suit encore
+  le pas vers une cible de l'ancien repere) est suivi d'un /stop.
+- Conduite au clavier entre deux pas : vue a ctrl.mode 'manual', ou, une fois finie, a
+  odom.odometer qui a grandi depuis la fin du dernier pas.
 
 Ce qui se branche de l'exterieur
 --------------------------------
@@ -328,6 +335,26 @@ class RaspRoverReel(RobotOdometrie):
                 return reponse, envois
             self.dormir(self.periode)
 
+    def _envoyer_une_fois(self, chemin, corps, dernier):
+        """POST d'un pas RELATIF (/move) : apres une reponse perdue, renvoye seulement si GET
+        /state n'en montre aucune trace (ni en cours, ni en file, ni dans ctrl.history apres
+        `dernier`) : recu deux fois, il se ferait deux fois. Renvoie la reponse, {} si le pas
+        a ete recu sans reponse, ou None si la liaison est perdue (delai_liaison s)."""
+        debut = self.temps()
+        while True:
+            reponse = self._demander('POST', chemin, corps)
+            if reponse is not None:
+                return reponse
+            etat = self._etat()
+            if etat is None or self.temps() - debut >= self.delai_liaison:
+                return None
+            ctrl = etat.get('ctrl') or {}
+            trace = ctrl.get('mode', 'idle') != 'idle' or ctrl.get('queued')
+            trace = trace or ctrl.get('current') is not None
+            if self._redemarrage or trace or nouvelles_entrees(ctrl.get('history') or [], dernier):
+                return {}  # recu (ou redemarrage : le suivi du pas le traite)
+            self.dormir(self.periode)
+
     def _etat(self):
         return self._insister('GET', '/state')
 
@@ -531,7 +558,7 @@ class RaspRoverReel(RobotOdometrie):
         if chemin == '/path':
             reponse, envois = self._envoyer('POST', chemin, corps)
         else:  # un /move est relatif : renvoye apres une reponse perdue, il se referait
-            reponse, envois = self._demander('POST', chemin, corps), 1
+            reponse, envois = self._envoyer_une_fois(chemin, corps, dernier), 1
         if reponse is None:
             return None, None
         # le serveur abandonne un pas apres max(20 s, 3 x longueur / vitesse + 10 s) : on lui

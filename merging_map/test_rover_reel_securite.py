@@ -11,7 +11,14 @@ import numpy as np
 import pytest
 from fusion_carte import CarteFusion, decouper
 from mission_settings import ARENA
-from rover_reel import ArretOperateur, ServeurRoverError, client_http, serveur_redemarre
+from rover_reel import (
+    ArretOperateur,
+    RaspRoverReel,
+    ServeurRoverError,
+    angle_normalise,
+    client_http,
+    serveur_redemarre,
+)
 from test_rover_reel import FauxServeur, chemins, robot
 
 PORTS = range(8100, 8110)  # reserved for these tests, 127.0.0.1 only
@@ -442,3 +449,185 @@ def test_stop_after_a_server_restart_is_seen() -> None:
     faux.stop_operateur()
     with pytest.raises(ArretOperateur, match='entre deux pas'):
         r.deplacer((1.4, 1.0))
+
+
+# ---- review round of 15 Nov: restart during a step, guard, faults, turret, keyboard ---------
+
+
+def test_odometry_reset_during_a_step_stops_the_rover() -> None:
+    """/reset_odom in the middle of a step: same process, so the controller still follows the
+    step towards a point of the OLD odometry frame. The adapter returned without /stop and the
+    rover drove 0.52 m for a 0.20 m step."""
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    r.deplacer((1.3, 1.0))  # the odometry is now away from its origin
+    faux.requetes.clear()
+
+    def reset_odom():
+        faux.ox = faux.oy = faux.oh = faux.odometre = 0.0
+
+    fait = pendant_le_pas(faux, 0.5, reset_odom)
+    r.dormir = faux.dormir
+    depart = (faux.x, faux.y)
+    assert r.deplacer((1.5, 1.0)) is None
+    assert fait and posts_apres(faux, fait[0] - 1e-9) == ['/stop']
+    assert faux.mode == 'idle' and not faux.queued
+    faux.dormir(3.0)
+    assert math.dist((faux.x, faux.y), depart) < 0.2  # it did not go on driving
+
+
+def test_a_rover_still_driving_is_not_ready() -> None:
+    """Before re-anchoring on a picture the rover must be idle with nothing queued and no
+    tilt-guard back-off (optional fields)."""
+    etat = {'link': {'connected': True}, 'odom': {'gyro_ready': True}}
+    assert RaspRoverReel._est_pret(etat)  # an older server: nothing more to check
+    for ctrl in (
+        {'mode': 'path'},
+        {'mode': 'idle', 'queued': [{'kind': 'path'}]},
+        {'mode': 'idle', 'current': {'kind': 'move'}},
+        {'mode': 'idle', 'guard': {'state': 'backoff'}},
+        {'mode': 'idle', 'guard': {'state': 'hold'}},
+    ):
+        assert not RaspRoverReel._est_pret({**etat, 'ctrl': ctrl}), ctrl
+    assert RaspRoverReel._est_pret({**etat, 'ctrl': {'mode': 'idle', 'guard': {'state': 'ok'}}})
+
+
+def test_tilt_guard_back_off_is_still_a_motion() -> None:
+    """The tilt guard ends the step ('tilt: ...') then backs the rover off in mode 'idle'
+    (ctrl.guard.state 'backoff', then 'hold' 1 s): the step is over only after that."""
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    faux.garde = 'ok'
+    debut = []
+
+    def bascule():
+        faux._resultat('tilt: roll 40 deg')
+        faux.queued, faux.mode, faux.fault, faux.garde = [], 'idle', 'tilt: roll', 'backoff'
+        debut.append(faux.t)
+
+    pendant_le_pas(faux, 0.6, bascule)
+    dormir = faux.dormir
+
+    def dormir_et_garde(dt):
+        dormir(dt)
+        if debut and faux.garde == 'backoff' and faux.t >= debut[0] + 2.0:
+            faux.garde = 'hold'
+        elif debut and faux.garde == 'hold' and faux.t >= debut[0] + 3.0:
+            faux.garde = 'ok'
+
+    faux.dormir = dormir_et_garde
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    assert r.deplacer((1.3, 1.0)) is None  # not a bump, not a finished step
+    assert faux.t >= debut[0] + 3.0  # the picture was taken after the back-off and the hold
+
+
+def test_a_step_done_while_a_fault_is_set_is_a_fault() -> None:
+    """A fault during the settle (0.4 s): history says 'done' but ctrl.fault is set."""
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    finir = faux._finir
+
+    def finir_et_panne(statut):
+        finir(statut)
+        faux.fault = 'ESP32 link lost'
+
+    faux._finir = finir_et_panne
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    with pytest.raises(ServeurRoverError, match='ESP32 link lost'):
+        r.deplacer((1.3, 1.0))
+    assert r._a_recaler
+
+
+def _vues(faux, **options):
+    vues = []
+    r = robot(faux, **options)
+    r.percevoir = lambda position, cap: vues.append((faux.t, cap))
+    return r, vues
+
+
+def test_the_camera_heading_uses_the_turret_pan_of_the_state() -> None:
+    """The turret was turned 30 deg to the right with the keyboard: the camera looks 30 deg
+    right of the rover (cap - pan). Without gimbal in /state: pan 0, as before."""
+    faux = FauxServeur(1.0, 1.0, math.radians(20))
+    faux.gimbal = {'pan': 30.0, 'tilt': -20.0, 'moving': False}
+    r, vues = _vues(faux)
+    r.placer((1.0, 1.0))
+    r.observer()  # before the first step: /state is read for the pan
+    r.deplacer((1.3, 1.1))
+    r.observer()
+    assert vues[1][1] == pytest.approx(angle_normalise(r.cap - math.radians(30)))
+    faux = FauxServeur(1.0, 1.0, math.radians(20))
+    r, vues = _vues(faux)
+    r.placer((1.0, 1.0))
+    r.deplacer((1.3, 1.1))
+    r.observer()
+    assert vues[-1][1] == pytest.approx(r.cap)
+
+
+def test_full_turn_waits_for_the_turret_and_the_video_and_skips_a_lost_gimbal_order() -> None:
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    faux.gimbal = {'pan': 0.0, 'tilt': -20.0, 'moving': False}
+    r, vues = _vues(faux, latence_video=0.7)
+    r.placer((1.0, 1.0))
+    r.deplacer((1.3, 1.0))
+    requete = faux.requete
+    perdus = []
+
+    def requete_gimbal(methode, chemin, corps=None):
+        if chemin == '/gimbal' and corps['pan'] == -90 and not perdus:
+            perdus.append(faux.t)
+            return None  # this order never reached the rover
+        return requete(methode, chemin, corps)
+
+    r.requete = requete_gimbal
+    faux.requetes.clear()
+    r.observer(tour_complet=True)
+    ordres = [(t, c['pan']) for t, m, ch, c in faux.requetes if ch == '/gimbal']
+    assert perdus and len(vues) == 7  # no view for the pan whose order was lost
+    assert len(ordres) == 8 and ordres[-1][1] == 0  # back to pan 0 at the end
+    for (t_ordre, pan), (t_vue, _) in zip(ordres[:-1], vues, strict=True):
+        assert t_vue - t_ordre >= 0.4 + 0.7 - 1e-9, pan  # turret, then a picture after it
+    assert r._pan(r._dernier_etat) == 0.0
+
+
+def test_keyboard_driving_between_two_steps_is_an_operator_stop() -> None:
+    """Driven 15 cm with the keyboard then released: after manual_timeout (0.5 s) ctrl.mode is
+    'idle' again with no trace in ctrl.history; only the odometer shows it."""
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    r.deplacer((1.2, 1.0))
+    faux.x += 0.15
+    faux.ox += 0.15
+    faux.odometre += 0.15
+    n = len(chemins(faux, '/path'))
+    with pytest.raises(ArretOperateur, match='entre deux pas'):
+        r.deplacer((1.4, 1.0))
+    assert len(chemins(faux, '/path')) == n
+
+
+@pytest.mark.parametrize('recu', [True, False])
+def test_the_backward_heading_move_is_sent_once(recu) -> None:
+    """A /move is relative: sent again after a lost answer it drives twice. It is sent again
+    only when GET /state shows that the server never got it."""
+    faux = FauxServeur(1.0, 1.0, 0.0, mur_x=1.02)
+    faux.cap_visible = False
+    requete = faux.requete
+    perdus = []
+
+    def requete_perdue(methode, chemin, corps=None):
+        if chemin == '/move' and not perdus:
+            perdus.append(faux.t)
+            if recu:
+                requete(methode, chemin, corps)  # the server got it, its answer is lost
+            return None
+        return requete(methode, chemin, corps)
+
+    r = robot(faux)
+    r.requete = requete_perdue
+    r.placer((1.0, 1.0))
+    impact = r.deplacer((1.5, 1.0))
+    assert perdus and len(chemins(faux, '/move')) == 1  # what reached the server
+    assert r.cap_fiable and r.rover_joignable() and impact is not None
+    assert 0.8 < faux.x < 0.9  # backed off ~0.17 m once from the wall at 1.02
