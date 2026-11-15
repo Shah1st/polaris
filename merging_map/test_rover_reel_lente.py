@@ -129,3 +129,20 @@ def test_the_fast_link_defaults_take_a_slow_answer_for_a_lost_link() -> None:
         r.deplacer((1.4, 1.0))
         assert lien.perdues == 1
         assert r.rover_joignable() is joignable, options
+
+
+def test_the_wait_of_attente_pas_is_not_counted_as_a_silent_link() -> None:
+    """attente_pas: no GET /state for the expected 4 s of the step (0.2 m at 0.05 m/s). That
+    silence is chosen, not a link that went quiet: a lost first answer (1 s) with a 2 s
+    delai_liaison is still only one lost answer."""
+    faux = serveur_du_robot(1.0, 1.0, 0.0)
+    lien = LiaisonLente(faux, aller_retour=0.0, perdre_tous=0, delai_http=1.0)
+    r = robot(faux, attente_pas=True, periode=0.2, vitesse=0.05, delai_liaison=2.0)
+    r.requete = lien.requete
+    r.placer((1.0, 1.0))
+    r.deplacer((1.2, 1.0))
+    lien.perdre_tous, lien.n = 3, 0  # GET /state, POST /path, then the first read: lost
+    assert r.deplacer((1.4, 1.0)) is None
+    assert lien.perdues == 1
+    assert r.rover_joignable()
+    assert math.dist((faux.x, faux.y), (1.4, 1.0)) < 0.03

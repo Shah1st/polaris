@@ -79,22 +79,43 @@ def vers_carte(cases, x0, y0, res, position, cap, res_carte=RES, avance_camera=0
 
 
 def percevoir_http(
-    url, delai=3.0, age_max=2.0, fraiche=True, avance_camera=0.0, ouvrir=urllib.request.urlopen
+    url,
+    delai=3.0,
+    age_max=2.0,
+    fraiche=True,
+    avance_camera=0.0,
+    ouvrir=urllib.request.urlopen,
+    instantane=None,
+    delai_image=None,
 ):
     """percevoir(position, cap) qui interroge le service de perception a `url`.
 
     delai : attente maximale de la reponse (s). age_max : une image plus vieille ne compte
     pas. fraiche : le service attend une image arrivee apres la demande (le rover vient de
     s'arreter : une image d'avant montrerait un rover qui roule encore). `ouvrir` : pour les
-    tests."""
+    tests. instantane : URL d'une image du rover (son /snapshot.jpg) ; a chaque regard, on la
+    telecharge une fois (delai_image s au plus, `delai` par defaut) et on l'envoie au service
+    par POST /obstacles : le service ne contacte pas le rover (lance avec --calib si l'image
+    est le fisheye brut)."""
     base = url.rstrip('/')
     chemin = base + '/obstacles' + ('?fresh=1' if fraiche else '')
+
+    def demande():
+        if instantane is None:
+            return chemin
+        with ouvrir(instantane, timeout=delai_image or delai) as r:
+            if r.status != 200:
+                raise ValueError(f'image du rover : HTTP {r.status}')
+            image = r.read()
+        return urllib.request.Request(
+            base + '/obstacles', data=image, headers={'Content-Type': 'image/jpeg'}
+        )
 
     def percevoir(position, cap):
         if cap is None or position is None:
             return None
         try:
-            with ouvrir(chemin, timeout=delai) as r:
+            with ouvrir(demande(), timeout=delai) as r:
                 if r.status != 200:
                     return None
                 rep = json.loads(r.read())

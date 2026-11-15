@@ -260,6 +260,30 @@ def test_un_redemarrage_du_serveur_entre_deux_segments_est_rattrape() -> None:
     assert math.dist((faux.x, faux.y), (D + 3.0, D)) < 0.35
 
 
+def test_une_conduite_au_clavier_entre_deux_segments_arrete_la_mission() -> None:
+    """15 cm au clavier apres le premier segment, puis relache : ctrl.mode est revenu a
+    'idle' sans trace dans ctrl.history ; seul l'odometre le dit, sur le GET /state qui
+    precede le segment suivant. arret_operateur, plus aucun /path."""
+    faux = FauxSegments(D, D, 0.0)
+    fait, vus = [], []
+
+    def avant(methode, chemin):
+        if chemin == '/state' and posts(faux, '/path') and faux.history and not fait:
+            vus.append(faux.t)  # le 1er voit le segment fini ; le 2e precede le suivant
+            if len(vus) == 2:
+                fait.append(faux.t)
+                faux.x += 0.15
+                faux.ox += 0.15
+                faux.odometre += 0.15
+
+    issue, _, lignes = conduire(
+        faux, lent(faux, 0.0, 0, avant=avant), percevoir_faux(faux, []), distance=3.0
+    )
+    assert issue == 'arret_operateur', lignes
+    assert fait and len(posts(faux, '/path')) == 1
+    assert any('clavier' in ligne for ligne in lignes), lignes
+
+
 @pytest.mark.parametrize('segment', [1, 2])
 def test_un_redemarrage_pendant_un_segment_arrete_la_mission(segment) -> None:
     """Le serveur (sans boot_id) redemarre PENDANT un segment. Au premier, odometre a zero
@@ -360,6 +384,8 @@ def test_liaison_lente_5_m_d_une_traite_et_peu_de_requetes(capsys) -> None:
     metres = bilan['metres']
     assert metres >= 4.5
     t_nouveau, n_nouveau = bilan['fin'] - bilan['debut'], len(bilan['requetes'])
+    # chaque regard coute aussi une image du rover (le service de perception la demande)
+    avec_images = (n_nouveau + bilan['regards']) / metres
 
     ancien = FauxSegments(D, D, 0.0)
     debut = ancien.t
@@ -379,6 +405,7 @@ def test_liaison_lente_5_m_d_une_traite_et_peu_de_requetes(capsys) -> None:
             f'\n[liaison lente] segments : {issue}, {metres:.2f} m, {bilan["segments"]} '
             f'segments, {bilan["tours"]} tours de tourelle, {n_nouveau} requetes '
             f'({n_nouveau / metres:.1f}/m, par segment {bilan["par_segment"]}), '
+            f'{bilan["regards"]} images ({avec_images:.1f} requetes/m en tout), '
             f'{t_nouveau:.0f} s ({t_nouveau / metres:.1f} s/m)\n'
             f'[liaison lente] ancienne boucle par pas : {issue_ancien}, {pas} pas, '
             f'{metres_ancien:.2f} m, {len(ancien.requetes)} requetes '
@@ -444,3 +471,23 @@ def test_banc_reel_essai_n_envoie_aucun_post(banc) -> None:
     percevoir, _ = percevoir_banc(banc, [])
     assert ae.main(['--rover', banc.url, '--essai'], percevoir=percevoir) == 'essai'
     assert banc.recus == []  # Banc.recus note chaque POST recu
+
+
+def test_instantane_branche_l_image_du_rover_sur_le_service(banc, monkeypatch) -> None:
+    """--instantane URL : percevoir_http telecharge l'image du rover et la poste au service
+    (teste dans test_perception_rover.py) ; ici, main() la lui passe, avec les delais."""
+    percevoir, _ = percevoir_banc(banc, [])
+    appels = []
+
+    def percevoir_http(url, **options):
+        appels.append((url, options))
+        return percevoir
+
+    monkeypatch.setattr(ae, 'percevoir_http', percevoir_http)
+    image = 'http://127.0.0.1:8281/snapshot.jpg'  # jamais contacte : percevoir est simule
+    argv = ['--rover', banc.url, '--essai', '--perception', 'http://127.0.0.1:8280']
+    assert ae.main([*argv, '--instantane', image]) == 'essai'
+    url, options = appels[0]
+    assert url == 'http://127.0.0.1:8280' and options['instantane'] == image
+    assert options['delai'] == 12.0 and options['delai_image'] == 8.0
+    assert banc.recus == []

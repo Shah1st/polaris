@@ -431,6 +431,10 @@ class RaspRoverReel(RobotOdometrie):
     def temps(self):
         return self.horloge()
 
+    def _duree_pas(self, longueur):
+        """s que le rover met a faire un pas de `longueur` m (attente_pas)."""
+        return longueur / self.vitesse
+
     def attendre(self, duree):
         self.arreter()
         self.dormir(duree)
@@ -576,10 +580,11 @@ class RaspRoverReel(RobotOdometrie):
         # laisse 5 s de plus pour le faire lui-meme
         delai = max(20.0, 3.0 * longueur / self.vitesse + 10.0) + 5.0
         debut, vu_en_cours = self.temps(), False
-        derniere_reponse = debut
         etat = avant
-        # attente_pas : premiere lecture a la fin attendue du pas, pas avant
-        attente = max(0.0, longueur / self.vitesse - self.periode) if self.attente_pas else 0.0
+        # attente_pas : premiere lecture a la fin attendue du pas, pas avant ; ce silence voulu
+        # ne compte pas dans delai_liaison
+        attente = max(0.0, self._duree_pas(longueur) - self.periode) if self.attente_pas else 0.0
+        derniere_reponse = debut + attente
         while self.temps() - debut < delai:
             self.dormir(self.periode + attente)
             attente = 0.0

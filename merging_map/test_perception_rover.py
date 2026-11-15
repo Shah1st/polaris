@@ -112,6 +112,7 @@ class FauxService:
         self.reponse = None  # (code, corps)
         self.attente = 0.0
         self.demandes = []
+        self.posts = []  # (chemin, corps, Content-Type)
         service = self
 
         class H(BaseHTTPRequestHandler):
@@ -128,6 +129,12 @@ class FauxService:
                 self.send_header('Content-Length', str(len(b)))
                 self.end_headers()
                 self.wfile.write(b)
+
+            def do_POST(self):  # noqa: N802
+                n = int(self.headers.get('Content-Length') or 0)
+                corps = self.rfile.read(n)
+                service.posts.append((self.path, corps, self.headers.get('Content-Type')))
+                self.do_GET()
 
         self.srv = ThreadingHTTPServer(('127.0.0.1', port), H)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
@@ -247,3 +254,40 @@ def test_client_none_si_reponse_coupee():
         assert percevoir_http('http://127.0.0.1:8261', delai=2.0)((0.0, 0.0), 0.0) is None
     finally:
         s.close()
+
+
+@pytest.fixture
+def service_et_rover():
+    """Service de perception (8280) et serveur du rover qui donne son /snapshot.jpg (8281)."""
+    s, rover = FauxService(8280), FauxService(8281)
+    yield s, rover
+    s.fermer()
+    rover.fermer()
+
+
+def test_instantane_une_image_du_rover_postee_au_service(service_et_rover):
+    """--instantane : a chaque regard, UNE requete au rover (son /snapshot.jpg), puis l'image
+    envoyee telle quelle par POST /obstacles ; le service ne fait aucun GET."""
+    service, rover = service_et_rover
+    service.reponse = (200, corps(age=0.0))
+    jpeg = b'\xff\xd8 une image du rover \xff\xd9'
+    rover.reponse = (200, jpeg)
+    percevoir = percevoir_http(service.url, instantane=rover.url + '/snapshot.jpg')
+    for k in range(2):
+        vue = percevoir((1.0, 1.0), math.pi / 2)
+        assert valeur(vue, 1.0 - 0.02, 1.0 + 0.52) == 1
+        assert rover.demandes == ['/snapshot.jpg'] * (k + 1)
+    assert service.posts == [('/obstacles', jpeg, 'image/jpeg')] * 2
+    assert service.demandes == ['/obstacles'] * 2  # les POST (do_GET les note aussi)
+
+
+def test_instantane_sans_image_du_rover_rien_n_est_poste(service_et_rover):
+    service, rover = service_et_rover
+    service.reponse = (200, corps(age=0.0))
+    rover.reponse = (503, {'error': 'pas de camera'})
+    percevoir = percevoir_http(service.url, instantane=rover.url + '/snapshot.jpg', delai=1.0)
+    assert percevoir((1.0, 1.0), 0.0) is None
+    muet = 'http://127.0.0.1:8282/snapshot.jpg'  # rien n'ecoute la
+    percevoir = percevoir_http(service.url, instantane=muet, delai_image=0.5)
+    assert percevoir((1.0, 1.0), 0.0) is None
+    assert service.posts == []

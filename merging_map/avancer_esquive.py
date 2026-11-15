@@ -31,7 +31,8 @@ Le reste :
   mission : origine au depart decalee de DECALAGE m, x droit devant au depart, y a gauche.
 - Obstacles : percevoir(position, cap), par defaut le service de perception
   (perception_rover.percevoir_http), avec le cap de la camera = cap du rover - pan de la
-  tourelle (lu dans GET /state, + = a droite).
+  tourelle (lu dans GET /state, + = a droite). Avec --instantane URL, le pilote telecharge
+  lui-meme l'image du rover (une requete par regard) et la poste au service.
 - Carte et chemin : CarteFusion.decider(drone_disponible=False), A* sur des cases de 5 cm.
 - Conduite : RoverSegments, une sous-classe de rover_reel.RaspRoverReel (STOP operateur
   definitif, redemarrage du serveur detecte, panne du serveur, borne de longueur).
@@ -60,7 +61,7 @@ import signal
 import time
 
 from fusion_carte import INCONNU, LIBRE, CarteFusion
-from lancer_overhead import Suivi, arreter_le_rover, sans_post
+from lancer_overhead import Suivi, arreter_sans_interruption, sans_post
 from perception_rover import percevoir_http
 from rover_reel import (
     ARRETS_OPERATEUR,
@@ -70,6 +71,7 @@ from rover_reel import (
     angle_normalise,
     client_http,
     nouvelles_entrees,
+    odometre,
     pose_odom,
     serveur_redemarre,
 )
@@ -169,18 +171,18 @@ def pret(etat):
 class RoverSegments(RaspRoverReel):
     """RaspRoverReel qui roule par SEGMENTS : suivre(points) envoie plusieurs points dans UN
     POST /path. De rover_reel, n'utilise que le comportement public de RaspRoverReel et ses
-    methodes _faire_un_pas (qui appelle _borner) et _arret.
+    methodes _etat, _faire_un_pas (qui appelle _borner), _duree_pas et _arret, et _odo_fin.
 
     Toutes les requetes passent par _transmettre : chaque GET /state recu nourrit
     l'Odometrie ; une reponse perdue a un POST /path est verifiee par un GET /state avant
     d'etre renvoyee (renvoye, le chemin repartirait de son premier point, en arriere). Apres
-    un POST /path recu, le premier dormir() dure le temps prevu du segment."""
+    un POST /path recu, attente_pas : pas de GET /state avant le temps prevu du segment
+    (_duree_pas)."""
 
-    def __init__(self, carte, requete, odo, percevoir, dormir=time.sleep, **options):
+    def __init__(self, carte, requete, odo, percevoir, **options):
         self.odo = odo
-        self._brute, self._dormir_brut = requete, dormir
+        self._brute = requete
         self._prevu = 0.0  # s : duree prevue du segment en cours d'envoi
-        self._a_dormir = 0.0  # s : a dormir avant le premier GET /state apres le POST /path
         self._vies = 0  # redemarrages de l'Odometrie au dernier recalage du repere
         self._poste = None  # GET /state d'avant le POST /path accepte du segment en cours
         super().__init__(
@@ -190,7 +192,7 @@ class RoverSegments(RaspRoverReel):
             percevoir,
             odo,
             rafraichir_drone=lambda: None,  # la « camera » est l'odometrie : rien a attendre
-            dormir=self._dormir,
+            attente_pas=True,
             **options,
         )
 
@@ -204,7 +206,7 @@ class RoverSegments(RaspRoverReel):
             if reponse is None:
                 reponse = self._recu(avant)
             if reponse is not None:
-                self._a_dormir, self._poste = self._prevu, avant
+                self._poste = avant
         return reponse
 
     def _controler_segment(self, etat):
@@ -242,9 +244,8 @@ class RoverSegments(RaspRoverReel):
             return {'ok': True}
         return None
 
-    def _dormir(self, duree):
-        attente, self._a_dormir = self._a_dormir, 0.0
-        self._dormir_brut(max(duree, attente))
+    def _duree_pas(self, longueur):
+        return self._prevu or super()._duree_pas(longueur)
 
     def drone_disponible(self):
         return True  # l'odometrie est toujours la (et sans requete)
@@ -256,9 +257,20 @@ class RoverSegments(RaspRoverReel):
         'stalled', 'timeout'...), 'delai', 'redemarrage' (rien envoye) ou 'liaison' (liaison
         perdue) ; impact = point d'un choc, ou None. Leve ArretOperateur (STOP, conduite a la
         main) et ServeurRoverError (panne du serveur, segment trop long pour le repere)."""
-        etat = self.odo.etat
+        # le GET /state des controles sert aussi au POST : rien ne part entre les deux
+        etat = self._etat()
+        if etat is None:
+            return 'liaison', None
         if (etat.get('ctrl') or {}).get('mode') == 'manual':
             raise ArretOperateur('rover conduit a la main (commande manuelle /cmd)')
+        # conduite au clavier finie (ctrl.mode revenu a 'idle' sans trace) : les roues ont
+        # tourne depuis la fin du segment d'avant (comme RaspRoverReel.deplacer)
+        odo, fin = odometre(etat), self._odo_fin
+        if odo is not None and fin is not None and not self._redemarrage and odo - fin > 0.05:
+            raise ArretOperateur(
+                f'rover deplace entre deux segments ({odo - fin:.2f} m aux roues sans segment '
+                'de la mission : conduite au clavier ?) : fin de mission'
+            )
         longueur = longueur_chemin([self.est, *points])
         odom = [self.repere.vers_odom(*p) for p in points]
         # Borne, comme un pas : la longueur du chemin a partir de la pose odometrique lue en
@@ -275,15 +287,12 @@ class RoverSegments(RaspRoverReel):
             'frame': 'odom',
             'speed': self.vitesse,
         }
-        delai = self.delai_liaison
-        # le premier GET /state ne part qu'apres `duree` : ce silence n'est pas une coupure
-        self.delai_liaison, self._prevu = delai + duree, duree
+        self._prevu = duree  # attente_pas : le premier GET /state ne part qu'apres `duree`
         try:
-            statut, etat = self._faire_un_pas('/path', corps, longueur)
+            statut, etat = self._faire_un_pas('/path', corps, longueur, etat)
         finally:
             accepte = self._poste is not None
-            self.delai_liaison, self._prevu, self._a_dormir = delai, 0.0, 0.0
-            self._poste = None
+            self._prevu, self._poste = 0.0, None
         if statut is None:
             return 'liaison', None
         if statut == 'redemarrage':
@@ -445,12 +454,14 @@ def conduire(
 ):
     """Percevoir, planifier, rouler un segment, regarder, jusqu'au but. Renvoie l'issue (dans
     ISSUES). `bilan` : dict rempli au fur et a mesure, meme si une exception (Ctrl-C)
-    interrompt la conduite : trajet, segments, tours, requetes (methode, chemin),
-    par_segment (requetes de chaque segment), metres, debut, fin, suivi. `suivi` : fichier du
+    interrompt la conduite : trajet, segments, tours, regards (images demandees a la
+    perception : une image du rover chacune), requetes (methode, chemin), par_segment
+    (requetes de chaque segment), metres, debut, fin, suivi. `suivi` : fichier du
     document de suivi (None : pas de document)."""
     bilan = {} if bilan is None else bilan
     requetes = []
     bilan.update(debut=horloge(), fin=horloge(), trajet=[], segments=0, tours=0, metres=0.0)
+    bilan['regards'] = 0
     bilan.update(requetes=requetes, par_segment=[], suivi=None)
 
     def compter(methode, chemin, corps=None):
@@ -486,6 +497,7 @@ def conduire(
         """Une image, la tourelle a `pan` deg (par defaut : le pan du dernier GET /state).
         True si la perception a repondu."""
         pan = odo.pan_deg() if pan is None else pan
+        bilan['regards'] += 1
         vue = percevoir(rover.est, angle_normalise(rover.cap - math.radians(pan)))
         if vue is None:
             return False
@@ -673,7 +685,8 @@ def resumer(issue, bilan, journal=print):
     journal(
         f'Fin : {issue} ; {metres:.2f} m roules en {bilan.get("segments", 0)} segments, '
         f'{bilan.get("tours", 0)} tours de tourelle, {len(bilan.get("requetes", []))} requetes '
-        f'HTTP au rover, {duree:.0f} s ({par_metre}), ecart maximal a la ligne {ecart:.2f} m'
+        f'HTTP au rover et {bilan.get("regards", 0)} images, {duree:.0f} s ({par_metre}), '
+        f'ecart maximal a la ligne {ecart:.2f} m'
     )
 
 
@@ -682,6 +695,11 @@ def main(argv=None, percevoir=None):
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     p.add_argument('--rover', default='http://127.0.0.1:18080')
     p.add_argument('--perception', default='http://127.0.0.1:8095')
+    p.add_argument(
+        '--instantane',
+        help="URL de l'image du rover (http://127.0.0.1:18080/snapshot.jpg) : telechargee une "
+        'fois par regard et envoyee au service par POST /obstacles (service lance avec --calib)',
+    )
     p.add_argument('--distance', type=float, default=5.0, help='m droit devant')
     p.add_argument('--segment', type=float, default=1.0, help='m au plus par POST /path')
     p.add_argument('--vitesse', type=float, default=0.12, help='m/s')
@@ -691,6 +709,7 @@ def main(argv=None, percevoir=None):
     p.add_argument('--max-segments', type=int, default=40)
     p.add_argument('--delai-http', type=float, default=8.0, help='s par requete au rover')
     p.add_argument('--delai-liaison', type=float, default=15.0, help='s sans reponse = coupure')
+    p.add_argument('--delai-perception', type=float, default=12.0, help='s par reponse du service')
     p.add_argument('--periode', type=float, default=1.0, help='s entre deux GET /state')
     p.add_argument('--latence-video', type=float, default=0.6, help='s apres la tourelle')
     p.add_argument('--attente-liaison', type=float, default=180.0, help='s apres une coupure')
@@ -706,7 +725,13 @@ def main(argv=None, percevoir=None):
     if args.essai:
         requete = sans_post(requete)
     if percevoir is None:
-        percevoir = percevoir_http(args.perception, delai=args.delai_http, age_max=3.0)
+        percevoir = percevoir_http(
+            args.perception,
+            delai=args.delai_perception,  # fresh=1 : le service va chercher l'image (10 s)
+            age_max=3.0,
+            instantane=args.instantane,
+            delai_image=args.delai_http,
+        )
     issue, bilan = 'erreur_rover', {}
     try:
         issue = conduire(
@@ -736,13 +761,7 @@ def main(argv=None, percevoir=None):
     finally:
         if not args.essai:
             # un 2e Ctrl-C, SIGTERM ou SIGHUP n'interrompt pas le /stop
-            ignores = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
-            avant = {s: signal.signal(s, signal.SIG_IGN) for s in ignores}
-            try:
-                arreter_le_rover(client_http(args.rover, delai=args.delai_http))
-            finally:
-                for s, h in avant.items():
-                    signal.signal(s, h)
+            arreter_sans_interruption(client_http(args.rover, delai=args.delai_http))
         for s, h in anciens.items():
             signal.signal(s, h)
     if bilan.get('suivi') is not None and issue != 'essai':
