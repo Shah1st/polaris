@@ -50,6 +50,8 @@ class FauxServeur:
         self.requetes = []
         self.trace = [(x, y)]
         self.perdre_reponse = 0  # the next N POST answers are lost (the server got them)
+        self.stops = 0  # stop_count in /state: POST /stop received; None = older server
+        self.fault = None  # ctrl.fault: why the server last stopped the rover by itself
 
     def redemarrer(self, boot=3.0):
         """rover_server.py restarts: odometry and history back to zero, the ESP32 boots and
@@ -57,12 +59,23 @@ class FauxServeur:
         self.ox = self.oy = self.oh = self.odometre = 0.0
         self.mode, self.tache, self.queued, self.history = 'idle', None, [], []
         self.gyro_pret_a = self.t + boot
+        if self.stops is not None:
+            self.stops = 0
         if self.boot_id is not None:
             self.boot_id += '+'
 
     def stop_operateur(self):
         """Someone presses STOP on the rover's page: POST /stop from another client."""
         self._reponse('POST', '/stop', {})
+
+    def panne(self, statut='no ESP32 feedback'):
+        """The server stops the rover by itself (rover_core Controller.fail): the running step
+        ends with `statut`, the queue is dropped, ctrl.fault says why. Idle: nothing."""
+        if self.mode == 'idle' and not self.queued:
+            return
+        if self.mode in ('path', 'move', 'settle'):
+            self._resultat(statut)
+        self.queued, self.mode, self.tache, self.fault = [], 'idle', None, statut
 
     # ---- the HTTP API ------------------------------------------------------------------
     def requete(self, methode, chemin, corps=None):
@@ -91,6 +104,8 @@ class FauxServeur:
             elif self.mode == 'settle':
                 self._resultat(self.statut)
             self.queued, self.mode, self.tache = [], 'idle', None
+            if self.stops is not None:
+                self.stops += 1
         elif chemin != '/gimbal':
             raise AssertionError(f'unexpected {methode} {chemin}')
         return {'ok': True}
@@ -110,8 +125,11 @@ class FauxServeur:
                 'queued': [dict(q) for q in self.queued],
                 'current': None if self.tache is None else {'kind': self.tache['kind']},
                 'history': [dict(h) for h in self.history],
+                'fault': self.fault,
             },
         }
+        if self.stops is not None:
+            etat['stop_count'] = self.stops
         if self.boot_id is not None:
             etat['boot_id'] = self.boot_id
         return etat
@@ -121,7 +139,7 @@ class FauxServeur:
             self._resultat('replaced by a new command')
         elif self.mode == 'settle':
             self._resultat(self.statut)
-        self.queued, self.mode, self.tache = [tache], 'idle', None
+        self.queued, self.mode, self.tache, self.fault = [tache], 'idle', None, None
 
     def _resultat(self, statut):
         entree = {'kind': self.tache['kind'], 'status': statut, 'n': len(self.history)}

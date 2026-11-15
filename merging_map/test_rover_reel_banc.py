@@ -227,3 +227,40 @@ def test_bench_stale_frame_step_is_never_sent(banc) -> None:
     with pytest.raises(ServeurRoverError, match='Pas refuse'):
         r.deplacer((x0 + 0.6, y0))
     assert len(r.envoyes) == n
+
+
+def test_bench_esp32_silent_during_a_step_is_a_server_error(banc) -> None:
+    """The fake ESP32 stops sending its feedback in the middle of a step: the real server
+    stops the rover ('no ESP32 feedback'); the adapter must not take it for a finished step."""
+    r = adaptateur(banc)
+    x0, y0 = banc.vue()[:2]
+    r.placer((x0, y0))
+    r.deplacer((x0 + 0.3, y0))
+    coupe = []
+
+    def panne():
+        time.sleep(0.7)
+        banc.board.feedback_on = False
+        coupe.append(time.monotonic())
+
+    threading.Thread(target=panne, daemon=True).start()
+    with pytest.raises(ServeurRoverError, match='no ESP32 feedback'):
+        r.deplacer((x0 + 0.6, y0))
+    assert coupe and not [c for t, c, _ in r.envoyes if t > coupe[0] and c == '/path']
+    assert r._a_recaler  # the next step re-anchors on a fresh image first
+    assert banc.rover.snapshot()['ctrl']['fault'] == 'no ESP32 feedback'
+
+
+def test_bench_stop_between_two_steps_is_final(banc) -> None:
+    """STOP pressed on the rover's page while it waits between two steps: no trace in
+    ctrl.history, only in stop_count. The next step must not be sent."""
+    r = adaptateur(banc)
+    x0, y0 = banc.vue()[:2]
+    r.placer((x0, y0))
+    r.deplacer((x0 + 0.3, y0))
+    r.attendre(0.1)  # a stop of our own (the brain does this after an error) is not one
+    banc.poster('/stop')  # another client
+    t_stop = time.monotonic()
+    with pytest.raises(ArretOperateur, match='entre deux pas'):
+        r.deplacer((x0 + 0.6, y0))
+    assert not [c for t, c, _ in r.envoyes if t > t_stop and c == '/path']

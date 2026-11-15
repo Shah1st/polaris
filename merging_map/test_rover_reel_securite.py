@@ -10,6 +10,7 @@ import cerveau
 import numpy as np
 import pytest
 from fusion_carte import CarteFusion, decouper
+from mission_settings import ARENA
 from rover_reel import ArretOperateur, ServeurRoverError, client_http, serveur_redemarre
 from test_rover_reel import FauxServeur, chemins, robot
 
@@ -254,3 +255,177 @@ def test_http_client_cut_answer_is_a_lost_answer() -> None:
         assert client_http(f'http://127.0.0.1:{port}', delai=2.0)('GET', '/state') is None
     finally:
         s.close()
+
+
+# ---- server faults: the server stopped the rover by itself ----------------------------------
+
+
+@pytest.mark.parametrize(
+    'statut', ['no ESP32 feedback', 'ESP32 link lost', 'controller error: ZeroDivisionError']
+)
+def test_a_server_fault_during_a_step_is_an_error_not_a_finished_step(statut) -> None:
+    """rover_core ends a step with these statuses when it stops the rover by itself. The
+    adapter took them for a finished step and the mission sent the next one."""
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    pendant_le_pas(faux, 0.6, lambda: faux.panne(statut))
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    with pytest.raises(ServeurRoverError, match=statut.split(':')[0]) as e:
+        r.deplacer((1.6, 1.0))
+    assert faux.history[0]['status'] == statut  # it ended in the server's history
+    assert repr(statut) in str(e.value)  # ctrl.fault is named too
+    assert r._a_recaler  # the next step re-anchors on a fresh image first
+    faux.dormir = FauxServeur.dormir.__get__(faux)  # the fault is over
+    assert r.deplacer((1.6, 1.0)) is None
+    assert math.dist((faux.x, faux.y), (1.6, 1.0)) < 0.03
+
+
+def test_a_server_fault_during_the_heading_step_is_an_error() -> None:
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    faux.cap_visible = False
+    pendant_le_pas(faux, 0.3, faux.panne)
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    with pytest.raises(ServeurRoverError, match='no ESP32 feedback'):
+        r.deplacer((1.3, 1.0))
+    assert r._a_recaler and len(chemins(faux, '/path')) == 1
+
+
+def test_a_step_dropped_by_a_fault_before_it_starts_is_an_error() -> None:
+    """The ESP32 is already silent: the server drops the queued step at its next tick, with
+    no history entry, only ctrl.fault. Not an operator stop, and no 25 s wait."""
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    r.deplacer((1.2, 1.0))
+    requete = faux.requete
+
+    def requete_et_panne(methode, chemin, corps=None):
+        reponse = requete(methode, chemin, corps)
+        if chemin == '/path':
+            faux.panne()
+        return reponse
+
+    r.requete = requete_et_panne
+    t0 = faux.t
+    with pytest.raises(ServeurRoverError, match='no ESP32 feedback'):
+        r.deplacer((1.4, 1.0))
+    assert faux.t - t0 < 3.0
+
+
+def _carte_libre():
+    carte = CarteFusion(niveau_plan=4, rayon_robot=0.155)
+    for msg in decouper(np.zeros((48, 48)), 0.0, 0.0, 4, carte, 'drone'):
+        carte.recevoir(msg)
+    return carte
+
+
+def _mission(faux, carte, lignes):
+    return cerveau.mission(
+        robot(faux, carte),
+        carte,
+        (0.4, 0.4),
+        (2.0, 1.8),
+        zone=(0, 0, 2.4, 2.4),
+        tolerance=0.15,
+        journal=lignes.append,
+        settings=ARENA,
+    )
+
+
+def test_the_brain_stops_and_retries_after_one_server_fault() -> None:
+    carte = _carte_libre()
+    faux = FauxServeur(0.4, 0.4, 0.0)
+    fait = pendant_le_pas(faux, 0.6, faux.panne)
+    lignes = []
+    res = _mission(faux, carte, lignes)
+    assert fait and res['issue'] == 'arrivee'
+    assert sum('ERREUR du rover' in ligne for ligne in lignes) == 1
+    posts = [ch for _, m, ch, _ in faux.requetes if m == 'POST']
+    assert posts[:3] == ['/path', '/stop', '/path']  # stopped before trying again
+
+
+def test_the_brain_ends_with_robot_error_when_the_fault_stays() -> None:
+    carte = _carte_libre()
+    faux = FauxServeur(0.4, 0.4, 0.0)
+    requete = faux.requete
+
+    def requete_et_panne(methode, chemin, corps=None):
+        reponse = requete(methode, chemin, corps)
+        if chemin == '/path':
+            faux.panne()  # the ESP32 never answers again
+        return reponse
+
+    faux.requete = requete_et_panne
+    lignes = []
+    res = _mission(faux, carte, lignes)
+    assert res['issue'] == 'erreur_robot' and cerveau.ETAT_SUIVI[res['issue']] == 'erreur'
+    assert 'no ESP32 feedback' in res['raison']
+    assert len(chemins(faux, '/path')) == ARENA.robot_error_retries + 1
+
+
+# ---- STOP pressed while the rover waits between two steps -----------------------------------
+
+
+def test_stop_between_two_steps_is_an_operator_stop() -> None:
+    """rover_core.stop() on an idle rover leaves no trace in ctrl.history: only the server's
+    stop_count shows it."""
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    r.deplacer((1.2, 1.0))
+    faux.stop_operateur()
+    n = len(chemins(faux, '/path'))
+    with pytest.raises(ArretOperateur, match='entre deux pas'):
+        r.deplacer((1.4, 1.0))
+    assert len(chemins(faux, '/path')) == n
+
+
+def test_our_own_stops_are_not_operator_stops() -> None:
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    r.deplacer((1.2, 1.0))
+    r.attendre(1.0)
+    r.arreter()
+    assert r.deplacer((1.4, 1.0)) is None
+    assert faux.stops == 2
+    faux.stop_operateur()  # ours are counted, an operator's one after them is still seen
+    with pytest.raises(ArretOperateur):
+        r.deplacer((1.6, 1.0))
+
+
+def test_a_received_stop_whose_answer_is_lost_counts_as_an_operator_stop() -> None:
+    """Conservative on purpose: a false operator stop ends the mission, a missed one would
+    drive the rover after a STOP."""
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    r.deplacer((1.2, 1.0))
+    faux.perdre_reponse = 1
+    r.arreter()
+    with pytest.raises(ArretOperateur):
+        r.deplacer((1.4, 1.0))
+
+
+def test_an_older_server_without_stop_count_is_not_checked() -> None:
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    faux.stops = None
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    r.deplacer((1.2, 1.0))
+    faux.stop_operateur()  # not seen, as before: Ctrl-C stays the safe stop
+    assert r.deplacer((1.4, 1.0)) is None
+
+
+def test_stop_after_a_server_restart_is_seen() -> None:
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    faux.boot_id = 'a'
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    r.deplacer((1.2, 1.0))
+    r.arreter()
+    faux.redemarrer(boot=1.0)  # new process: stop_count starts again from zero
+    faux.stop_operateur()
+    with pytest.raises(ArretOperateur, match='entre deux pas'):
+        r.deplacer((1.4, 1.0))

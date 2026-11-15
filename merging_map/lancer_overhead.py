@@ -40,7 +40,7 @@ import sys
 import tempfile
 import time
 
-from cerveau import RESUMES, avancer, mission
+from cerveau import ETAT_SUIVI, RESUMES, avancer, mission
 from fusion_carte import INCONNU, OBSTACLE, SRC_ROVER, CarteFusion
 from mission_settings import ARENA
 from rover_reel import ArretOperateur, RaspRoverReel, ServeurRoverError, client_http
@@ -240,8 +240,9 @@ def lancer(
     `suivi` : fichier JSON de suivi (voir Suivi). `dry_run` : `requete` ne doit envoyer aucun
     POST (voir sans_post) ; on s'arrete apres la premiere decision, sans rouler.
 
-    Renvoie les instantanes de cerveau.mission, plus 'etat' : 'arrive', 'abandon',
-    'arret_operateur' (avec 'raison' et 'fin' = {'traj'}) ou 'dry_run' (avec 'decision').
+    Renvoie les instantanes de cerveau.mission (avec 'issue' et 'raison'), plus 'etat' :
+    'arrive', 'abandon' ou 'erreur' (cerveau.ETAT_SUIVI de l'issue), 'arret_operateur' (avec
+    'raison' et 'fin' = {'traj'}) ou 'dry_run' (avec 'decision').
     POST /stop est envoye en sortie dans tous les cas (sauf dry_run), meme sur Ctrl-C."""
     etat_rover = requete('GET', '/state')
     if etat_rover is None and not dry_run:
@@ -315,7 +316,8 @@ def lancer(
         raise
     finally:
         arreter_le_rover(requete, journal=journal)
-    etat = 'arrive' if suivi_.etat == 'arrive' else 'abandon'
+    # l'issue de la mission (cerveau.ETAT_SUIVI) : arrive, abandon ou erreur du rover
+    etat = ETAT_SUIVI.get(instantanes.get('issue'), 'abandon')
     suivi_.ecrire(etat)
     instantanes['etat'] = etat
     return instantanes
@@ -531,6 +533,10 @@ def main(argv=None):
     traj = resultat['fin']['traj']
     distance = sum(math.dist(traj[k], traj[k + 1]) for k in range(len(traj) - 1))
     print(f'Fin de mission ({resultat["etat"]}) : {distance:.2f} m parcourus.')
+    print(
+        f'Issue : {resultat.get("issue", resultat["etat"])} ; '
+        f'raison : {resultat.get("raison") or "-"}'
+    )
     return resultat
 
 

@@ -360,3 +360,73 @@ def test_real_pipeline_dry_run_on_the_synthetic_photo(capsys) -> None:
     sortie = capsys.readouterr().out
     assert 'Zone vue par la camera : 2.34 x 1.89 m' in sortie  # 780 x 630 px x 3 mm
     assert '3.000 mm/pixel' in sortie and '[dry-run] decision' in sortie
+
+
+# ---- the final state follows the mission's issue (cerveau.ETAT_SUIVI) -----------------------
+
+
+def test_repeated_rover_errors_end_in_the_error_state(tmp_path) -> None:
+    """Every mission that did not arrive ended 'abandon', even a broken rover."""
+    faux = FauxServeur(0.4, 0.4, 0.0)
+    requete = faux.requete
+
+    def requete_et_panne(methode, chemin, corps=None):
+        reponse = requete(methode, chemin, corps)
+        if chemin == '/path':
+            faux.panne()  # the ESP32 never answers again
+        return reponse
+
+    fichier = tmp_path / 'suivi.json'
+    resultat = lancer(
+        FausseCamera(faux),
+        requete_et_panne,
+        (2.0, 2.0),
+        options_rover=options(faux),
+        journal=lambda _: None,
+        suivi=str(fichier),
+    )
+    assert resultat['issue'] == 'erreur_robot' and resultat['etat'] == 'erreur'
+    assert 'no ESP32 feedback' in resultat['raison']
+    assert json.loads(fichier.read_text())['etat'] == 'erreur'
+    assert posts(faux)[-1][1] == '/stop'
+
+
+def test_a_degraded_goal_ends_in_abandon_and_an_arrival_in_arrive(tmp_path) -> None:
+    faux = FauxServeur(0.4, 0.4, 0.0)
+    fichier = tmp_path / 'suivi.json'
+    resultat = lancer(
+        FausseCamera(faux),
+        faux.requete,
+        (1.2, 1.2),  # inside the fake camera's box: no way to reach it
+        options_rover=options(faux),
+        journal=lambda _: None,
+        suivi=str(fichier),
+    )
+    assert resultat['issue'] == 'objectif_degrade' and resultat['etat'] == 'abandon'
+    assert json.loads(fichier.read_text())['etat'] == 'abandon'
+    faux = FauxServeur(0.4, 0.4, 0.0)
+    resultat = lancer(
+        FausseCamera(faux),
+        faux.requete,
+        (2.0, 2.0),
+        options_rover=options(faux),
+        journal=lambda _: None,
+    )
+    assert resultat['issue'] == 'arrivee' and resultat['etat'] == 'arrive'
+
+
+def test_command_line_prints_the_issue_and_its_reason(faux_modules, monkeypatch, capsys) -> None:
+    def faux_lancer(*args, **kw):
+        return {
+            'etat': 'erreur',
+            'issue': 'erreur_robot',
+            'raison': 'statut no ESP32 feedback',
+            'fin': {'traj': [(0, 0), (0.5, 0)]},
+        }
+
+    monkeypatch.setattr(lancer_overhead, 'lancer', faux_lancer)
+    main(['--camera', '0', '--rover', 'http://127.0.0.1:8185', '--victime', '1', '1',
+          '--metres-par-pixel', '0.002'])  # fmt: skip
+    sortie = capsys.readouterr().out
+    assert 'Fin de mission (erreur) : 0.50 m parcourus.' in sortie
+    assert 'Issue : erreur_robot ; raison : statut no ESP32 feedback' in sortie
