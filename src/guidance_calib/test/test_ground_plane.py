@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from guidance_calib.aruco_compat import detect_markers, generate_marker
+from guidance_calib.aruco_compat import DEFAULT_DICTIONARY, detect_markers, generate_marker
 from guidance_calib.generate_markers import marker_with_border
 from guidance_calib.ground_plane import (
     MapBounds,
@@ -19,7 +19,7 @@ from guidance_calib.synthetic import Scene, render_camera_view
 
 
 def test_generated_marker_is_detected() -> None:
-    image = marker_with_border(7, 200, 'DICT_4X4_50')
+    image = marker_with_border(7, 200, DEFAULT_DICTIONARY)
 
     detections = detect_markers(image)
 
@@ -141,3 +141,51 @@ def test_a_portrait_photo_is_compared_with_the_sensor_turned() -> None:
     scale, relation = metres_per_pixel_for_view(1.9, 26.0, sensor, (960, 1280))
     assert (scale, relation) == (pytest.approx(full * 3024 / 960), 'resized')
     assert metres_per_pixel_for_view(1.9, 26.0, sensor, (2062, 2905)) == (full, 'cropped')
+
+
+def test_a_small_blurred_tag_is_read() -> None:
+    """The rover's tag from far above: its black square 48 pixels wide, turned, blurred
+    and noisy. The default family and detector read it; the id is right. OpenCV 4.6 (the dev
+    container) reads it up to a blur of sigma 1.5, a recent OpenCV up to sigma 3."""
+    import cv2
+
+    assert DEFAULT_DICTIONARY == 'DICT_APRILTAG_25h9'
+    blur = 3.0 if hasattr(cv2.aruco, 'ArucoDetector') else 1.5
+    rng = np.random.default_rng(1)
+    read = 0
+    for angle in range(0, 360, 30):
+        tag = marker_with_border(10, 400, DEFAULT_DICTIONARY)
+        centre = tag.shape[0] / 2
+        turn = cv2.getRotationMatrix2D((centre, centre), angle, 48 / 400)
+        turn[:, 2] += (320 - centre, 240 - centre)
+        image = np.full((480, 640), 120, np.uint8)
+        placed = cv2.warpAffine(tag, turn, (640, 480), flags=cv2.INTER_AREA)
+        cover = cv2.warpAffine(np.full(tag.shape, 255, np.uint8), turn, (640, 480)) > 0
+        image[cover] = placed[cover]
+        image = cv2.GaussianBlur(image, (0, 0), blur)
+        image = np.clip(image + rng.normal(0, 6, image.shape), 0, 255).astype(np.uint8)
+        found = detect_markers(image)
+        assert set(found) <= {10}  # never another id
+        read += 10 in found
+    assert read >= 11  # 12 angles
+
+
+def test_another_family_can_still_be_named() -> None:
+    image = marker_with_border(10, 200, 'DICT_4X4_50')
+
+    assert list(detect_markers(image, 'DICT_4X4_50')) == [10]
+    assert detect_markers(image) == {}  # not an AprilTag 25h9
+
+
+def test_printed_size_is_written_in_the_png(tmp_path) -> None:
+    from guidance_calib.generate_markers import main as generate
+
+    generate(['--ids', '10', '--side-cm', '12', '--side-px', '600', '--out', str(tmp_path)])
+
+    data = (tmp_path / 'aruco_10.png').read_bytes()
+    at = data.index(b'pHYs')
+    per_metre = int.from_bytes(data[at + 4 : at + 8], 'big')
+    assert per_metre == 5000  # 600 px over 12 cm = 50 px per cm
+    import cv2
+
+    assert cv2.imread(str(tmp_path / 'aruco_10.png')) is not None  # still a valid picture

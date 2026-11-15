@@ -90,7 +90,7 @@ camera = OverheadDrone(
     OverheadSettings(
         metres_per_pixel=0.0021,  # measured with measure_scale, for this stream's frame size
         camera_height=2.5,        # floor to lens; used for the marker's parallax
-        rover_marker_id=10,       # ArUco DICT_4X4_50 id 10 on the rover's top
+        rover_marker_id=10,       # AprilTag 25h9 id 10 on the rover's top
         marker_height=0.18,       # floor to the marker's surface, measured
     ),
 )
