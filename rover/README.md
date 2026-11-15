@@ -139,6 +139,9 @@ less during bumps). Their rates and angular accelerations are watched too.
   stops whatever it does (manual, move, path), backs off `tilt_backoff_dist` along the way it
   came, then refuses to go further that way until the angle is back under the warn angle.
 - **The thresholds are placeholders** (15° warn, 25° stop): set them from the tipping tests.
+- The back-off is a motion like the others: `/stop`, a lost ESP32 link or stale feedback
+  (0.5 s) end it, and it never starts without fresh wheel feedback. A step ended by the guard
+  finishes with the status `tilt: ...` (also in `ctrl.fault`), not an operator stop.
 
 Tipping tests: turn the "Tilt guard" switch off, press "● Record", tilt or drive the rover until
 it tips, stop the recording and download the CSV (20 Hz: commands, wheel speeds, roll, pitch,
@@ -197,6 +200,67 @@ Checked on our rover (2026-11-15): T:133 moves both servos although the boot mis
 - Manual driving stops 0.5 s after the last key press reaches the rover (Wi-Fi loss, closed tab).
 - A move is abandoned after 20 s, or if the wheels do not turn for 1.5 s (rover blocked).
 - `STOP`, `Space` or `Esc` stops everything, including queued steps.
+- No wheel feedback (`T:1001`) from the ESP32 for 0.5 s (`Controller.FEEDBACK_TIMEOUT`), or the
+  USB link drops: the rover stops, the step ends with status `no ESP32 feedback` or
+  `ESP32 link lost`, the queue is emptied, and nothing restarts when the link comes back.
+  The reason is in `/state` → `ctrl.fault`.
+- A manual command (arrow key, `/cmd`, even `{v: 0, omega: 0}`) cancels the current step and
+  the queued ones.
+- An error in the 20 Hz loop stops the rover (status `controller error: ...`, counted in
+  `/state` → `loop_errors`, `last_loop_error`); the loop keeps running, so `STOP` works. A bad
+  ESP32 message is counted in `link.handler_errors` and the receive thread goes on.
+- Numbers sent to the API must be finite and within limits (`MAX_*` in `rover_core.py`: 10 m
+  per move, 720° per turn, path points within ±50 m, at most 1000 points and 50 m, manual
+  speed 1 m/s): otherwise HTTP 400 and nothing moves. Steps before "Gyro OK": HTTP 409.
+- `/config` checks every value (`CONFIG_LIMITS`: `manual_timeout` 0.1-2 s, so the dead man
+  cannot be switched off; `track` and `path_speed` above 0...) and applies all or nothing; the
+  file is written atomically, and a broken file is moved to `.bad` instead of stopping the
+  server.
+- `systemctl stop` / `kill` (SIGTERM) stops the rover like Ctrl-C.
+- `/snapshot.jpg` never serves an old picture as new: header `X-Age-Ms`, and HTTP 503 when no
+  picture newer than 2 s arrives within 3 s. `/state` has `boot_id` (new at each server start)
+  and `uptime_s`.
+- `/state` → `stop_count` counts the stops received since the server started (`POST /stop` and
+  `/cmd {"T":0}`), also those pressed while the rover stands still, which leave no trace in
+  `ctrl.history`. A client that drives the rover step by step (the mission,
+  `merging_map/rover_reel.py`) reads it before each step: if it grew by more than the stops the
+  client sent itself, someone pressed STOP, and the client must not send the next step. It
+  starts again at 0 with a new `boot_id`; an older server has no such field.
+
+## Deploying to the robot
+
+The robot's own code as deployed on 2026-11-15 at 11:15 UTC (tilt guard, recorder, `/mode`)
+is merged here with the safety changes above. The copy on the robot (`~/rover` on the RDK,
+started by the `polaris-rover-api` unit with `--fps 40`) may have moved on since. Before
+copying:
+
+```bash
+scp -r sunrise@<RDK IP>:~/rover /tmp/rover-robot      # keep the robot's version
+diff -ru /tmp/rover-robot rover | less                 # merge what the robot has and we lack
+```
+
+Do not lose `rover_config.json` on the robot (the tuned settings): it is not in git. Then
+copy, restart the unit and check `/state` (`boot_id` must be present).
+
+To try by hand after this change, **wheels off the ground first**, then on the floor:
+
+1. Gyro: right after the start, "Turn left 90°" must be refused (409, toast) until "Gyro OK".
+2. Feedback watchdog: during "Forward 100 cm", unplug the ESP32 USB cable: the step must end
+   `ESP32 link lost` (or `no ESP32 feedback`) at once; plug it back: the rover must NOT move by
+   itself (the ESP32 reboots, ~7 s). Also check that normal moves and paths never end with
+   `no ESP32 feedback` on their own (it would mean the feedback has gaps > 0.5 s: look at
+   `link.rx_age` in `/state`).
+3. Manual take-over: start `F50 L90 F50`, press an arrow during the first move, release: the
+   rover must stay still (the turn and the second move are dropped).
+4. Settings: "Save settings" from the page must still work (it sends every field); a value
+   out of range must be refused with a message and change nothing.
+5. `sudo systemctl restart polaris-rover-api` while driving slowly by hand: the rover must
+   stop at once (log line "Stopping the rover.").
+6. `curl -sD - http://<RDK IP>:8080/snapshot.jpg -o /dev/null` after 10 s without viewer:
+   200 with a small `X-Age-Ms` (it waits for the camera), or 503 if the camera is broken.
+7. Tilt guard: drive slowly onto a slope steeper than `pitch_stop_deg` (or lift the nose by
+   hand while driving): the rover stops and backs off; press STOP during the back-off: it must
+   stop at once. A step ended this way shows `tilt: ...` in the history and in `ctrl.fault`.
 
 ## Not handled yet
 

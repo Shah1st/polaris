@@ -14,7 +14,11 @@ HTTP API (JSON bodies). The first two match the shared simulation in sim/run_wor
                        {"T":13,"X":..,"Z":..}, {"T":1,"L":..,"R":..}, {"T":0} (stop),
                        anything else is forwarded to the ESP32 as is.
                        Speed commands last `manual_timeout` (0.5 s): repeat them at >= 5 Hz.
-  GET  /state          telemetry: link, battery, pose, wheel speeds, gyro, current step
+  GET  /state          telemetry: link, battery, pose, wheel speeds, gyro, current step;
+                       boot_id (changes when the server restarts) and uptime_s;
+                       stop_count: stops received since start (/stop, /cmd {"T":0})
+  GET  /snapshot.jpg   one camera picture, its age in the X-Age-Ms header; 503 when the
+                       camera gives no picture newer than SNAPSHOT_MAX_AGE
   POST /move           {"distance": m}            (+ forward, - backward)
   POST /turn           {"angle": deg}             (+ left, - right)
   POST /sequence       {"steps": [{"move": 0.5}, {"turn": 90}, {"path": [[x, y], ...]}, ...]}
@@ -36,6 +40,9 @@ HTTP API (JSON bodies). The first two match the shared simulation in sim/run_wor
                        is held (repeat it like /cmd), {"pan": deg, "tilt": deg} (pan + = right,
                        tilt + = up), or {"center": true}. A raw {"T":133,...} on /cmd works too.
   GET  /config         settings;  POST /config {"name": value, ...} changes and saves them
+
+Numbers must be finite and within the limits of rover_core (MAX_*, CONFIG_LIMITS): otherwise
+HTTP 400 and nothing moves or changes. Steps before "Gyro OK": HTTP 409.
 """
 
 from __future__ import annotations
@@ -44,12 +51,23 @@ import argparse
 import json
 import math
 import os
+import secrets
+import signal
 import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from rover_core import Config, Rover, Step, find_esp32_port, open_serial
+from rover_core import (
+    MAX_MANUAL_V,
+    Config,
+    NotReadyError,
+    Rover,
+    Step,
+    find_esp32_port,
+    finite,
+    open_serial,
+)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 INDEX_HTML = os.path.join(HERE, 'web', 'index.html')
@@ -57,6 +75,13 @@ CPU_TEMP = '/sys/class/thermal/thermal_zone1/temp'  # RDK X5 CPU (zone0 is the D
 # Kernel send buffer for each video client. Small on purpose: on a slow Wi-Fi, frames must be
 # dropped here, not queued in the socket (a 1.5 MB queue is 1.5 s of delayed video).
 STREAM_SNDBUF = 48 * 1024
+# /snapshot.jpg: a picture older than this is not served as the rover's view (the camera
+# was released after IDLE_RELEASE, or it failed); wait up to SNAPSHOT_WAIT for a new one.
+SNAPSHOT_MAX_AGE = 2.0  # s
+SNAPSHOT_WAIT = 3.0  # s, opening the camera again takes about 1 s
+# Identity of this server process: a client sees a restart (odometry reset) by a new boot_id.
+BOOT_ID = secrets.token_hex(8)
+STARTED = time.monotonic()
 
 try:
     import cv2
@@ -79,6 +104,7 @@ class Camera:
         self.width, self.height, self.fps, self.quality = width, height, fps, quality
         self.frame: bytes | None = None
         self.frame_id = 0
+        self.frame_t: float | None = None  # time.monotonic() when the frame was published
         self.error: str | None = None if cv2 else 'OpenCV (python3-opencv) is not installed'
         self.measured_fps = 0.0
         self._cond = threading.Condition()
@@ -111,10 +137,17 @@ class Camera:
             )
             return self.frame, self.frame_id
 
+    def latest(self) -> tuple[bytes | None, int, float | None]:
+        """(newest frame, its id, its age in s) without waiting; age None without frame."""
+        with self._cond:
+            age = None if self.frame_t is None else time.monotonic() - self.frame_t
+            return self.frame, self.frame_id, age
+
     def _publish(self, jpeg: bytes) -> None:
         with self._cond:
             self.frame = jpeg
             self.frame_id += 1
+            self.frame_t = time.monotonic()
             self._cond.notify_all()
 
     def _open(self):
@@ -296,6 +329,8 @@ class App:
         s['mode'] = self.mode
         s['real_available'] = self.serial_port is not None
         s['sim'] = self.sim_board is not None
+        s['boot_id'] = BOOT_ID
+        s['uptime_s'] = round(time.monotonic() - STARTED, 1)
         if self.sim_board is not None:
             b = self.sim_board
             s['sim_truth'] = {
@@ -307,6 +342,21 @@ class App:
                 'pitch': b.pitch,
             }
         return s
+
+
+def json_safe(obj):
+    """`obj` with NaN and infinities replaced by None: JSON.parse refuses them."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list | tuple):
+        return [json_safe(v) for v in obj]
+    return obj
+
+
+def _refuse_constant(name: str):
+    raise ValueError(f'{name} is not a valid number')
 
 
 def make_handler(app: App):
@@ -328,13 +378,14 @@ def make_handler(app: App):
             self.wfile.write(body)
 
         def _json(self, obj, code: int = 200) -> None:
-            self._send(code, json.dumps(obj).encode(), 'application/json')
+            body = json.dumps(json_safe(obj), allow_nan=False).encode()
+            self._send(code, body, 'application/json')
 
         def _body(self) -> dict:
             n = int(self.headers.get('Content-Length') or 0)
             if not n:
                 return {}
-            data = json.loads(self.rfile.read(n))
+            data = json.loads(self.rfile.read(n), parse_constant=_refuse_constant)
             if not isinstance(data, dict):
                 raise ValueError('expected a JSON object')
             return data
@@ -363,11 +414,7 @@ def make_handler(app: App):
                 self.end_headers()
                 self.wfile.write(data)
             elif path == '/snapshot.jpg':
-                frame, _ = app.camera.wait_frame(-1)
-                if frame is None:
-                    self._json({'error': app.camera.error or 'no frame'}, 503)
-                else:
-                    self._send(200, frame, 'image/jpeg')
+                self._snapshot()
             else:
                 self._json({'error': 'not found'}, 404)
 
@@ -379,10 +426,12 @@ def make_handler(app: App):
                 if path == '/cmd':
                     self._cmd(body)
                 elif path == '/move':
-                    rover.run([Step('move', float(body['distance']))])
+                    rover.run([Step('move', body['distance'])])
                 elif path == '/turn':
-                    rover.run([Step('turn', float(body['angle']))])
+                    rover.run([Step('turn', body['angle'])])
                 elif path == '/sequence':
+                    if not isinstance(body['steps'], list):
+                        raise ValueError('steps must be a list')
                     rover.run([Step.parse(s) for s in body['steps']])
                 elif path == '/path':
                     rover.run(
@@ -402,20 +451,30 @@ def make_handler(app: App):
                     app.set_mode(str(body.get('mode', '')))
                 elif path == '/sim' and app.sim_board is not None:
                     b = app.sim_board
-                    if 'drift' in body:
-                        b.yaw_drift = float(body['drift'])
-                    if 'roll' in body:
-                        b.roll_target = float(body['roll'])
-                    if 'pitch' in body:
-                        b.pitch_target = float(body['pitch'])
+                    # All checked before anything changes: a bad value changes nothing (400).
+                    drift = finite(body['drift'], 'drift', 5.0) if 'drift' in body else None
+                    roll = finite(body['roll'], 'roll', 90.0) if 'roll' in body else None
+                    pitch = finite(body['pitch'], 'pitch', 90.0) if 'pitch' in body else None
+                    if drift is not None:
+                        b.yaw_drift = drift
+                    if roll is not None:
+                        b.roll_target = roll
+                    if pitch is not None:
+                        b.pitch_target = pitch
                 elif path == '/record':
+                    on = body.get('on')
+                    if not isinstance(on, bool):
+                        raise ValueError('/record expects {"on": true} or {"on": false}')
                     with rover.lock:
-                        if body.get('on'):
+                        if on:
                             rover.recorder.start(time.monotonic())
                         else:
                             rover.recorder.stop()
                 elif path == '/tilt':
-                    if body.get('reset_peaks'):
+                    reset = body.get('reset_peaks', False)
+                    if not isinstance(reset, bool):
+                        raise ValueError('/tilt expects {"reset_peaks": true}')
+                    if reset:
                         with rover.lock:
                             rover.odom.tilt.reset_peaks()
                 elif path == '/gimbal':
@@ -424,22 +483,29 @@ def make_handler(app: App):
                     elif 'pan' in body or 'tilt' in body:
                         g = rover.gimbal
                         rover.gimbal_set(
-                            float(body.get('pan', g.pan)), float(body.get('tilt', g.tilt))
+                            finite(body.get('pan', g.pan), 'pan', 360.0),
+                            finite(body.get('tilt', g.tilt), 'tilt', 360.0),
                         )
                     else:
                         rover.gimbal_rate(
-                            float(body.get('pan_rate', 0)), float(body.get('tilt_rate', 0))
+                            finite(body.get('pan_rate', 0), 'pan_rate', 1.0),
+                            finite(body.get('tilt_rate', 0), 'tilt_rate', 1.0),
                         )
                 elif path == '/config':
+                    # All or nothing (Config.update), saved under the lock: two pages saving at
+                    # once cannot interleave their writes.
                     with rover.lock:
                         changed = rover.cfg.update(body)
-                    rover.cfg.save(app.cfg_path)
+                        rover.cfg.save(app.cfg_path)
                     self._json({'ok': True, 'changed': changed})
                     return
                 else:
                     self._json({'error': 'not found'}, 404)
                     return
-            except (KeyError, ValueError, TypeError) as e:
+            except NotReadyError as e:
+                self._json({'error': str(e)}, 409)
+                return
+            except (KeyError, ValueError, TypeError, IndexError, AttributeError) as e:
                 self._json({'error': f'bad request: {e}'}, 400)
                 return
             self._json({'ok': True})
@@ -447,21 +513,53 @@ def make_handler(app: App):
         def _cmd(self, body: dict) -> None:
             rover = app.rover
             kind = body.get('T')
-            if 'v' in body or 'omega' in body:
-                rover.manual(float(body.get('v', 0)), float(body.get('omega', 0)))
+            if 'v' in body or 'omega' in body:  # checked (finite, bounded) by Controller.manual
+                rover.manual(body.get('v', 0), body.get('omega', 0))
             elif kind == 13:
-                rover.manual(float(body.get('X', 0)), float(body.get('Z', 0)))
+                rover.manual(body.get('X', 0), body.get('Z', 0))
             elif kind == 1:  # wheel speeds -> (v, w), the ESP32 does the inverse for T:13
-                left, right = float(body.get('L', 0)), float(body.get('R', 0))
+                left = finite(body.get('L', 0), 'L', MAX_MANUAL_V)
+                right = finite(body.get('R', 0), 'R', MAX_MANUAL_V)
                 rover.manual((left + right) / 2, (right - left) / rover.cfg.track)
             elif kind == 133:  # pan-tilt: keep the commanded angles in sync
-                rover.gimbal_set(float(body.get('X', 0)), float(body.get('Y', 0)))
+                rover.gimbal_set(
+                    finite(body.get('X', 0), 'pan', 360.0), finite(body.get('Y', 0), 'tilt', 360.0)
+                )
             elif kind == 0:
                 rover.stop()
             elif kind is not None:
                 rover.raw(body)
             else:
                 raise ValueError('expected {"v","omega"} or a RaspRover {"T": ...} command')
+
+        def _snapshot(self) -> None:
+            cam = app.camera
+            cam.request()  # keeps the camera open while a client polls pictures
+            frame, fid, age = cam.latest()
+            if frame is None or age > SNAPSHOT_MAX_AGE:
+                # Idle camera (released after IDLE_RELEASE) or a stalled one: a picture taken
+                # before the rover last moved must not pass for its view now.
+                cam.wait_frame(fid, timeout=SNAPSHOT_WAIT)
+                frame, fid, age = cam.latest()
+            age_ms = None if age is None else str(int(age * 1000))
+            if frame is None or age > SNAPSHOT_MAX_AGE:
+                body = json.dumps({'error': cam.error or 'no recent camera frame'}).encode()
+                self.send_response(503)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.send_header('Cache-Control', 'no-store')
+                if age_ms is not None:
+                    self.send_header('X-Age-Ms', age_ms)
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/jpeg')
+            self.send_header('Content-Length', str(len(frame)))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Age-Ms', age_ms)
+            self.end_headers()
+            self.wfile.write(frame)
 
         def _stream(self) -> None:
             boundary = b'frame'
@@ -560,13 +658,20 @@ def main() -> None:
     server = ThreadingHTTPServer((args.host, args.port), make_handler(app))
     server.daemon_threads = True
     print('Keep the rover still until the page shows "Gyro OK" (ESP32 boot + gyro bias).')
-    for ip in local_ips() or ['<rover IP>']:
-        print(f'Open http://{ip}:{args.port}')
+
+    def _terminate(signum, frame):  # systemctl stop/restart, kill: stop the rover as Ctrl-C does
+        raise KeyboardInterrupt
+
     try:
+        # Inside the try: a SIGTERM that comes before serve_forever still stops the rover.
+        signal.signal(signal.SIGTERM, _terminate)
+        for ip in local_ips() or ['<rover IP>']:
+            print(f'Open http://{ip}:{args.port}')
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)  # a second SIGTERM must not cut the stop
         print('Stopping the rover.')
         app.close()
         server.server_close()

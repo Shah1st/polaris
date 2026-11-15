@@ -19,6 +19,7 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Float64MultiArray
 
 from guidance_calib.aruco_compat import DEFAULT_DICTIONARY, detect_markers
+from guidance_calib.ground_plane import pixels_to_map
 from guidance_rover_pose.pose import rover_pose_from_marker
 
 HOMOGRAPHY_TOPIC = '/overhead/image_to_map'
@@ -38,6 +39,10 @@ class RoverPoseNode(Node):
         self.declare_parameter('yaw_offset', 0.0)
         self.declare_parameter('position_std', 0.03)
         self.declare_parameter('yaw_std', 0.05)
+        # Height of the marker above the floor; its position is corrected for the parallax
+        # (pose.correct_parallax), assuming a camera looking straight down from camera_height.
+        self.declare_parameter('marker_height', 0.0)
+        self.declare_parameter('camera_height', 1.9)
 
         self._bridge = CvBridge()
         self._homography: np.ndarray | None = None
@@ -52,7 +57,6 @@ class RoverPoseNode(Node):
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL),
         )
         self.create_subscription(Image, IMAGE_TOPIC, self._on_image, qos_profile_sensor_data)
-        # TODO(rover_pose): correct the parallax from the marker's height above the floor.
         self.get_logger().info('rover_pose_node waiting for the image and the homography')
 
     def _on_homography(self, msg: Float64MultiArray) -> None:
@@ -67,8 +71,15 @@ class RoverPoseNode(Node):
         if corners is None:
             self.get_logger().warn('rover marker not visible', throttle_duration_sec=5.0)
             return
+        rows, cols = image.shape[:2]
+        nadir = pixels_to_map(self._homography, np.array([[cols / 2.0, rows / 2.0]]))[0]
         x, y, yaw = rover_pose_from_marker(
-            corners, self._homography, self.get_parameter('yaw_offset').value
+            corners,
+            self._homography,
+            self.get_parameter('yaw_offset').value,
+            float(self.get_parameter('marker_height').value),
+            float(self.get_parameter('camera_height').value),
+            (float(nadir[0]), float(nadir[1])),
         )
 
         pose_msg = PoseWithCovarianceStamped()

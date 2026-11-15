@@ -1,0 +1,14 @@
+{
+  "comment": "Two simulated drones, each seeing one half of the 25.6 m world monde_1, and two simulated rovers. No hardware.",
+  "map": {},
+  "devices": [
+    {"id": "drone-west", "role": "drone", "kind": "sim-drone",
+     "settings": {"world": "monde_1", "area": [0.0, 0.0, 12.8, 25.6], "level": 2}},
+    {"id": "drone-east", "role": "drone", "kind": "sim-drone",
+     "settings": {"world": "monde_1", "area": [12.8, 0.0, 25.6, 25.6], "level": 2}},
+    {"id": "rover-a", "role": "rover", "kind": "sim-rover",
+     "settings": {"world": "monde_1", "start": [3.0, 3.0]}},
+    {"id": "rover-b", "role": "rover", "kind": "sim-rover",
+     "settings": {"world": "monde_1", "start": [22.0, 3.0]}}
+  ]
+}

@@ -26,6 +26,7 @@ import math
 import os
 import threading
 import time
+import traceback
 from collections import deque
 from collections.abc import Callable
 
@@ -154,25 +155,178 @@ class Config:
 
     @classmethod
     def load(cls, path: str) -> Config:
+        """Settings from `path`. Never fails: the robot must start even with a bad file."""
         cfg = cls()
-        if os.path.exists(path):
+        if not os.path.exists(path):
+            return cfg
+        try:
             with open(path, encoding='utf-8') as f:
-                cfg.update(json.load(f))
+                values = json.load(f)
+            if not isinstance(values, dict):
+                raise ValueError('not a JSON object')
+        except (OSError, ValueError) as e:
+            os.replace(path, path + '.bad')
+            print(f'Settings file {path} unreadable ({e}): moved to .bad, using the defaults.')
+            return cfg
+        try:
+            cfg.update(values)
+        except (ValueError, TypeError):  # keep the good values, drop the bad ones
+            for name, value in values.items():
+                try:
+                    cfg.update({name: value})
+                except (ValueError, TypeError) as e:
+                    print(f'Settings file {path}: {e}; using the default.')
         return cfg
 
     def save(self, path: str) -> None:
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(dataclasses.asdict(self), f, indent=2)
+        # Temporary file + rename: a power cut while saving leaves the old file, not half a file.
+        tmp = f'{path}.{os.getpid()}.{threading.get_ident()}.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(dataclasses.asdict(self), f, indent=2, allow_nan=False)
+        os.replace(tmp, path)
 
     def update(self, values: dict) -> list[str]:
-        """Set the known fields from `values` (with type conversion). Returns the ones set."""
-        changed = []
+        """Set the known fields from `values` (with type conversion). Returns the ones set.
+
+        All or nothing: a value that is not finite, out of CONFIG_LIMITS or inconsistent with
+        the others raises ValueError and changes nothing.
+        """
+        new = {}
         for fld in dataclasses.fields(self):
-            if fld.name in values:
-                kind = int if fld.type in (int, 'int') else float
-                setattr(self, fld.name, kind(values[fld.name]))
-                changed.append(fld.name)
-        return changed
+            if fld.name not in values:
+                continue
+            raw = values[fld.name]
+            if isinstance(raw, bool) or raw is None:
+                raise ValueError(f'{fld.name} must be a number, not {raw!r}')
+            x = float(raw)
+            lo, hi = CONFIG_LIMITS[fld.name]
+            if not (math.isfinite(x) and lo <= x <= hi):
+                raise ValueError(f'{fld.name} must be within [{lo}, {hi}], not {raw!r}')
+            if fld.type in (int, 'int'):
+                if x != int(x):
+                    raise ValueError(f'{fld.name} must be a whole number, not {raw!r}')
+                x = int(x)
+            new[fld.name] = x
+        merged = {**dataclasses.asdict(self), **new}
+        for name in ('yaw_sign', 'pan_sign', 'tilt_sign', 'imu_roll_sign', 'imu_pitch_sign'):
+            if merged[name] not in (-1, 1):
+                raise ValueError(f'{name} must be 1 or -1')
+        for lo_name, hi_name in (
+            ('v_min', 'v_max'),
+            ('w_min', 'w_max'),
+            ('pan_min', 'pan_max'),
+            ('tilt_min', 'tilt_max'),
+            ('roll_warn_deg', 'roll_stop_deg'),
+            ('pitch_warn_deg', 'pitch_stop_deg'),
+        ):
+            if merged[lo_name] > merged[hi_name]:
+                raise ValueError(f'{lo_name} must not be above {hi_name}')
+        for name, x in new.items():
+            setattr(self, name, x)
+        return list(new)
+
+
+# Accepted range of each setting. Wide on purpose: they refuse nonsense (NaN, zero where the
+# code divides, a value off by 1000, a disabled dead man), they do not tune the rover.
+CONFIG_LIMITS: dict[str, tuple[float, float]] = {
+    'v_manual': (0.0, 1.0),
+    'v_manual_fast': (0.0, 1.0),
+    'w_manual': (0.0, 5.0),
+    'w_manual_fast': (0.0, 5.0),
+    'manual_timeout': (0.1, 2.0),  # the dead man: cannot be switched off
+    'v_max': (0.01, 1.0),
+    'v_min': (0.0, 1.0),
+    'accel': (0.01, 10.0),
+    'k_dist': (0.01, 50.0),
+    'k_head': (0.0, 50.0),
+    'dist_tol': (0.0005, 0.2),
+    'w_min': (0.0, 5.0),
+    'w_max': (0.05, 5.0),
+    'k_turn': (0.01, 50.0),
+    'angle_tol_deg': (0.05, 30.0),
+    'corrections': (0, 10),
+    'lag': (0.0, 2.0),
+    'settle': (0.0, 5.0),
+    'task_timeout': (1.0, 120.0),
+    'stall_time': (0.2, 10.0),
+    'no_rotation_time': (0.2, 30.0),
+    'no_rotation_rate': (0.01, 2.0),  # 0 would never see "not rotating"
+    'tilt_guard': (0, 1),
+    'roll_warn_deg': (0.0, 90.0),
+    'roll_stop_deg': (1.0, 90.0),
+    'pitch_warn_deg': (0.0, 90.0),
+    'pitch_stop_deg': (1.0, 90.0),
+    'tilt_min_scale': (0.0, 1.0),
+    'tip_min_deg': (0.0, 90.0),
+    'tip_rate_dps': (1.0, 2000.0),  # the gyro's range
+    'tip_acc_dps2': (1.0, 100000.0),
+    'tilt_backoff_dist': (0.0, 1.0),
+    'tilt_backoff_speed': (0.0, 1.0),
+    'tilt_backoff_time': (0.0, 10.0),
+    'tilt_filter_tau': (0.01, 10.0),
+    'imu_roll_sign': (-1, 1),
+    'imu_pitch_sign': (-1, 1),
+    'dist_scale': (0.5, 2.0),
+    'yaw_sign': (-1, 1),
+    'gyro_scale': (1e-5, 1e-2),
+    'track': (0.05, 1.0),  # divides the wheel speed difference
+    'bias_calib_time': (0.2, 30.0),
+    'bias_max_rate': (0.005, 1.0),  # the start-up measure needs a spread under half of it
+    'bias_limit': (0.001, 1.0),
+    'assist': (0, 1),
+    'assist_hz': (0.5, 50.0),
+    'assist_deadband_deg': (0.0, 30.0),
+    'assist_k': (0.0, 50.0),
+    'assist_ki': (0.0, 50.0),
+    'assist_k_rate': (0.0, 50.0),
+    'assist_ki_rate': (0.0, 50.0),
+    'assist_w_max': (0.0, 5.0),
+    'assist_settle': (0.0, 5.0),
+    'assist_min_speed': (0.0, 1.0),
+    'path_speed': (0.01, 1.0),  # divides the path length (timeout)
+    'path_lookahead': (0.01, 5.0),
+    'path_lookahead_time': (0.0, 10.0),
+    'path_w_max': (0.05, 5.0),
+    'path_pivot_deg': (1.0, 180.0),
+    'path_pivot_exit_deg': (0.5, 180.0),
+    'path_goal_tol': (0.001, 1.0),
+    'path_corner_deg': (0.0, 180.0),
+    'gimbal_speed': (0.0, 720.0),
+    'gimbal_hz': (0.5, 50.0),
+    'gimbal_timeout': (0.05, 10.0),
+    'gimbal_spd': (0, 10000),
+    'gimbal_acc': (0, 1000),
+    'pan_min': (-180.0, 180.0),
+    'pan_max': (-180.0, 180.0),
+    'tilt_min': (-90.0, 90.0),
+    'tilt_max': (-90.0, 90.0),
+    'pan_sign': (-1, 1),
+    'tilt_sign': (-1, 1),
+}
+
+# Limits on the numbers of a command (HTTP API). Generous: a 5 m move across a hall or two
+# full turns are legitimate; NaN, infinity, a unit error (mm for m) or a typo are not.
+MAX_MOVE_M = 10.0  # one measured move
+MAX_TURN_DEG = 720.0  # one measured turn
+MAX_PATH_COORD_M = 50.0  # |x| and |y| of a waypoint, local or odometry frame
+MAX_PATH_POINTS = 1000
+MAX_PATH_LENGTH_M = 50.0  # total length of the waypoints
+MAX_MANUAL_V = 1.0  # m/s, manual speed (the rover tops out well below)
+MAX_MANUAL_W = 6.0  # rad/s, manual rotation
+
+
+class NotReadyError(RuntimeError):
+    """The rover cannot take this command now (e.g. the gyro bias is not measured yet)."""
+
+
+def finite(value, name: str, limit: float) -> float:
+    """`value` as a float, refusing booleans, NaN, infinities and |value| > limit."""
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f'{name} must be a number, not {value!r}')
+    x = float(value)
+    if not (math.isfinite(x) and abs(x) <= limit):
+        raise ValueError(f'{name} must be a finite number within +-{limit}, not {value!r}')
+    return x
 
 
 def clamp(x: float, lo: float, hi: float) -> float:
@@ -393,6 +547,10 @@ class Odometry:
         dr = self.counters[1] - self._counters0[1]
         return (dl + dr) / 2 / 100 * self.cfg.dist_scale
 
+    def feedback_age(self, now: float) -> float | None:
+        """s since the last wheel feedback (T:1001), None before the first one."""
+        return None if self._last_wheels is None else now - self._last_wheels
+
     def on_gyro(self, gz_raw: float, t: float) -> None:
         self.gz_raw = gz_raw
         gz = gz_raw * self.cfg.gyro_scale * self.cfg.yaw_sign
@@ -486,26 +644,51 @@ class Step:
     frame: str = 'local'
     speed: float | None = None  # path cruise speed, m/s (default: path_speed)
 
+    def __post_init__(self) -> None:
+        # Every step goes through here, whatever built it: no NaN or absurd goal can run.
+        if self.kind == 'move':
+            self.value = finite(self.value, 'distance', MAX_MOVE_M)
+        elif self.kind == 'turn':
+            self.value = finite(self.value, 'angle', MAX_TURN_DEG)
+        elif self.kind == 'path':
+            self.value = finite(self.value, 'path length', MAX_PATH_LENGTH_M)
+        else:
+            raise ValueError(f'unknown step kind {self.kind!r}')
+
     @classmethod
     def path(cls, points, frame: str = 'local', speed: float | None = None) -> Step:
-        pts = [[float(p[0]), float(p[1])] for p in points]
+        if not isinstance(points, list | tuple):
+            raise ValueError('path points must be a list of [x, y]')
+        if len(points) > MAX_PATH_POINTS:
+            raise ValueError(f'a path has at most {MAX_PATH_POINTS} points')
+        pts = []
+        for p in points:
+            if not isinstance(p, list | tuple) or len(p) < 2:
+                raise ValueError(f'a path point is [x, y], not {p!r}')
+            pts.append([finite(p[0], 'x', MAX_PATH_COORD_M), finite(p[1], 'y', MAX_PATH_COORD_M)])
         if not pts:
             raise ValueError('a path needs at least one point')
         if frame not in ('local', 'odom'):
             raise ValueError(f'path frame must be "local" or "odom", not {frame!r}')
-        if speed is not None and not 0.0 < float(speed) <= 1.0:
-            raise ValueError('path speed must be in ]0, 1] m/s')
+        if speed is not None:
+            speed = finite(speed, 'path speed', 1.0)
+            if speed <= 0.0:
+                raise ValueError('path speed must be in ]0, 1] m/s')
         start = [[0.0, 0.0]] if frame == 'local' else []
         chain = start + pts
         length = sum(math.dist(a, b) for a, b in zip(chain, chain[1:], strict=False))
-        return cls('path', round(length, 3), pts, frame, None if speed is None else float(speed))
+        if length > MAX_PATH_LENGTH_M:
+            raise ValueError(f'a path is at most {MAX_PATH_LENGTH_M} m long, not {length:.1f} m')
+        return cls('path', round(length, 3), pts, frame, speed)
 
     @classmethod
     def parse(cls, d: dict) -> Step:
+        if not isinstance(d, dict):
+            raise ValueError(f'a step is a JSON object, not {d!r}')
         if 'move' in d:
-            return cls('move', float(d['move']))
+            return cls('move', d['move'])
         if 'turn' in d:
-            return cls('turn', float(d['turn']))
+            return cls('turn', d['turn'])
         if 'path' in d:
             return cls.path(d['path'], d.get('frame', 'local'), d.get('speed'))
         raise ValueError(
@@ -797,7 +980,13 @@ class Controller:
     """Turns manual commands and move/turn steps into (v, w) for the ESP32.
 
     Call `step(t)` at a fixed rate (20 Hz); it returns (v m/s, w rad/s).
+
+    Without wheel feedback the odometry freezes on its last speeds, so the rover would drive
+    blind until a timeout: after FEEDBACK_TIMEOUT s without feedback, whatever runs is
+    stopped and dropped (`fail`), and nothing restarts by itself when the feedback is back.
     """
+
+    FEEDBACK_TIMEOUT = 0.5  # s; the firmware sends T:1001 every 50 ms
 
     def __init__(self, cfg: Config, odom: Odometry) -> None:
         self.cfg = cfg
@@ -815,6 +1004,7 @@ class Controller:
         self._settle_until = 0.0
         self._pending_result: dict | None = None
         self.assist = SteeringAssist(cfg, odom)
+        self.fault: str | None = None  # why the controller last stopped by itself
         self.guard_state = 'off'  # off | ok | caution | backoff | hold
         self.guard_reason: str | None = None
         self._guard: dict = {'blocked_dir': 0.0}
@@ -824,32 +1014,68 @@ class Controller:
 
     def manual(self, v: float, w: float, t: float) -> None:
         """Drive at (v, w) until the next command or `manual_timeout`. Cancels any steps."""
+        v = finite(v, 'v', MAX_MANUAL_V)
+        w = finite(w, 'omega', MAX_MANUAL_W)
         if self.mode not in ('manual', 'idle'):
             self._abort('cancelled by manual control', t)
+        self.queue.clear()  # taking over by hand: the rest of a sequence must not resume
         self._manual = (v, w)
         self._manual_t = t
         self.mode = 'manual' if (v or w) else 'idle'
+        if v or w:
+            self.fault = None
 
     def run(self, steps: list[Step], t: float) -> None:
-        """Replace whatever runs with this list of steps."""
+        """Replace whatever runs with this list of steps.
+
+        Raises NotReadyError before the gyro bias is measured: the encoder heading cannot hold a
+        turn (it oscillates until the timeout) and moving would restart the measurement.
+        """
+        if steps and not self.odom.bias_ready:
+            raise NotReadyError('gyro not calibrated yet: keep the rover still until "Gyro OK"')
         if self.mode in ('move', 'turn', 'path', 'settle'):
             self._abort('replaced by a new command', t)
         self.queue = deque(steps)
         self.current = None
         self.mode = 'idle'
+        if steps:
+            self.fault = None
 
-    def stop(self, t: float) -> None:
-        self._abort('stopped', t)
+    def stop(self, t: float, reason: str = 'stopped') -> None:
+        try:
+            self._abort(reason, t)
+        except Exception:  # noqa: BLE001 - a broken step must never prevent a stop
+            self._task = {}
+        self.current = None
+        self._pending_result = None
         self.queue.clear()
         self._manual = (0.0, 0.0)
         self.mode = 'idle'
         self.v_cmd = self.w_cmd = 0.0
+        if self.guard_state == 'backoff':  # the tilt guard's back-off is a motion too
+            self.guard_state, self._guard['hold_until'] = 'hold', t + 1.0
+
+    def busy(self) -> bool:
+        """Something drives the rover: a step, the queue, manual driving or a tilt back-off."""
+        return self.mode != 'idle' or bool(self.queue) or self.guard_state == 'backoff'
+
+    def fail(self, reason: str, t: float) -> None:
+        """Safety stop decided here (lost feedback or link, error): drop everything, say why."""
+        if not self.busy():
+            return
+        self.stop(t, reason)
+        self.fault = reason
 
     # -- control loop ---------------------------------------------------------------
 
     def step(self, t: float) -> tuple[float, float]:
         dt = 0.05 if self._t_last is None else clamp(t - self._t_last, 0.0, 0.2)
         self._t_last = t
+
+        if self.busy():
+            age = self.odom.feedback_age(t)
+            if age is None or age > self.FEEDBACK_TIMEOUT:
+                self.fail('no ESP32 feedback', t)
 
         if self.mode == 'manual':
             if t - self._manual_t > self.cfg.manual_timeout:
@@ -893,10 +1119,10 @@ class Controller:
         return v, w
 
     def _start(self, s: Step, t: float) -> None:
-        self.current = s
-        self.mode = s.kind
+        # Everything is built before the mode changes: if it raises, the controller stays idle
+        # instead of a 'path' mode without a follower (which broke /stop and /state).
         o = self.odom
-        self._task = {
+        task = {
             'step': s,
             't0': t,
             'dist0': o.distance,
@@ -927,12 +1153,13 @@ class Controller:
                 pts = [(px, py) for px, py in s.points]
             follower = PathFollower(pts, (x0, y0), self.cfg.path_corner_deg)
             speed = s.speed or self.cfg.path_speed
-            self._task['follower'] = follower
-            self._task['speed'] = speed
+            task['follower'] = follower
+            task['speed'] = speed
             # Generous: pivots and slowing down near the end take time too.
-            self._task['timeout'] = max(
-                self.cfg.task_timeout, 3.0 * follower.length / speed + 10.0
-            )
+            task['timeout'] = max(self.cfg.task_timeout, 3.0 * follower.length / speed + 10.0)
+        self._task = task
+        self.current = s
+        self.mode = s.kind
 
     def _needs_correction(self) -> bool:
         """The rover stopped too early or too late: move or turn again towards the goal."""
@@ -1004,7 +1231,11 @@ class Controller:
             self.queue.clear()
             self._manual = (0.0, 0.0)
             self.mode = 'idle'
-            moving = t - last_t < 1.0
+            self.fault = f'tilt: {reason}'
+            # Never back off blind: without fresh wheel feedback the odometer cannot end it.
+            age = o.feedback_age(t)
+            fresh = age is not None and age <= self.FEEDBACK_TIMEOUT
+            moving = fresh and t - last_t < 1.0
             g['blocked_dir'] = math.copysign(1.0, last_v) if moving else 0.0
             if moving:
                 self.guard_state = 'backoff'
@@ -1143,6 +1374,7 @@ class Controller:
             },
             'path': follower.snapshot() if follower else None,
             'history': list(self.history),
+            'fault': self.fault,
         }
 
 
@@ -1206,6 +1438,8 @@ class Esp32Link:
         self.last_rx: float | None = None
         self.rx_count = 0
         self.bad_lines = 0
+        self.handler_errors = 0  # messages that made on_message raise (kept running)
+        self.last_handler_error: str | None = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name='esp32-rx', daemon=True)
 
@@ -1288,7 +1522,12 @@ class Esp32Link:
             if isinstance(msg, dict):
                 self.last_rx = t
                 self.rx_count += 1
-                self._on_message(msg, t)
+                # A bad message must not end this thread: without it the odometry freezes.
+                try:
+                    self._on_message(msg, t)
+                except Exception as e:  # noqa: BLE001
+                    self.handler_errors += 1
+                    self.last_handler_error = f'{type(e).__name__}: {e}'[:200]
 
     def _wait_boot(self, ser) -> None:
         """Opening the port reboots the ESP32: wait for "UGV started" before sending anything.
@@ -1334,6 +1573,14 @@ def battery_volts(v: float | None) -> float | None:
     if v is None:
         return None
     return v / 100.0 if v > 50 else float(v)
+
+
+def feedback_number(msg: dict, key: str, default: float | None = None) -> float:
+    """A finite number from an ESP32 message (null or NaN would poison the odometry)."""
+    x = float(msg[key] if default is None else msg.get(key, default))
+    if not math.isfinite(x):
+        raise ValueError(f'{key} is not finite: {msg.get(key)!r}')
+    return x
 
 
 def tilt_deg(msg: dict) -> dict:
@@ -1405,6 +1652,9 @@ class Rover:
         self.gimbal = Gimbal(cfg)
         self.recorder = Recorder()
         self._was_connected = False
+        self.loop_errors = 0
+        self.last_loop_error: str | None = None
+        self.stop_count = 0  # stop() calls (POST /stop, /cmd {"T":0}) since this Rover started
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name='rover-loop', daemon=True)
 
@@ -1429,9 +1679,14 @@ class Rover:
             self.ctrl.run(steps, time.monotonic())
 
     def stop(self) -> None:
-        with self.lock:
-            self.ctrl.stop(time.monotonic())
-        self.link.send({'T': 13, 'X': 0, 'Z': 0})
+        try:
+            with self.lock:
+                # Counted even when the rover is idle (that stop leaves no trace in history):
+                # a mission client compares it with the stops it sent itself.
+                self.stop_count += 1
+                self.ctrl.stop(time.monotonic())
+        finally:
+            self.link.send({'T': 13, 'X': 0, 'Z': 0})
 
     def reset_odometry(self) -> None:
         with self.lock:
@@ -1460,19 +1715,22 @@ class Rover:
         kind = msg.get('T')
         with self.lock:
             if kind == 1001:
+                left = feedback_number(msg, 'L', 0.0)
+                right = feedback_number(msg, 'R', 0.0)
                 self.chassis = msg
-                self.odom.on_wheels(float(msg.get('L', 0.0)), float(msg.get('R', 0.0)), t)
+                self.odom.on_wheels(left, right, t)
                 if 'gz' in msg:
                     self._gyro_in_feedback = True
-                    self.odom.on_gyro(float(msg['gz']), t)
+                    self.odom.on_gyro(feedback_number(msg, 'gz'), t)
                 if 'odl' in msg and 'odr' in msg:
-                    self.odom.on_counters(float(msg['odl']), float(msg['odr']))
+                    self.odom.on_counters(feedback_number(msg, 'odl'), feedback_number(msg, 'odr'))
                 if all(k in msg for k in ('ax', 'ay', 'az', 'gx', 'gy')):
-                    self.odom.on_imu(*(float(msg[k]) for k in ('ax', 'ay', 'az', 'gx', 'gy')), t)
+                    imu = [feedback_number(msg, k) for k in ('ax', 'ay', 'az', 'gx', 'gy')]
+                    self.odom.on_imu(*imu, t)
             elif kind == 1002:  # other firmwares: gyro only on request (T:126)
                 self.imu = msg
                 if 'gz' in msg and not self._gyro_in_feedback:
-                    self.odom.on_gyro(float(msg['gz']), t)
+                    self.odom.on_gyro(feedback_number(msg, 'gz'), t)
 
     def _loop(self) -> None:
         period = 1.0 / self.LOOP_HZ
@@ -1480,14 +1738,20 @@ class Rover:
         while not self._stop.is_set():
             t = time.monotonic()
             connected = self.link.connected
-            with self.lock:
-                v, w = self.ctrl.step(t)
-                self.odom.commanded = abs(v) > 1e-4 or abs(w) > 1e-4
-                if connected and not self._was_connected:
-                    self.gimbal.resend()  # the ESP32 (re)booted: put the camera back
-                gimbal_cmd = self.gimbal.step(t, period) if connected else None
-                if self.recorder.on:
-                    self.recorder.add(t, self)
+            try:
+                with self.lock:
+                    if not connected:  # commands are lost: never resume a step afterwards
+                        self.ctrl.fail('ESP32 link lost', t)
+                    v, w = self.ctrl.step(t)
+                    self.odom.commanded = abs(v) > 1e-4 or abs(w) > 1e-4
+                    if connected and not self._was_connected:
+                        self.gimbal.resend()  # the ESP32 (re)booted: put the camera back
+                    gimbal_cmd = self.gimbal.step(t, period) if connected else None
+                    if self.recorder.on:
+                        self.recorder.add(t, self)
+            except Exception as e:  # noqa: BLE001 - this loop must outlive any bug: /stop
+                v, w, gimbal_cmd = 0.0, 0.0, None
+                self._loop_error(e, t)
             self._was_connected = connected
             # Sent every tick: also the heartbeat (the ESP32 stops the motors after 3 s).
             self.link.send({'T': 13, 'X': round(v, 4), 'Z': round(w, 4)})
@@ -1500,6 +1764,16 @@ class Rover:
             if time.monotonic() - nxt > 1.0:  # fell far behind: do not burst to catch up
                 nxt = time.monotonic()
 
+    def _loop_error(self, e: Exception, t: float) -> None:
+        """Stop whatever ran, keep the error for /state, and keep the loop alive."""
+        self.loop_errors += 1
+        self.last_loop_error = f'{type(e).__name__}: {e}'[:200]
+        if self.loop_errors == 1 or self.loop_errors % 100 == 0:  # a stuck error: not 20/s
+            traceback.print_exc()
+        with self.lock:
+            self.ctrl.fail(f'controller error: {self.last_loop_error}', t)
+            self.ctrl.fault = f'controller error: {self.last_loop_error}'
+
     def snapshot(self) -> dict:
         now = time.monotonic()
         with self.lock:
@@ -1511,7 +1785,12 @@ class Rover:
                     'rx_age': None if link.last_rx is None else now - link.last_rx,
                     'rx_count': link.rx_count,
                     'bad_lines': link.bad_lines,
+                    'handler_errors': link.handler_errors,
+                    'last_handler_error': link.last_handler_error,
                 },
+                'loop_errors': self.loop_errors,
+                'last_loop_error': self.last_loop_error,
+                'stop_count': self.stop_count,
                 'battery_v': battery_volts(self.chassis.get('v')),
                 **(
                     {'roll_deg': self.odom.tilt.roll, 'pitch_deg': self.odom.tilt.pitch}

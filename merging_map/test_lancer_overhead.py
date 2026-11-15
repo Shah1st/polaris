@@ -9,7 +9,6 @@ import pytest
 from fusion_carte import CarteFusion, decouper
 from lancer_overhead import (
     REGLAGES_PETITE_ZONE,
-    PhotoUnique,
     lancer,
     main,
     preparer,
@@ -136,48 +135,3 @@ def test_camera_and_image_cannot_both_be_given(capsys) -> None:
     with pytest.raises(SystemExit):
         main(['--camera', '0', '--image', 'a.jpg', '--rover', 'http://r', '--victime', '1', '1'])
     assert 'not allowed with' in capsys.readouterr().err
-
-
-# -- a single overhead photo (no live camera) --------------------------------------------
-
-
-def test_single_photo_gives_the_start_once_then_nothing() -> None:
-    faux = FauxServeur(0.4, 0.4, 0.0)
-    photo = PhotoUnique(FausseCamera(faux), cap=math.pi / 2)
-    assert photo.disponible() and photo.rover_pose() == (0.4, 0.4, math.pi / 2)
-    assert photo.tiles() and photo.zone() == (0.0, 0.0, COTE, COTE)
-    photo.prise()  # the rover's first look, stopped at its start
-    assert photo.rover_pose() == (0.4, 0.4, math.pi / 2)
-    photo.prise()  # after a step: the photo would show the rover where it started
-    assert not photo.disponible() and photo.rover_pose() is None
-    assert photo.zoomer((4, 0, 0)) == []
-    assert photo.tiles()  # the map stays
-
-
-def test_mission_on_odometry_after_a_single_photo() -> None:
-    """Start and heading from the photo only, then wheels + gyro: the rover still goes around
-    the obstacle and reaches the victim, and the photo is never read as a new position."""
-    faux = FauxServeur(0.4, 0.4, math.pi)  # faces west, away from the goal
-    photo = PhotoUnique(FausseCamera(faux), cap=math.pi)
-    lignes = []
-    lancer(
-        photo,
-        faux.requete,
-        victime=(2.0, 2.0),
-        options_rover={
-            'horloge': faux.horloge,
-            'dormir': faux.dormir,
-            'rafraichir_drone': photo.prise,
-        },
-        journal=lignes.append,
-    )
-    assert any('ARRIVE pres de la victime' in ligne for ligne in lignes)
-    assert math.dist((faux.x, faux.y), (2.0, 2.0)) <= 0.2
-    assert not any(dans_boite(x, y) for x, y in faux.trace)
-    assert photo.mesures >= 2  # asked again after steps, and given nothing
-
-
-def test_single_photo_needs_a_heading(capsys) -> None:
-    with pytest.raises(SystemExit):
-        main(['--image', 'x.png', '--photo-unique', '--victime', '1', '1', '--rover', 'http://r'])
-    assert '--cap' in capsys.readouterr().err

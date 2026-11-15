@@ -1,6 +1,7 @@
 import math
 import time
 
+import cv2
 import numpy as np
 import pytest
 
@@ -181,6 +182,146 @@ def test_zoom_looks_again_and_returns_the_overlapping_tiles() -> None:
     assert {(m['x'], m['y']) for m in coarse} == {(0, 0), (1, 0), (0, 1), (1, 1)}
     assert drone.zoomer((4, 5, 5)) == []
     assert camera.reads == 4  # every zoom takes a new image, even within the period
+
+
+# ---- scale from the camera height follows the actual image size --------------------------
+
+
+def test_scale_from_height_follows_the_image_width(caplog) -> None:
+    photo = OverheadSettings(camera_height=1.9)
+    full = photo.scale()
+
+    assert photo.scale((4032, 3024)) == pytest.approx(full)
+    assert photo.scale((1280, 960)) == pytest.approx(full * 4032 / 1280)
+    assert not caplog.records
+    with caplog.at_level('WARNING'):
+        photo.scale((1920, 1080))
+        photo.scale((1920, 1080))
+    assert len([r for r in caplog.records if 'aspect ratio' in r.getMessage()]) == 1
+    assert OverheadSettings(metres_per_pixel=0.004).scale((640, 480)) == 0.004
+
+
+def test_a_resized_frame_covers_the_same_area() -> None:
+    image = render_top_down(scene_with_marked_rover())  # 780 x 630, as if the full sensor
+    small = image[::2, ::2]
+    photo = OverheadSettings(
+        camera_height=1.9, sensor_size=(image.shape[1], image.shape[0]), floor_window=0.6
+    )
+
+    full, half = process_image(image, photo), process_image(small, photo)
+
+    assert (half.bounds.x_max, half.bounds.y_max) == pytest.approx(
+        (full.bounds.x_max, full.bounds.y_max), rel=0.01
+    )
+
+
+# ---- marker parallax ----------------------------------------------------------------------
+
+
+def test_marker_position_is_moved_towards_the_point_under_the_camera() -> None:
+    image = render_top_down(scene_with_marked_rover())  # marker drawn at (0.80, 0.90)
+    nadir = (image.shape[1] * SCALE / 2.0, image.shape[0] * SCALE / 2.0)  # (1.30, 1.05)
+
+    flat = process_image(image, settings(rover_marker_id=10))
+    raised = process_image(
+        image, settings(rover_marker_id=10, marker_height=0.19, camera_height=1.9)
+    )
+
+    factor = (1.9 - 0.19) / 1.9
+    expected = [n + (p - n) * factor for p, n in zip(flat.rover_position, nadir, strict=True)]
+    assert raised.rover_position == pytest.approx(expected, abs=0.002)
+    assert raised.rover_heading == pytest.approx(flat.rover_heading, abs=1e-9)
+    # The rover's cells cover both where the marker appears and where the rover stands.
+    assert cell(raised.grid, 0.50, 0.60) == ROVER
+    x, y = raised.rover_position
+    assert cell(raised.grid, x - SHIFT, y - SHIFT) == ROVER
+
+
+# ---- bad frames ---------------------------------------------------------------------------
+
+
+def obstacle_count(tiles: list[dict]) -> int:
+    return int(sum((m['data'] == 1).sum() for m in tiles))
+
+
+@pytest.mark.parametrize('kind', ['black', 'white', 'grey', 'dark noise', 'covered'])
+def test_a_bad_frame_never_reads_as_free_and_the_camera_goes_unavailable(kind) -> None:
+    good = render_top_down(scene_with_marked_rover())
+    bad = {
+        'black': np.zeros_like(good),
+        'white': np.full_like(good, 255),
+        'grey': np.full_like(good, 128),
+        'dark noise': np.random.default_rng(0).integers(0, 25, good.shape, dtype=np.uint8),
+        # A hand in front of the lens: dim, blurred, little contrast left.
+        'covered': np.clip(np.random.default_rng(1).normal(90.0, 2.0, good.shape), 0, 255).astype(
+            np.uint8
+        ),
+    }[kind]
+    now = [0.0]
+    camera = FakeCamera(good)
+    drone = OverheadDrone(camera, settings(rover_marker_id=10), clock=lambda: now[0])
+    before = drone.tiles()
+    assert obstacle_count(before) > 0 and drone.rover_pose() is not None
+
+    camera.image = bad
+    now[0] = 1.0
+    held = drone.tiles(force=True)
+    assert obstacle_count(held) == obstacle_count(before)  # the last good map is kept
+    assert all(m['t'] == 0.0 for m in held)  # with the time it was seen
+    assert drone.disponible()
+    assert drone.rover_pose() is None  # the pose may be out of date: withheld
+    assert drone.problem
+
+    now[0] = 2.5  # more than bad_frame_hold after the last good frame
+    assert drone.refresh(force=True) is None
+    assert not drone.disponible() and drone.tiles() == []
+
+    camera.image = good
+    now[0] = 3.0
+    assert drone.rover_pose() is not None and drone.problem is None
+
+
+def test_a_lasting_change_of_scene_becomes_the_new_reference() -> None:
+    busy = render_top_down(scene_with_marked_rover())
+    plain = render_top_down(Scene(marker_positions={}, boxes=[Box(1.20, 0.90, 0.25, 0.35)]))
+    plain = cv2.addWeighted(plain, 0.25, np.full_like(plain, 180), 0.75, 0.0)  # low contrast
+    now = [0.0]
+    camera = FakeCamera(busy)
+    drone = OverheadDrone(camera, settings(), clock=lambda: now[0])
+    drone.refresh()
+
+    camera.image = plain
+    for t in (1.0, 5.0, 10.5):
+        now[0] = t
+        drone.refresh(force=True)
+    assert not drone.disponible()  # rejected while it might be a transient
+    now[0] = 12.0
+    assert drone.refresh(force=True) is not None and drone.problem is None
+
+
+# ---- rover not recognised ----------------------------------------------------------------
+
+
+def test_an_unrecognised_rover_does_not_become_an_obstacle_where_it_was_last_seen() -> None:
+    rover = Box(0.40, 0.50, 0.20, 0.23, color=(30, 30, 30))
+    alone = render_top_down(Scene(marker_positions={}, boxes=[rover]))
+    # The rover now touches a box: one blob, too large to be the rover.
+    box = Box(0.60, 0.45, 0.40, 0.35, color=(40, 60, 200))
+    stuck = render_top_down(Scene(marker_positions={}, boxes=[rover, box]))
+    now = [0.0]
+    camera = FakeCamera(alone)
+    drone = OverheadDrone(camera, settings(), clock=lambda: now[0])
+    assert drone.rover_pose() == pytest.approx((0.80, 0.915, None), abs=0.015)
+
+    camera.image = stuck
+    now[0] = 1.0
+    tiles = drone.tiles(force=True)
+
+    assert drone.rover_pose() is None
+    tile = {(m['x'], m['y']): m['data'] for m in tiles}[(0, 0)]
+    assert tile[int(0.915 / 0.05), int(0.80 / 0.05)] == -1  # unseen, not an obstacle
+    assert tile[int(0.95 / 0.05), int(1.25 / 0.05)] == 1  # the box's far side stays
+    assert tile[int(0.30 / 0.05), int(0.30 / 0.05)] == 0  # floor away from the rover
 
 
 class FakeCapture:

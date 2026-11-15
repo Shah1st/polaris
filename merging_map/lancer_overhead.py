@@ -1,47 +1,49 @@
 """
 lancer_overhead.py - Mission sur le vrai RaspRover, avec la camera au-dessus de la scene
-(branche overhead-camera, `guidance_global_map.drone.OverheadDrone`) dans le role du drone.
+(`guidance_global_map.drone.OverheadDrone`) dans le role du drone.
 
     PYTHONPATH=merging_map:src/guidance_calib:src/guidance_global_map:src/guidance_rover_pose \\
         python merging_map/lancer_overhead.py --camera http://<IP du telephone>:8080/video \\
-        --metres-par-pixel 0.0012 --victime 1.2 0.9 --rover http://<IP du rover>:8080
+        --metres-par-pixel 0.0012 --victime 1.2 0.9 --rover http://<IP du rover>:8080 --dry-run
 
 --camera : la camera en direct (flux d'une application camera IP, RTSP, ou numero de
 peripherique). Son echelle n'est pas celle d'une photo : il faut --metres-par-pixel, mesure sur
-une image de ce flux (un objet de longueur connue pose au sol). --image a la place : une photo
-fixe, pour essayer sans camera ; elle ne voit pas le rover bouger.
+une image de ce flux (un objet de longueur connue pose au sol) ; seul --dry-run s'en passe.
+--image a la place : une photo fixe, pour essayer sans camera ; elle ne voit pas le rover
+bouger.
 
---image ... --photo-unique : une seule photo du dessus, prise avec le rover a son depart. Elle
-donne la carte des obstacles, la zone et la position de depart ; ensuite le rover avance sur
-son odometrie (roues + gyroscope, a calibrer : rover/README.md) et le cerveau gonfle les
-obstacles de l'incertitude qui grandit. Le cap de depart ne se voit pas sur une photo (le rover
-est presque carre) : --cap (rover pose face a une direction connue de la photo) ou --marqueur.
-L'echelle : --largeur-photo (photo recadree sur une zone de largeur connue) ou
---metres-par-pixel.
+D'abord --dry-run : aucun POST ne part, le programme affiche la zone, le rover vu par la
+camera, l'echelle, la premiere decision et les premiers pas, puis s'arrete. Ensuite la meme
+commande sans --dry-run fait rouler le rover. Ctrl-C, une erreur ou un STOP de l'operateur
+(page du rover, tableau de bord) arretent la mission et envoient POST /stop au rover.
 
-    PYTHONPATH=merging_map:src/guidance_calib:src/guidance_global_map:src/guidance_rover_pose \\
-        python merging_map/lancer_overhead.py --image parcours.jpg --photo-unique --cap 90 \\
-        --largeur-photo 2.4 --victime 2.0 1.6 --rover http://<IP du rover>:8080
-
-Il faut les modules de la branche overhead-camera, avec opencv-contrib-python et numpy, et
-sur le rover le serveur de la branche rover-teleop (rover/rover_server.py, POST /path).
+Il faut guidance_global_map (src/), opencv-contrib-python et numpy, et sur le rover
+rover/rover_server.py (POST /path). --camera a besoin de guidance_global_map.drone.camera_reader
+(camera en direct) ; --image (une photo fixe) n'est accepte qu'avec --dry-run : une photo ne
+voit pas le rover bouger.
 
 Le repere (point 4 de docs/overhead-camera.md) : celui de la camera, origine au coin en bas a
 gauche de l'image, x vers la droite, y vers le haut, en metres. Le depart, la victime et les
 tuiles de la camera du rover doivent y etre exprimes. Il reste valable tant que la camera ne
 bouge pas.
+
+--suivi FICHIER ecrit apres chaque decision et chaque pas un document JSON (etat de la
+mission, rover, chemin, trajectoire, journal, grille) pour une page de suivi en direct.
 """
 
 import argparse
-import dataclasses
+import collections
+import json
 import math
+import os
 import sys
+import tempfile
 import time
 
-from cerveau import mission
-from fusion_carte import CarteFusion
+from cerveau import ETAT_SUIVI, RESUMES, avancer, mission
+from fusion_carte import INCONNU, OBSTACLE, SRC_ROVER, CarteFusion
 from mission_settings import ARENA
-from rover_reel import RaspRoverReel, client_http
+from rover_reel import ArretOperateur, RaspRoverReel, ServeurRoverError, client_http
 
 # Reglages pour une petite zone (point 3) : planification en cases de 5 cm, objectif atteint a
 # 15 cm. Les valeurs par defaut (cases de 10 cm, arrivee a 50 cm) bloquaient 45 % du sol de la
@@ -54,93 +56,7 @@ from rover_reel import RaspRoverReel, client_http
 RAYON_ROVER = 0.155
 REGLAGES_PETITE_ZONE = {'niveau_plan': 4, 'rayon_robot': RAYON_ROVER}
 TOLERANCE_PETITE_ZONE = 0.15
-# Photo unique : le cerveau attend le drone (settings.drone_wait_max, 300 s) quand il ne peut
-# plus avancer sans lui ; aucune nouvelle image ne viendra, on n'attend donc que quelques s.
-PHOTO_UNIQUE_ATTENTE = 5.0
-
-
-class PhotoUnique:
-    """Une seule photo du dessus a la place du drone.
-
-    Elle sert une fois : la carte et la zone (camera.tiles(), zone()), puis la position de
-    depart du rover, donnee avec son cap a la premiere mesure du rover (rover arrete a son
-    depart). Ensuite plus aucune image : disponible() est faux, le rover avance sur son
-    odometrie et le cerveau fait des pas prudents et gonfle les obstacles de l'incertitude.
-    Relire la photo apres un pas ferait croire au rover qu'il n'a pas bouge (faux chocs).
-
-    `camera` : un OverheadDrone sur la photo. `cap` : cap du rover dans le repere de la photo
-    (rad, depuis l'axe x vers la droite, sens trigonometrique), ou None pour celui du marqueur.
-    """
-
-    def __init__(self, camera, cap=None):
-        self.camera = camera
-        self.cap = cap
-        self.mesures = 0  # images demandees par le rover (rafraichir_drone)
-
-    def prise(self):
-        """rafraichir_drone de RaspRoverReel : appele avant chaque mesure, rover arrete."""
-        self.mesures += 1
-
-    @property
-    def epuisee(self):
-        return self.mesures > 1
-
-    def disponible(self):
-        return not self.epuisee and self.camera.disponible()
-
-    def rover_pose(self):
-        if self.epuisee:
-            return None
-        pose = self.camera.rover_pose()
-        if pose is None:
-            return None
-        return (pose[0], pose[1], self.cap if self.cap is not None else pose[2])
-
-    def tiles(self, force=False):
-        return self.camera.tiles(force)
-
-    def zone(self):
-        return self.camera.zone()
-
-    def zoomer(self, tuile):
-        return [] if self.epuisee else self.camera.zoomer(tuile)
-
-
-def verifier_photo(camera, reglages, hauteur_rover=0.18, journal=print):
-    """Ce que la photo donne, pour verifier l'echelle avant de partir. Le rover est detecte
-    comme la tache de sa taille (0,20 x 0,23 m) : s'il n'est pas trouve, l'echelle est
-    probablement fausse. Vu de haut il parait un peu plus grand que son empreinte au sol (son
-    dessus est plus pres de la camera), d'environ hauteur / (hauteur - hauteur_rover)."""
-    resultat = camera.refresh(force=True)
-    if resultat is None:
-        raise RuntimeError('Photo illisible.')
-    b = resultat.bounds
-    journal(
-        f'Photo : {b.x_max - b.x_min:.2f} x {b.y_max - b.y_min:.2f} m, '
-        f'{reglages.scale() * 1000:.2f} mm par pixel.'
-    )
-    if resultat.rover_position is None:
-        raise RuntimeError(
-            'Rover introuvable sur la photo : aucune tache de 0,20 x 0,23 m (+-20 %). '
-            "L'echelle est sans doute fausse (--largeur-photo / --metres-par-pixel), ou le "
-            'rover se confond avec le sol.'
-        )
-    taches = [t for t in resultat.blobs if t.mask is not None and resultat.rover_mask is not None]
-    vu = next((t.size for t in taches if (t.mask & resultat.rover_mask).any()), None)
-    x, y = resultat.rover_position
-    message = f'Rover vu en ({x:.2f}, {y:.2f}) m'
-    if vu is not None:
-        attendu = sorted(reglages.rover_size)
-        h = reglages.camera_height
-        perspective = h / (h - hauteur_rover) if h > hauteur_rover else 1.0
-        rapport = (vu[0] / attendu[0] + vu[1] / attendu[1]) / 2
-        message += (
-            f', taille {vu[0] * 100:.0f} x {vu[1] * 100:.0f} cm pour {attendu[0] * 100:.0f} x '
-            f'{attendu[1] * 100:.0f} cm ({(rapport - 1) * 100:+.0f} % ; la perspective en '
-            f'explique environ {(perspective - 1) * 100:+.0f} %)'
-        )
-    journal(message + '.')
-    return resultat
+PAS_AFFICHES = 3  # --dry-run : pas affiches apres la premiere decision
 
 
 def dans_la_zone(point, zone, marge=0.0):
@@ -173,6 +89,138 @@ def preparer(camera, requete, percevoir=None, options_rover=None, **reglages_car
     return carte, rover
 
 
+def arreter_le_rover(requete, essais=3, journal=print, dormir=time.sleep):
+    """POST /stop, en insistant : c'est le dernier ordre de la mission. True s'il est recu."""
+    for k in range(essais):
+        try:
+            if requete('POST', '/stop', {}) is not None:
+                return True
+        except Exception as e:  # noqa: BLE001 - un /stop refuse ne doit pas masquer la cause
+            journal(f'  /stop refuse : {e}')
+        if k + 1 < essais:
+            dormir(0.3)
+    journal('  ATTENTION : /stop sans reponse, le rover finit peut-etre son pas tout seul')
+    return False
+
+
+def sans_post(requete, journal=print):
+    """--dry-run : les GET passent, aucun POST ne part (le rover ne peut pas bouger)."""
+
+    def requete_lecture(methode, chemin, corps=None):
+        if methode != 'GET':
+            journal(f'  [dry-run] {methode} {chemin} {corps} NON envoye')
+            raise RuntimeError(f'--dry-run : {methode} {chemin} ne doit pas partir')
+        return requete(methode, chemin, corps)
+
+    return requete_lecture
+
+
+def decrire_echelle(camera):
+    """L'echelle de la camera du dessus, en texte, pour la verifier avant de rouler."""
+    reglages = getattr(camera, 'settings', None)
+    if reglages is None:
+        return 'echelle inconnue (camera sans settings)'
+    mpp = getattr(reglages, 'metres_per_pixel', None)
+    if mpp is not None:
+        return f'{mpp * 1000:.3f} mm/pixel (--metres-par-pixel)'
+    return (
+        f'deduite de la hauteur {reglages.camera_height:.2f} m, focale 35 mm '
+        f'{reglages.focal_length_35mm:g} mm, capteur {reglages.sensor_size[0]}x'
+        f'{reglages.sensor_size[1]} px : a verifier sur la taille de la zone'
+    )
+
+
+class Suivi:
+    """--suivi : un document JSON reecrit (atomiquement) apres chaque decision et chaque pas,
+    pour une page de suivi en direct. Branche sur journal, evenement, rover.deplacer et
+    rover.observer : cerveau.py n'en sait rien."""
+
+    def __init__(self, fichier, carte, rover, victime, zone, journal=print):
+        self.fichier, self.carte, self.rover = fichier, carte, rover
+        self.victime, self.zone, self.journal_sortie = victime, zone, journal
+        self.lignes = collections.deque(maxlen=30)
+        self.decision, self.chemin, self.traj = None, [], []
+        self.etat = 'en_cours'
+
+    def journal(self, texte):
+        self.lignes.append(str(texte))
+        self.journal_sortie(texte)
+
+    def evenement(self, type_, action, **infos):
+        if type_ == 'avance':
+            return
+        self.decision = {'action': action or type_, 'raison': RESUMES.get(type_, type_)}
+        if infos.get('chemin') is not None:
+            self.chemin = [[float(x), float(y)] for x, y in infos['chemin']]
+        if type_ == 'arrivee':
+            self.etat = 'arrive'
+        self.ecrire()
+
+    def brancher(self):
+        deplacer, observer = self.rover.deplacer, self.rover.observer
+
+        def deplacer_et_ecrire(cible):
+            try:
+                return deplacer(cible)
+            finally:
+                self.traj.append([float(c) for c in self.rover.position()])
+                self.ecrire()
+
+        def observer_et_ecrire(tour_complet=False):
+            observer(tour_complet)
+            self.ecrire()
+
+        self.rover.deplacer, self.rover.observer = deplacer_et_ecrire, observer_et_ecrire
+
+    def grille(self):
+        g = self.carte.grille(*self.zone)
+        lignes = []
+        for i in range(g.val.shape[0]):  # ligne 0 = sud, comme la grille de la carte
+            caracteres = []
+            for v, s in zip(g.val[i], g.src[i], strict=True):
+                if v == INCONNU:
+                    caracteres.append('?')
+                elif v == OBSTACLE:
+                    caracteres.append('2' if s == SRC_ROVER else '1')
+                else:
+                    caracteres.append('0')
+            lignes.append(''.join(caracteres))
+        return {'x0': g.j0 * g.res, 'y0': g.i0 * g.res, 'res': g.res, 'lignes': lignes}
+
+    def document(self):
+        x, y = self.rover.position()
+        cap = self.rover.cap
+        return {
+            't': time.time(),
+            'etat': self.etat,
+            'rover': [float(x), float(y), None if cap is None else float(cap)],
+            'victime': [float(c) for c in self.victime],
+            'zone': [float(c) for c in self.zone],
+            'decision': self.decision,
+            'chemin': self.chemin,
+            'traj': self.traj,
+            'journal': list(self.lignes),
+            'grille': self.grille(),
+        }
+
+    def ecrire(self, etat=None):
+        if etat is not None:
+            self.etat = etat
+        if self.fichier is None:
+            return
+        dossier = os.path.dirname(os.path.abspath(self.fichier))
+        # ecrire a cote puis renommer : la page ne lit jamais un fichier a moitie ecrit
+        fd, tmp = tempfile.mkstemp(dir=dossier, prefix='.suivi-', suffix='.json')
+        try:
+            with os.fdopen(fd, 'w') as f:
+                json.dump(self.document(), f)
+            os.replace(tmp, self.fichier)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
+
+
 def lancer(
     camera,
     requete,
@@ -183,15 +231,48 @@ def lancer(
     journal=print,
     options_rover=None,
     settings=ARENA,
+    suivi=None,
+    dry_run=False,
     **reglages_carte,
 ):
     """Lance la mission. `depart` par defaut : la ou la camera voit le rover.
-    `settings`: the mission's distances, ARENA by default (mission_settings)."""
+    `settings`: the mission's distances, ARENA by default (mission_settings).
+    `suivi` : fichier JSON de suivi (voir Suivi). `dry_run` : `requete` ne doit envoyer aucun
+    POST (voir sans_post) ; on s'arrete apres la premiere decision, sans rouler.
+
+    Renvoie les instantanes de cerveau.mission (avec 'issue' et 'raison'), plus 'etat' :
+    'arrive', 'abandon' ou 'erreur' (cerveau.ETAT_SUIVI de l'issue), 'arret_operateur' (avec
+    'raison' et 'fin' = {'traj'}) ou 'dry_run' (avec 'decision').
+    POST /stop est envoye en sortie dans tous les cas (sauf dry_run), meme sur Ctrl-C."""
+    etat_rover = requete('GET', '/state')
+    if etat_rover is None and not dry_run:
+        raise RuntimeError(
+            'Le rover ne repond pas a GET /state : verifier --rover (adresse, port 8080), que '
+            "rover_server.py tourne et que le reseau passe. Rien n'a ete envoye."
+        )
+    if etat_rover is not None:
+        odom = etat_rover.get('odom') or {}
+        journal(
+            f'Rover joint : liaison ESP32 {(etat_rover.get("link") or {}).get("connected")}, '
+            f'gyroscope pret {odom.get("gyro_ready")}, boot_id {etat_rover.get("boot_id")}'
+        )
+    else:
+        journal('Rover non joint (dry-run) : seule la camera est verifiee.')
     zone = camera.zone()
     if zone is None:
         raise RuntimeError("La camera ne donne pas d'image : impossible de connaitre la zone.")
+    pose = camera.rover_pose()
+    journal(
+        f'Zone vue par la camera : {zone[2] - zone[0]:.2f} x {zone[3] - zone[1]:.2f} m '
+        f'(x {zone[0]:.2f}..{zone[2]:.2f}, y {zone[1]:.2f}..{zone[3]:.2f}) ; '
+        f'echelle {decrire_echelle(camera)}'
+    )
+    if pose is None:
+        journal('Rover vu par la camera : NON')
+    else:
+        cap = 'inconnu' if pose[2] is None else f'{math.degrees(pose[2]):.0f} deg'
+        journal(f'Rover vu par la camera : ({pose[0]:.2f}, {pose[1]:.2f}) m, cap {cap}')
     if depart is None:
-        pose = camera.rover_pose()
         if pose is None:
             raise RuntimeError('La camera ne voit pas le rover : donne --depart x y.')
         depart = (pose[0], pose[1])
@@ -202,40 +283,116 @@ def lancer(
                 "origine au coin en bas a gauche de l'image, x vers la droite, y vers le "
                 'haut, en metres.'
             )
-    carte, rover = preparer(camera, requete, percevoir, options_rover, **reglages_carte)
-    return mission(
-        rover,
-        carte,
-        depart,
-        victime,
-        zone=zone,
-        tolerance=tolerance,
-        journal=journal,
-        settings=settings,
+    options = dict(options_rover or {})
+    options.setdefault('signaler', lambda texte: journal(f'  {texte}'))
+    carte, rover = preparer(camera, requete, percevoir, options, **reglages_carte)
+    suivi_ = Suivi(suivi, carte, rover, victime, zone, journal)
+    rover.placer(depart)  # pour le suivi ; mission() le refait
+    if dry_run:
+        return _premiere_decision(carte, rover, depart, victime, zone, tolerance, settings, suivi_)
+    suivi_.brancher()
+    try:
+        instantanes = mission(
+            rover,
+            carte,
+            depart,
+            victime,
+            zone=zone,
+            tolerance=tolerance,
+            journal=suivi_.journal,
+            evenement=suivi_.evenement,
+            settings=settings,
+        )
+    except ArretOperateur as e:
+        suivi_.journal(f'ARRET OPERATEUR : {e} -> mission terminee, envoi de /stop')
+        suivi_.ecrire('arret_operateur')
+        return {'etat': 'arret_operateur', 'raison': str(e), 'fin': {'traj': suivi_.traj}}
+    except BaseException as e:
+        try:  # le suivi ne doit pas masquer la vraie cause
+            suivi_.journal(f'MISSION INTERROMPUE : {type(e).__name__} {e}')
+            suivi_.ecrire('abandon' if isinstance(e, KeyboardInterrupt) else 'erreur')
+        except Exception:  # noqa: BLE001, S110
+            pass
+        raise
+    finally:
+        arreter_le_rover(requete, journal=journal)
+    # l'issue de la mission (cerveau.ETAT_SUIVI) : arrive, abandon ou erreur du rover
+    etat = ETAT_SUIVI.get(instantanes.get('issue'), 'abandon')
+    suivi_.ecrire(etat)
+    instantanes['etat'] = etat
+    return instantanes
+
+
+def _premiere_decision(carte, rover, depart, victime, zone, tolerance, settings, suivi):
+    """--dry-run : la decision que prendrait le cerveau au depart, et ses premiers pas."""
+    settings.apply_to_map(carte)
+    dec = carte.decider(
+        depart, victime, zone=zone, tolerance=tolerance, drone_disponible=rover.drone_disponible()
     )
+    chemin = [tuple(p) for p in dec.get('chemin') or []]
+    suivi.decision = {'action': dec['action'], 'raison': 'dry-run : premiere decision'}
+    suivi.chemin = [[float(x), float(y)] for x, y in chemin]
+    longueur = sum(math.dist(chemin[k], chemin[k + 1]) for k in range(len(chemin) - 1))
+    suivi.journal(f'[dry-run] decision : {dec["action"]}, chemin de {longueur:.2f} m')
+    if not rover.cap_fiable and (rover.position_drone() or (0, 0, None))[2] is None:
+        suivi.journal(
+            f"[dry-run] cap du rover inconnu : il avancera d'abord tout droit de "
+            f'{rover._pas_pour_le_cap():.2f} m pour le mesurer (marqueur ArUco : --marqueur)'
+        )
+    pos, reste = tuple(depart), list(chemin)
+    for k in range(PAS_AFFICHES):
+        if not reste:
+            break
+        cible, reste = avancer(pos, reste, settings.step)
+        suivi.journal(
+            f'[dry-run] pas {k + 1} : ({pos[0]:.2f}, {pos[1]:.2f}) -> '
+            f'({cible[0]:.2f}, {cible[1]:.2f}) m, {math.dist(pos, cible):.2f} m'
+        )
+        pos = cible
+    suivi.journal("[dry-run] arret apres la premiere decision : le rover n'a pas bouge")
+    suivi.ecrire('en_cours')
+    return {'etat': 'dry_run', 'decision': dec}
 
 
-def reglages_camera(args):
-    """Arguments de OverheadSettings d'apres la ligne de commande."""
-    reglages = {'camera_height': args.hauteur}
-    if args.metres_par_pixel is not None:
-        reglages['metres_per_pixel'] = args.metres_par_pixel
-    if args.marqueur is not None:
-        reglages['rover_marker_id'] = args.marqueur
-    if getattr(args, 'epaisseur_min', None):
-        reglages['min_obstacle_width'] = args.epaisseur_min
-    if getattr(args, 'photo_unique', False):
-        if args.depart:  # the rover is the blob there, whatever its size (cables...)
-            reglages['rover_hint'] = tuple(args.depart)
-        if args.effacer_objectif > 0:  # the goal's mark on the floor is not an obstacle
-            reglages['clear_areas'] = ((*args.victime, args.effacer_objectif),)
-    return reglages
+ATTENTE_PREMIERE_IMAGE = 15.0  # s : --camera, delai pour la premiere image du flux
+
+
+def _lecteur_camera(source, latence):
+    try:
+        from guidance_global_map.drone import camera_reader
+    except ImportError as e:
+        sys.exit(
+            f'--camera : {e}\nIl faut guidance_global_map.drone.camera_reader (camera en '
+            'direct, src/guidance_global_map). Sans lui : --image photo.jpg --dry-run.'
+        )
+    # latency : une image arrivee moins de `latence` s apres la demande est partie avant ;
+    # OverheadDrone.refresh(force=True) attend donc une image qui montre le rover arrete.
+    return camera_reader(source, latency=latence)
+
+
+def _attendre_image(lecteur, delai=ATTENTE_PREMIERE_IMAGE, dormir=time.sleep):
+    """Un flux qu'on vient d'ouvrir n'a pas encore d'image : on l'attend `delai` s au plus."""
+    fin = time.monotonic() + delai
+    while lecteur() is None:
+        if time.monotonic() >= fin:
+            return False
+        dormir(0.05)
+    return True
+
+
+def _percevoir(url):
+    try:
+        from perception_rover import percevoir_http
+    except ImportError as e:
+        sys.exit(f'--perception : {e}\nIl faut merging_map/perception_rover.py (percevoir_http).')
+    return percevoir_http(url)
 
 
 def rafraichir_apres(camera, latence, dormir):
-    """Pour RaspRoverReel(rafraichir_drone=...) avec une camera en direct : son flux a du
-    retard, donc on attend `latence` s avant de prendre l'image, pour qu'elle montre bien le
-    rover arrete."""
+    """Pour RaspRoverReel(rafraichir_drone=...) avec une camera en direct dont le lecteur n'a
+    pas read_new (drone.LiveCamera) : son flux a du retard, donc on attend `latence` s avant de
+    prendre l'image, pour qu'elle montre bien le rover arrete. Avec camera_reader (--camera),
+    c'est son parametre latency qui le fait."""
 
     def rafraichir():
         dormir(latence)
@@ -244,140 +401,151 @@ def rafraichir_apres(camera, latence, dormir):
     return rafraichir
 
 
-def main(argv=None):
+def analyser(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     source = p.add_mutually_exclusive_group(required=True)
     source.add_argument(
         '--camera',
-        help='camera du dessus en direct : URL du flux (application camera IP du telephone, '
-        'RTSP) ou numero de peripherique. Demande --metres-par-pixel',
+        help='camera du dessus en direct : indice local (0), URL http(s) MJPEG ou snapshot '
+        '(application camera IP du telephone), rtsp://, ou fichier '
+        '(guidance_global_map.drone.camera_reader). Demande --metres-par-pixel',
     )
     source.add_argument(
         '--image',
-        help='photo de la camera du dessus, relue a chaque image : une photo fixe ne voit pas '
-        'le rover bouger, a garder pour les essais sans camera',
-    )
-    p.add_argument(
-        '--metres-par-pixel',
-        type=float,
-        help="taille au sol d'un pixel de l'image, mesuree sur une image de la source. Sans "
-        "elle, l'echelle vient de --hauteur et de l'objectif d'une photo d'iPhone",
+        help='photo fixe de la camera du dessus : seulement avec --dry-run (une photo ne voit '
+        'pas le rover bouger)',
     )
     p.add_argument(
         '--latence',
         type=float,
         default=0.5,
-        help='retard du flux de --camera (s) : attente avant de regarder le rover arrete',
+        help='retard du flux de --camera (s) : apres un arret, la camera attend une image '
+        'arrivee au moins --latence s plus tard pour regarder le rover arrete',
     )
     p.add_argument(
         '--rover',
-        required=True,
-        help='serveur du rover (rover/rover_server.py, branche rover-teleop), '
-        'par exemple http://192.168.1.42:8080',
+        help='serveur du rover (rover/rover_server.py), par exemple http://192.168.1.42:8080 ; '
+        'facultatif avec --dry-run',
     )
     p.add_argument('--victime', type=float, nargs=2, required=True, metavar=('X', 'Y'))
     p.add_argument('--depart', type=float, nargs=2, metavar=('X', 'Y'))
+    p.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='aucun POST au rover : affiche zone, rover, echelle, premiere decision et '
+        "premiers pas, puis s'arrete",
+    )
     p.add_argument('--hauteur', type=float, default=1.9, help='hauteur de la camera (m)')
+    p.add_argument(
+        '--metres-par-pixel',
+        type=float,
+        help="taille au sol d'un pixel (m), mesuree a la regle sur l'image : prioritaire sur "
+        '--hauteur/--focale-35mm/--capteur',
+    )
+    p.add_argument('--focale-35mm', type=float, help='focale equivalente 35 mm (mm)')
+    p.add_argument('--capteur', type=int, nargs=2, metavar=('L', 'H'), help='capteur (pixels)')
     p.add_argument('--marqueur', type=int, help='id ArUco sur le rover, pour avoir son cap')
     p.add_argument(
-        '--photo-unique',
-        action='store_true',
-        help='avec --image : la photo ne sert qu au depart (carte + position), ensuite le rover '
-        'avance sur son odometrie. Demande --cap ou --marqueur',
-    )
-    p.add_argument(
-        '--cap',
+        '--hauteur-marqueur',
         type=float,
-        help='cap du rover au depart dans le repere de la photo, en degres depuis la droite de '
-        "l'image, sens trigonometrique : 0 = face a droite, 90 = face au haut de la photo",
+        help='hauteur du marqueur au-dessus du sol (m) : corrige la parallaxe de la position '
+        'du rover (avec --hauteur, hauteur de la camera) ; 0 par defaut, sans correction',
     )
+    p.add_argument('--perception', help='service de perception du rover (percevoir_http)')
+    p.add_argument('--suivi', help='fichier JSON de suivi, reecrit a chaque decision et pas')
     p.add_argument(
-        '--largeur-photo',
-        type=float,
-        help="largeur reelle (m) de la zone couverte par la photo (photo recadree sur l'arene "
-        'par exemple) : donne l echelle, a la place de --metres-par-pixel',
+        '--tolerance', type=float, default=TOLERANCE_PETITE_ZONE, help='arrivee a moins de (m)'
     )
+    p.add_argument('--vitesse', type=float, help='vitesse de croisiere du rover (m/s, 0.2)')
     p.add_argument(
-        '--epaisseur-min',
-        type=float,
-        default=0.0,
-        help="ignore ce qui est plus fin que cette largeur (m) sur l'image : scotch au sol, "
-        'cables. 0,03 conseille sur une photo ; un vrai obstacle aussi fin serait ignore aussi',
-    )
-    p.add_argument(
-        '--effacer-objectif',
-        type=float,
-        default=0.10,
-        help="avec --photo-unique : rayon (m) autour de la victime qui n'est pas un obstacle "
-        '(son repere au sol). 0 pour garder tout',
+        '--delai-http', type=float, default=1.0, help="delai d'une requete au rover (s)"
     )
     args = p.parse_args(argv)
-    if args.photo_unique:
-        if args.image is None:
-            p.error('--photo-unique va avec --image.')
-        if args.cap is None and args.marqueur is None:
-            p.error(
-                '--photo-unique demande --cap (ou --marqueur) : le cap de depart ne se voit pas '
-                'sur une photo, et le rover ne peut plus le mesurer en bougeant.'
-            )
-    if args.largeur_photo is not None:
-        if args.metres_par_pixel is not None:
-            p.error('--largeur-photo ou --metres-par-pixel, pas les deux.')
-        if args.image is None:
-            p.error('--largeur-photo va avec --image.')
-        import cv2
+    if args.image is not None and not args.dry_run:
+        p.error('--image (photo fixe) seulement avec --dry-run : il faut --camera pour rouler')
+    if args.rover is None and not args.dry_run:
+        p.error('--rover est obligatoire sans --dry-run')
+    if args.camera is not None and args.metres_par_pixel is None and not args.dry_run:
+        p.error(
+            "--camera demande --metres-par-pixel : l'echelle d'un flux video n'est pas celle "
+            "d'une photo (a mesurer a la regle, python -m guidance_global_map.measure_scale). "
+            "Seul --dry-run s'en passe, pour voir l'echelle deduite de --hauteur."
+        )
+    return args
 
-        photo = cv2.imread(args.image)
-        if photo is None:
-            sys.exit(f'Photo illisible : {args.image}')
-        args.metres_par_pixel = args.largeur_photo / photo.shape[1]
+
+def reglages_camera(args):
+    """Arguments de OverheadSettings d'apres la ligne de commande."""
+    reglages = {'camera_height': args.hauteur}
+    if args.metres_par_pixel is not None:
+        reglages['metres_per_pixel'] = args.metres_par_pixel
+    if getattr(args, 'focale_35mm', None) is not None:
+        reglages['focal_length_35mm'] = args.focale_35mm
+    if getattr(args, 'capteur', None) is not None:
+        reglages['sensor_size'] = tuple(args.capteur)
+    if args.marqueur is not None:
+        reglages['rover_marker_id'] = args.marqueur
+    if getattr(args, 'hauteur_marqueur', None) is not None:
+        reglages['marker_height'] = args.hauteur_marqueur
+    return reglages
+
+
+def main(argv=None):
+    args = analyser(argv)
     try:
-        from guidance_global_map.drone import LiveCamera, OverheadDrone, image_file_reader
+        from guidance_global_map.drone import OverheadDrone, image_file_reader
         from guidance_global_map.pipeline import OverheadSettings
     except ImportError as e:
         sys.exit(
-            f'{e}\nIl faut les modules de la branche overhead-camera sur le PYTHONPATH '
-            '(src/guidance_calib, src/guidance_global_map, src/guidance_rover_pose) et '
-            'opencv-contrib-python.'
+            f'{e}\nIl faut guidance_global_map sur le PYTHONPATH (src/guidance_calib, '
+            'src/guidance_global_map, src/guidance_rover_pose) et opencv-contrib-python.'
         )
-    options_rover = {}
-    if args.camera is not None:
-        if args.metres_par_pixel is None:
-            p.error(
-                "--camera demande --metres-par-pixel : l'echelle d'un flux video n'est pas "
-                "celle d'une photo."
-            )
-        source = int(args.camera) if args.camera.isdigit() else args.camera
-        lire = LiveCamera(source)
-        if not lire.wait_for_image(15.0):
-            sys.exit(f'Aucune image de la camera {args.camera} en 15 s.')
+    if args.camera:
+        lecteur = _lecteur_camera(args.camera, args.latence)
+        if not _attendre_image(lecteur):
+            lecteur.close()
+            sys.exit(f'Aucune image de la camera {args.camera} en {ATTENTE_PREMIERE_IMAGE:g} s.')
     else:
-        lire = image_file_reader(args.image)
-    reglages = OverheadSettings(**reglages_camera(args))
-    camera = OverheadDrone(lire, reglages)
-    if args.camera is not None:
-        options_rover['rafraichir_drone'] = rafraichir_apres(camera, args.latence, time.sleep)
-    if args.photo_unique:
-        try:
-            verifier_photo(camera, reglages)
-        except RuntimeError as e:
-            sys.exit(str(e))
-        camera = PhotoUnique(camera, None if args.cap is None else math.radians(args.cap))
-        options_rover['rafraichir_drone'] = camera.prise
-    settings = ARENA
-    if args.photo_unique:  # no drone will ever come back: do not wait 5 minutes for it
-        settings = dataclasses.replace(ARENA, drone_wait_max=PHOTO_UNIQUE_ATTENTE)
-    instantanes = lancer(
-        camera,
-        client_http(args.rover),
-        tuple(args.victime),
-        tuple(args.depart) if args.depart else None,
-        options_rover=options_rover,
-        settings=settings,
-    )
-    traj = instantanes['fin']['traj']
+        lecteur = image_file_reader(args.image)
+    percevoir = _percevoir(args.perception) if args.perception else None
+    if args.rover:
+        requete = client_http(args.rover, delai=args.delai_http)
+    else:
+        requete = lambda methode, chemin, corps=None: None  # noqa: E731 - dry-run sans rover
+    if args.dry_run:
+        requete = sans_post(requete)
+    options = {} if args.vitesse is None else {'vitesse': args.vitesse}
+    camera = OverheadDrone(lecteur, OverheadSettings(**reglages_camera(args)))
+    try:
+        resultat = lancer(
+            camera,
+            requete,
+            tuple(args.victime),
+            tuple(args.depart) if args.depart else None,
+            percevoir=percevoir,
+            tolerance=args.tolerance,
+            options_rover=options,
+            suivi=args.suivi,
+            dry_run=args.dry_run,
+        )
+    except KeyboardInterrupt:
+        sys.exit('Interrompu (Ctrl-C) : /stop envoye au rover.')
+    except (ServeurRoverError, RuntimeError, ValueError) as e:
+        sys.exit(f'ERREUR : {e}')
+    finally:
+        fermer = getattr(lecteur, 'close', None)
+        if fermer is not None:
+            fermer()
+    if resultat['etat'] == 'dry_run':
+        return resultat
+    traj = resultat['fin']['traj']
     distance = sum(math.dist(traj[k], traj[k + 1]) for k in range(len(traj) - 1))
-    print(f'Fin de mission : {distance:.2f} m parcourus.')
+    print(f'Fin de mission ({resultat["etat"]}) : {distance:.2f} m parcourus.')
+    print(
+        f'Issue : {resultat.get("issue", resultat["etat"])} ; '
+        f'raison : {resultat.get("raison") or "-"}'
+    )
+    return resultat
 
 
 if __name__ == '__main__':

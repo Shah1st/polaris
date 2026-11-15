@@ -19,12 +19,17 @@ Message attendu (drone ou rover)
     {"source": "drone" | "rover", "t": <secondes>, "z": int, "x": int, "y": int,
      "data": matrice N x N de -1 / 0 / 1}
 
+Plusieurs appareils d'un meme role : "source": "drone:<id>" ou "rover:<id>" (le role est
+avant les deux-points). Les tuiles de chaque appareil sont gardees a part, puis fusionnees
+par role ("drone" et "rover" tout courts sont des appareils comme les autres).
+
 Regles de fusion
 ----------------
 - Une case INCONNUE (-1) ne modifie jamais rien.
 - Meme source, meme tuile : la valeur la plus recente l'emporte.
-- Meme source, niveaux differents : le niveau le plus fin l'emporte.
-- Entre sources : une case connue du ROVER l'emporte sur le DRONE.
+- Meme role, niveaux differents : le niveau le plus fin l'emporte.
+- Meme role, meme niveau, appareils differents : la tuile la plus recente l'emporte.
+- Entre roles : une case connue d'un ROVER l'emporte sur les DRONES.
 - Passage a un niveau plus grossier : un seul obstacle suffit a bloquer la case (max).
 """
 
@@ -33,9 +38,25 @@ import math
 
 import numpy as np
 
+try:  # composantes connexes en C : une victime inatteignable coute des ms, pas des secondes
+    import cv2
+except ImportError:  # sans OpenCV, meme resultat par un parcours en Python, plus lent
+    cv2 = None
+
 OBSTACLE, LIBRE, INCONNU = 1, 0, -1
-SOURCES = ('drone', 'rover')
+SOURCES = ('drone', 'rover')  # les roles ; une source est un role ou '<role>:<id>'
 SRC_AUCUNE, SRC_DRONE, SRC_ROVER = 0, 1, 2
+
+
+def role_source(source):
+    """'drone', 'rover', 'drone:<id>' ou 'rover:<id>' -> 'drone' ou 'rover' ; ValueError
+    sinon."""
+    if not isinstance(source, str):
+        raise ValueError(f'source inconnue : {source!r}')
+    role, deux_points, ident = source.partition(':')
+    if role not in SOURCES or (deux_points and not ident):
+        raise ValueError(f'source inconnue : {source!r}')
+    return role
 
 
 # ----------------------------------------------------------------------------
@@ -169,7 +190,8 @@ class CarteFusion:
         self.niveau_plan, self.niveau_zoom = niveau_plan, niveau_zoom
         self.rayon_robot, self.cout_inconnu = rayon_robot, cout_inconnu
         self.marge_securite = marge_securite
-        self.tuiles = {s: {} for s in SOURCES}  # source -> {(z, x, y): matrice}
+        # source ('drone', 'rover', 'drone:<id>', 'rover:<id>') -> {(z, x, y): matrice}
+        self.tuiles = {s: {} for s in SOURCES}
         self.maj = {s: {} for s in SOURCES}  # source -> {(z, x, y): t}
         self.demandes = set()  # tuiles deja demandees au drone
         self.inspectees = set()  # tuiles deja inspectees par le rover lui-meme (sans drone)
@@ -188,6 +210,11 @@ class CarteFusion:
         # it. Field values; mission_settings.ARENA sets smaller ones for the 2.4 m arena.
         self.inspect_reserve = 0.35
         self.inspect_max_distance = 1.2
+        # Duree de vie (s) des obstacles signales par signaler_obstacle (chocs) ; None = pour
+        # toujours (comportement historique). Avec une duree, un faux choc ('stalled',
+        # patinage) ne ferme un passage que ce temps-la : expirer_chocs(t) les efface.
+        self.duree_choc = None
+        self.chocs_temporaires = []  # (x, y, rayon, t_fin, source)
 
     # ---- geometrie --------------------------------------------------------
     @property
@@ -211,10 +238,13 @@ class CarteFusion:
         return tx * taille, ty * taille, taille  # coin sud-ouest + cote
 
     # ---- reception --------------------------------------------------------
+    def sources(self, role):
+        """Les sources (appareils) d'un role connues de la carte."""
+        return [s for s in self.tuiles if role_source(s) == role]
+
     def recevoir(self, msg):
         s, z = msg['source'], int(msg['z'])
-        if s not in SOURCES:
-            raise ValueError(f'source inconnue : {s!r}')
+        role_source(s)
         if not 0 <= z <= self.zmax:
             raise ValueError(f'niveau z={z} hors de [0, {self.zmax}]')
         data = np.asarray(msg['data'], dtype=np.int8)
@@ -224,7 +254,8 @@ class CarteFusion:
             raise ValueError('valeurs autorisees : -1, 0, 1')
         k = (z, int(msg['x']), int(msg['y']))
         t = float(msg.get('t', 0.0))
-        store = self.tuiles[s]
+        store = self.tuiles.setdefault(s, {})
+        self.maj.setdefault(s, {})
         if k in store and self.maj[s].get(k, -math.inf) > t:
             # message plus ancien que ce qu'on a : il ne complete que les trous
             store[k] = np.where(store[k] != INCONNU, store[k], data)
@@ -235,33 +266,103 @@ class CarteFusion:
             store[k] = data.copy()
             self.maj[s][k] = t
 
-    def instantane_rover(self):
+    def instantane_rover(self, source='rover'):
         """Copie des tuiles du rover, pour pouvoir annuler plus tard des observations faites
         avec une position douteuse (pendant une coupure du drone)."""
-        return {k: v.copy() for k, v in self.tuiles['rover'].items()}, dict(self.maj['rover'])
+        tuiles = self.tuiles.get(source, {})
+        return {k: v.copy() for k, v in tuiles.items()}, dict(self.maj.get(source, {}))
 
-    def restaurer_rover(self, instantane):
+    def restaurer_rover(self, instantane, source='rover'):
         """Remet les tuiles du rover dans l'etat d'un instantane_rover()."""
         tuiles, maj = instantane
-        self.tuiles['rover'] = {k: v.copy() for k, v in tuiles.items()}
-        self.maj['rover'] = dict(maj)
+        self.tuiles[source] = {k: v.copy() for k, v in tuiles.items()}
+        self.maj[source] = dict(maj)
 
-    def signaler_obstacle(self, x, y, rayon=0.1, t=0.0):
-        """Obstacle 'ressenti' par le rover (patinage, blocage, pente trop forte).
-        Envoye comme une tuile rover ordinaire, via recevoir()."""
+    def _disque(self, x, y, rayon):
+        """Cases fines (niveau zmax) dont le centre est dans le disque : {cle: masque}."""
         r = self.res_fine
-        tuiles = {}
+        masques = {}
         for i in range(math.floor((y - rayon) / r), math.floor((y + rayon) / r) + 1):
             for j in range(math.floor((x - rayon) / r), math.floor((x + rayon) / r) + 1):
                 cx, cy = (j + 0.5) * r, (i + 0.5) * r
                 if (cx - x) ** 2 + (cy - y) ** 2 > rayon**2:
                     continue
                 k = self.cle(cx, cy, self.zmax)
-                tu = tuiles.setdefault(k, np.full((self.n, self.n), INCONNU, np.int8))
-                tu[i - k[2] * self.n, j - k[1] * self.n] = OBSTACLE
-        for (z, tx, ty), data in tuiles.items():
-            tk = max(t, self.maj['rover'].get((z, tx, ty), t))  # toujours prioritaire
-            self.recevoir({'source': 'rover', 't': tk, 'z': z, 'x': tx, 'y': ty, 'data': data})
+                m = masques.setdefault(k, np.zeros((self.n, self.n), bool))
+                m[i - k[2] * self.n, j - k[1] * self.n] = True
+        return masques
+
+    def signaler_obstacle(self, x, y, rayon=0.1, t=0.0, duree=None, source='rover'):
+        """Obstacle 'ressenti' par le rover (patinage, blocage, pente trop forte).
+        Envoye comme une tuile rover ordinaire, via recevoir().
+
+        `duree` (s ; par defaut self.duree_choc, None = pour toujours) : l'obstacle est
+        efface par expirer_chocs(t') des que t' >= t + duree."""
+        for (z, tx, ty), masque in self._disque(x, y, rayon).items():
+            data = np.where(masque, OBSTACLE, INCONNU).astype(np.int8)
+            tk = max(t, self.maj.get(source, {}).get((z, tx, ty), t))  # toujours prioritaire
+            self.recevoir({'source': source, 't': tk, 'z': z, 'x': tx, 'y': ty, 'data': data})
+        duree = self.duree_choc if duree is None else duree
+        if duree is not None:
+            self.chocs_temporaires.append((x, y, rayon, t + duree, source))
+
+    def _effacer(self, source, cle, masque):
+        """Remet a inconnu les cases `masque` d'une tuile (supprimee si elle devient vide).
+        Renvoie le nombre de cases connues effacees."""
+        store = self.tuiles.get(source, {})
+        if cle not in store:
+            return 0
+        tuile = store[cle]
+        n = int(((tuile != INCONNU) & masque).sum())
+        tuile[masque] = INCONNU
+        if (tuile == INCONNU).all():
+            del store[cle]
+            self.maj[source].pop(cle, None)
+        return n
+
+    def expirer_chocs(self, t):
+        """Efface les chocs dont la duree de vie est passee a l'instant t ; renvoie leur
+        nombre. Leurs cases redeviennent inconnues pour le rover : la carte du drone reprend
+        la main. Sans duree de vie (defaut), ne fait rien."""
+        restants, effaces = [], 0
+        for choc in self.chocs_temporaires:
+            x, y, rayon, t_fin, source = choc
+            if t < t_fin:
+                restants.append(choc)
+                continue
+            for cle, masque in self._disque(x, y, rayon).items():
+                self._effacer(source, cle, masque)
+            effaces += 1
+        self.chocs_temporaires = restants
+        return effaces
+
+    def oublier_rover(self, zone=None, source=None):
+        """Oublie ce que les rovers ont vu ou ressenti (vues et chocs) dans `zone`
+        (x0, y0, x1, y1 en m ; None = partout), pour toutes les sources du role rover ou
+        seulement `source`. Pour reparer la carte apres un faux choc ou un passant vu par la
+        camera du rover : la carte du drone reprend la main. Renvoie le nombre de cases
+        oubliees."""
+        sources = [source] if source is not None else self.sources('rover')
+        oubliees = 0
+        for s in sources:
+            for cle in list(self.tuiles.get(s, {})):
+                masque = np.ones((self.n, self.n), bool)
+                if zone is not None:
+                    x0, y0, cote = self.rect_tuile(cle)
+                    centres = (np.arange(self.n) + 0.5) * (cote / self.n)
+                    dans_x = (x0 + centres >= zone[0]) & (x0 + centres <= zone[2])
+                    dans_y = (y0 + centres >= zone[1]) & (y0 + centres <= zone[3])
+                    masque = dans_y[:, None] & dans_x[None, :]
+                oubliees += self._effacer(s, cle, masque)
+
+        def garde(choc):
+            x, y, _, _, s = choc
+            if s not in sources:
+                return True
+            return zone is not None and not (zone[0] <= x <= zone[2] and zone[1] <= y <= zone[3])
+
+        self.chocs_temporaires = [c for c in self.chocs_temporaires if garde(c)]
+        return oubliees
 
     # ---- vue fusionnee ----------------------------------------------------
     def grille(self, x0, y0, x1, y1):
@@ -272,10 +373,19 @@ class CarteFusion:
         i1, j1 = math.ceil(y1 / r - eps), math.ceil(x1 / r - eps)
         nh, nw = i1 - i0, j1 - j0
         couches = {}
-        for s in SOURCES:
+        for role in SOURCES:
             val = np.full((nh, nw), INCONNU, np.int8)
             zc = np.full((nh, nw), -1, np.int8)
-            for (z, tx, ty), data in sorted(self.tuiles[s].items(), key=lambda kv: kv[0][0]):
+            # Du plus grossier au plus fin, puis du plus ancien au plus recent : chaque tuile
+            # ecrase ce qui precede la ou elle sait. Pour une seule source, les tuiles d'un
+            # meme niveau ne se recouvrent pas : seul l'ordre des niveaux compte.
+            tuiles = [
+                (z, self.maj[s].get((z, tx, ty), 0.0), tx, ty, data)
+                for s in self.sources(role)
+                for (z, tx, ty), data in self.tuiles[s].items()
+            ]
+            tuiles.sort(key=lambda u: (u[0], u[1]))
+            for z, _, tx, ty, data in tuiles:
                 f = 2 ** (self.zmax - z)  # 1 case de la tuile = f x f cases fines
                 cote = self.n * f
                 ti0, tj0 = ty * cote, tx * cote
@@ -290,7 +400,7 @@ class CarteFusion:
                 v = val[a0 - i0 : a1 - i0, b0 - j0 : b1 - j0]
                 v[connu] = patch[connu]
                 zc[a0 - i0 : a1 - i0, b0 - j0 : b1 - j0][connu] = z
-            couches[s] = (val, zc)
+            couches[role] = (val, zc)
         vd, zd = couches['drone']
         vr, _ = couches['rover']
         rover_connu = vr != INCONNU
@@ -346,15 +456,62 @@ class CarteFusion:
 
     # ---- planification ----------------------------------------------------
     def _liberer_depart(self, plan, i, j):
-        """Le robot doit pouvoir quitter sa case meme s'il frole un obstacle."""
+        """Cases bloquees pour un robot parti de la case (i, j).
+
+        Si le depart est libre, rien ne change : le gonflement garde le robot a son rayon de
+        tout obstacle. S'il est dans une zone gonflee (choc, marge du drone qui a grandi,
+        obstacle apparu), le robot doit pouvoir en sortir, mais sans s'approcher : pres du
+        depart, seules sont liberees les cases au moins aussi loin de l'obstacle brut le plus
+        proche que le depart lui-meme (sortie monotone). Les obstacles bruts restent
+        bloques."""
+        if not plan.dedans(i, j) or not plan.bloque[i, j]:
+            return plan.bloque
         r = math.ceil((self.rayon_effectif + self.marge_drone) / plan.res)
+        nh, nw = plan.val.shape
+        a0, a1, b0, b1 = max(i - r, 0), min(i + r + 1, nh), max(j - r, 0), min(j + r + 1, nw)
+        # une case de la fenetre n'est gonflee que par un obstacle a moins de r cases d'elle
+        c0, c1 = max(i - 2 * r - 1, 0), min(i + 2 * r + 2, nh)
+        d0, d1 = max(j - 2 * r - 1, 0), min(j + 2 * r + 2, nw)
+        oi, oj = np.nonzero(plan.val[c0:c1, d0:d1] == OBSTACLE)
+        oi, oj = oi + c0, oj + d0
+
+        def distance(ii, jj):
+            """Distance (m) du centre des cases au carre de l'obstacle brut le plus proche,
+            comme dans gonfler()."""
+            if oi.size == 0:
+                return np.full(ii.shape, np.inf)
+            di = np.maximum(np.abs(ii[..., None] - oi) - 0.5, 0.0)
+            dj = np.maximum(np.abs(jj[..., None] - oj) - 0.5, 0.0)
+            return plan.res * np.hypot(di, dj).min(axis=-1)
+
+        ii, jj = np.mgrid[a0:a1, b0:b1]
+        d_depart = distance(np.array([i]), np.array([j]))[0]
+        sortie = (distance(ii, jj) >= d_depart - 1e-9) & (plan.val[a0:a1, b0:b1] != OBSTACLE)
         bloque = plan.bloque.copy()
-        for di in range(-r, r + 1):
-            for dj in range(-r, r + 1):
-                a, b = i + di, j + dj
-                if plan.dedans(a, b) and plan.val[a, b] != OBSTACLE:
-                    bloque[a, b] = False
+        bloque[a0:a1, b0:b1] &= ~sortie
         return bloque
+
+    @staticmethod
+    def _composante(bloque, si, sj):
+        """Cases que le robot peut atteindre depuis (si, sj) sans passer par une case bloquee
+        (4-connexite ; l'A* 8-connexe sans diagonale entre deux cases bloquees atteint
+        exactement les memes)."""
+        if cv2 is not None:
+            libre = (~bloque).astype(np.uint8)
+            libre[si, sj] = 1
+            _, etiquettes = cv2.connectedComponents(libre, connectivity=4)
+            return etiquettes == etiquettes[si, sj]
+        vu = np.zeros_like(bloque)
+        pile = [(si, sj)]
+        vu[si, sj] = True
+        nh, nw = vu.shape
+        while pile:
+            i, j = pile.pop()
+            for a, b in ((i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)):
+                if 0 <= a < nh and 0 <= b < nw and not vu[a, b] and not bloque[a, b]:
+                    vu[a, b] = True
+                    pile.append((a, b))
+        return vu
 
     def astar(self, plan, depart, objectif, tolerance, cout_inconnu=None):
         """A* 8-connexe. Arrivee = n'importe quelle case libre a moins de `tolerance` m.
@@ -373,10 +530,13 @@ class CarteFusion:
         ys = (np.arange(nh) + plan.i0 + 0.5) * res
         dist = np.hypot(xs[None, :] - objectif[0], ys[:, None] - objectif[1])
         hgrille = np.maximum(0.0, dist / res - tolerance / res)
+        bloque = self._liberer_depart(plan, si, sj)
+        if cv2 is not None and not (self._composante(bloque, si, sj) & (hgrille == 0.0)).any():
+            return None  # aucune arrivee atteignable : inutile d'explorer toute la carte
         h = hgrille.ravel().tolist()
         but = (hgrille == 0.0).ravel().tolist()
         cout = np.where(plan.val == INCONNU, cout_inc, 1.0).ravel().tolist()
-        b = self._liberer_depart(plan, si, sj).ravel().tolist()
+        b = bloque.ravel().tolist()
 
         meilleur = [math.inf] * (nh * nw)
         parent = [-1] * (nh * nw)
@@ -421,20 +581,9 @@ class CarteFusion:
 
     def atteignable(self, plan, depart):
         si, sj = plan.ij(*depart)
-        bloque = self._liberer_depart(plan, si, sj)
-        vu = np.zeros_like(bloque)
         if not plan.dedans(si, sj):
-            return vu
-        pile = [(si, sj)]
-        vu[si, sj] = True
-        nh, nw = vu.shape
-        while pile:
-            i, j = pile.pop()
-            for a, b in ((i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)):
-                if 0 <= a < nh and 0 <= b < nw and not vu[a, b] and not bloque[a, b]:
-                    vu[a, b] = True
-                    pile.append((a, b))
-        return vu
+            return np.zeros_like(plan.bloque)
+        return self._composante(self._liberer_depart(plan, si, sj), si, sj)
 
     def premier_point_bloque(self, chemin, zone=None, horizon=None):
         """Premier point du chemin (ou de ses `horizon` premiers metres) qui tombe sur un
@@ -465,16 +614,13 @@ class CarteFusion:
             if fenetre[0] >= fenetre[2] or fenetre[1] >= fenetre[3]:
                 return None
         plan = self.grille_plan(self.grille(*fenetre))
-        # Quand la marge du drone est elargie, le rover peut se retrouver dans cette marge :
-        # le A* l'autorise a en sortir (_liberer_depart), on ne bloque donc pas non plus les
-        # premiers centimetres du chemin, sinon il replanifierait en boucle sur place.
-        x0, y0 = morceau[0]
-        sortie = self.rayon_effectif + self.marge_drone + res_plan if self.marge_drone > 0 else 0
+        # Le rover peut se retrouver dans une zone gonflee (marge du drone qui grandit, choc) :
+        # meme regle de sortie que le A* (_liberer_depart), sinon il replanifierait en boucle
+        # sur place ; mais un chemin qui se rapproche d'un obstacle reste refuse.
+        bloque = self._liberer_depart(plan, *plan.ij(*morceau[0]))
         for x, y in morceau[1:]:
-            if math.hypot(x - x0, y - y0) <= sortie:
-                continue
             i, j = plan.ij(x, y)
-            if plan.dedans(i, j) and plan.bloque[i, j]:
+            if plan.dedans(i, j) and bloque[i, j]:
                 return x, y
         return None
 
@@ -598,10 +744,10 @@ class CarteFusion:
         return None
 
     def zone_survolee(self):
-        """Rectangle (x0, y0, x1, y1) couvert par les tuiles du drone, ou None."""
-        if not self.tuiles['drone']:
+        """Rectangle (x0, y0, x1, y1) couvert par les tuiles des drones, ou None."""
+        rects = [self.rect_tuile(k) for s in self.sources('drone') for k in self.tuiles[s]]
+        if not rects:
             return None
-        rects = [self.rect_tuile(k) for k in self.tuiles['drone']]
         return (
             min(x for x, _, _ in rects),
             min(y for _, y, _ in rects),
@@ -651,6 +797,7 @@ class CarteFusion:
             zone = self.zone_par_defaut(depart, objectif, marge)
         g = self.grille(*zone)
         plan = self.grille_plan(g)
+        tolerance = self._tolerance_arrivee(plan, objectif, tolerance)
 
         chemin = self.astar(plan, depart, objectif, tolerance)
         if chemin:
@@ -681,8 +828,8 @@ class CarteFusion:
 
         # plus rien a verifier : on va au plus pres de la victime
         reach = self.atteignable(plan, depart)
-        idx = np.argwhere(reach)
-        if len(idx) == 0:
+        ii, jj = np.nonzero(reach)
+        if ii.size == 0:
             return {
                 'action': 'OBJECTIF_DEGRADE',
                 'point': depart,
@@ -690,18 +837,32 @@ class CarteFusion:
                 'distance_restante': math.hypot(depart[0] - objectif[0], depart[1] - objectif[1]),
                 'grille': g,
             }
-        pts = [plan.xy(i, j) for i, j in idx]
-        dist = [math.hypot(x - objectif[0], y - objectif[1]) for x, y in pts]
+        xs = (jj + plan.j0 + 0.5) * plan.res
+        ys = (ii + plan.i0 + 0.5) * plan.res
+        dist = np.hypot(xs - objectif[0], ys - objectif[1])
         best = int(np.argmin(dist))
-        point = pts[best]
+        point = (float(xs[best]), float(ys[best]))
         chemin = self.astar(plan, depart, point, tolerance=plan.res)
         return {
             'action': 'OBJECTIF_DEGRADE',
             'point': point,
             'chemin': chemin or [depart],
-            'distance_restante': dist[best],
+            'distance_restante': float(dist[best]),
             'grille': g,
         }
+
+    def _tolerance_arrivee(self, plan, objectif, tolerance):
+        """Rayon d'arrivee autour de la victime. Si aucune case libre n'est a moins de
+        `tolerance` (victime vue comme un obstacle par la camera du dessus, ou couchee contre
+        un mur, avec une tolerance plus petite que le rayon du robot), on accepte les cases
+        juste hors du gonflement : tolerance + rayon du robot + marge du drone + une case."""
+        nh, nw = plan.val.shape
+        xs = (np.arange(nw) + plan.j0 + 0.5) * plan.res
+        ys = (np.arange(nh) + plan.i0 + 0.5) * plan.res
+        proche = np.hypot(xs[None, :] - objectif[0], ys[:, None] - objectif[1]) <= tolerance
+        if (proche & ~plan.bloque).any():
+            return tolerance
+        return tolerance + self.rayon_effectif + self.marge_drone + plan.res
 
 
 # ----------------------------------------------------------------------------

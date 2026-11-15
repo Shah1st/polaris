@@ -82,6 +82,8 @@
   #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
            background: var(--bad); color: #fff; padding: 8px 14px; border-radius: 8px;
            display: none; max-width: 90vw; }
+  #faults { margin: 12px 16px 0; padding: 8px 12px; border: 1px solid var(--bad); border-radius: 10px;
+            background: var(--panel); color: var(--bad); font-weight: 600; white-space: pre-line; }
 </style>
 </head>
 <body>
@@ -98,6 +100,7 @@
   <button id="bMode" title="Switch between the real rover and the simulated one">…</button>
   <button class="stop" id="bStop" title="Space or Esc">STOP</button>
 </header>
+<div id="faults" hidden></div>
 
 <main>
   <div>
@@ -488,7 +491,21 @@ $('bGyro').onclick = () => post('/calibrate_gyro');
 const fmt = (x, d = 2) => (x === null || x === undefined || Number.isNaN(x)) ? '–' : (+x).toFixed(d);
 function pill(id, text, cls) { const p = $(id); p.textContent = text; p.className = 'pill ' + (cls || ''); }
 
+// Why the rover stopped by itself, and errors it caught and kept running after. First in
+// render(), so it shows even if the rest fails; an older server without these fields shows nothing.
+function renderFaults(s) {
+  const c = s.ctrl || {}, L = s.link || {}, lines = [];
+  if (c.fault) lines.push('Stopped by itself: ' + c.fault);
+  if (s.loop_errors) lines.push(`Control loop errors: ${s.loop_errors}` +
+                                (s.last_loop_error ? ' (last: ' + s.last_loop_error + ')' : ''));
+  if (L.handler_errors) lines.push(`ESP32 message errors: ${L.handler_errors}` +
+                                   (L.last_handler_error ? ' (last: ' + L.last_handler_error + ')' : ''));
+  $('faults').textContent = lines.join('\n');
+  $('faults').hidden = !lines.length;
+}
+
 function render(s) {
+  renderFaults(s);
   const o = s.odom, c = s.ctrl, L = s.link;
   if (L.connected && L.rx_age !== null && L.rx_age < 1) pill('pLink', 'ESP32 OK', 'ok');
   else pill('pLink', L.error ? 'ESP32: ' + L.error : 'ESP32: no data', 'bad');
