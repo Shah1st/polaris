@@ -39,11 +39,11 @@ Choc
 
 Liaison
 -------
-Seule une absence de reponse (delai depasse, connexion impossible) veut dire « rover
-injoignable ». Une reponse HTTP d'erreur (400, 404...) est une erreur de programme : elle
-leve ServeurRoverError au lieu de declencher le secours. Quand l'ordinateur se tait, le
-serveur finit le pas en cours puis s'arrete : il n'y a PAS de programme de retour embarque,
-l'ordinateur attend que la liaison revienne.
+Seule une absence de reponse pendant delai_liaison s (2 s) veut dire « rover injoignable » :
+une reponse perdue sur le Wi-Fi ne compte pas. Une reponse HTTP d'erreur (400, 404...) est une
+erreur de programme : elle leve ServeurRoverError au lieu de declencher le secours. Quand
+l'ordinateur se tait, le serveur finit le pas en cours puis s'arrete : il n'y a PAS de
+programme de retour embarque, l'ordinateur attend que la liaison revienne.
 
 Ce qui se branche de l'exterieur
 --------------------------------
@@ -156,6 +156,7 @@ class RaspRoverReel(RobotOdometrie):
         pas_cap=0.15,
         patinage=0.3,
         delai_pret=15.0,
+        delai_liaison=2.0,
         delai_retour=60.0,
         inclinaison_camera=-20,
         portee_camera=2.0,
@@ -172,6 +173,9 @@ class RaspRoverReel(RobotOdometrie):
         self.pas_cap = pas_cap  # m, ligne droite pour mesurer le cap au depart
         self.patinage = patinage  # deplacement vu / deplacement des roues sous ce rapport
         self.delai_pret, self.delai_retour = delai_pret, delai_retour  # s
+        # s sans reponse avant de declarer la liaison perdue : une reponse perdue sur le Wi-Fi
+        # n'est pas une coupure (le cerveau marquerait sinon une zone interdite)
+        self.delai_liaison = delai_liaison
         self.inclinaison_camera, self.portee_camera = inclinaison_camera, portee_camera
         self.horloge, self.dormir = horloge, dormir
         self.joignable, self.pret = True, False
@@ -183,8 +187,18 @@ class RaspRoverReel(RobotOdometrie):
         self.joignable = reponse is not None
         return reponse
 
+    def _insister(self, methode, chemin, corps=None):
+        """Comme _demander, en reessayant pendant delai_liaison s. Renvoyer un pas deja recu
+        est sans danger : le serveur remplace le pas en cours par le nouveau."""
+        debut = self.temps()
+        while True:
+            reponse = self._demander(methode, chemin, corps)
+            if reponse is not None or self.temps() - debut >= self.delai_liaison:
+                return reponse
+            self.dormir(self.periode)
+
     def _etat(self):
-        return self._demander('GET', '/state')
+        return self._insister('GET', '/state')
 
     def arreter(self):
         self._demander('POST', '/stop')
@@ -233,13 +247,14 @@ class RaspRoverReel(RobotOdometrie):
         self._avancer_estimation(self.repere.vers_carte(xo, yo))
 
     def _mesure_fraiche(self):
-        """Position vue par la camera sur une image prise maintenant (rover arrete), ou None."""
-        if not self.drone.disponible():
-            return None
+        """Position vue par la camera sur une image prise maintenant (rover arrete), ou None.
+        L'image est prise avant disponible(), pour ne pas la traiter deux fois."""
         if self.rafraichir_drone is not None:
             self.rafraichir_drone()
         else:
             self.dormir(self.attente_image)  # laisser passer une image prise apres l'arret
+        if not self.drone.disponible():
+            return None
         return self.position_drone()
 
     def _recaler_a_l_arret(self, mesure, etat, nouvel_appui=False):
@@ -296,16 +311,22 @@ class RaspRoverReel(RobotOdometrie):
         if avant is None:
             return None, None
         dernier = (avant['ctrl'].get('history') or [None])[0]
-        if self._demander('POST', chemin, corps) is None:
+        if self._insister('POST', chemin, corps) is None:
             return None, None
-        delai = 3.0 * longueur / self.vitesse + 12.0  # comme le serveur, plus une marge
+        # le serveur abandonne un pas apres max(20 s, 3 x longueur / vitesse + 10 s) : on lui
+        # laisse 5 s de plus pour le faire lui-meme
+        delai = max(20.0, 3.0 * longueur / self.vitesse + 10.0) + 5.0
         debut, vu_en_cours = self.temps(), False
+        derniere_reponse = debut
         etat = avant
         while self.temps() - debut < delai:
             self.dormir(self.periode)
-            etat = self._etat()
+            etat = self._demander('GET', '/state')
             if etat is None:
-                return None, None  # le serveur finit le pas seul puis s'arrete
+                if self.temps() - derniere_reponse < self.delai_liaison:
+                    continue  # une reponse perdue : le serveur continue le pas sans nous
+                return None, None  # liaison perdue : le serveur finit le pas puis s'arrete
+            derniere_reponse = self.temps()
             self._suivre(etat)
             ctrl = etat['ctrl']
             # en attente, en cours, ou a l'arret le temps de mesurer (settle, 0,4 s)
@@ -410,7 +431,7 @@ class RaspRoverReel(RobotOdometrie):
         debut = self.temps()
         while self.temps() - debut < self.delai_retour:
             self.dormir(0.5)
-            if self._etat() is None:
+            if self._demander('GET', '/state') is None:
                 continue
             self.arreter()
             etat = self._etat()

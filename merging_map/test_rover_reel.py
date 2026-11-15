@@ -35,6 +35,7 @@ class FauxServeur:
         self.t = 0.0
         self.mode, self.tache, self.queued, self.history = 'idle', None, [], []
         self.joignable, self.connecte, self.gyro_pret_a = True, True, 0.0
+        self.coupure = (math.inf, math.inf)  # (t0, t1): no answer in between
         self.drone_ok, self.cap_visible = True, True
         self.periode_camera = periode_camera
         self.passe = [(0.0, x, y, cap)]  # truth over time, for the slow camera
@@ -44,7 +45,7 @@ class FauxServeur:
     # ---- the HTTP API ------------------------------------------------------------------
     def requete(self, methode, chemin, corps=None):
         self.requetes.append((self.t, methode, chemin, corps))
-        if not self.joignable:
+        if not self.joignable or self.coupure[0] <= self.t < self.coupure[1]:
             return None
         if (methode, chemin) == ('GET', '/state'):
             return json.loads(json.dumps(self.etat()))  # a copy, like an HTTP answer
@@ -234,6 +235,22 @@ def test_odometry_carries_the_position_when_the_camera_is_lost() -> None:
     r.deplacer((1.3, 1.9))
     assert math.dist(r.position(), (faux.x, faux.y)) < 0.03  # 2 % wheel slip only
     assert r.incertitude() > 0
+    faux.drone_ok = True  # the camera sees the rover again
+    assert 0 < r.recaler() < 0.03
+    assert r.position() == (faux.x, faux.y) and r.incertitude() == 0
+
+
+def test_heading_is_measured_backwards_when_the_rover_faces_a_wall() -> None:
+    """No heading and a wall right in front: the 15 cm straight line stalls, so the rover
+    backs up to measure its heading, and reports the wall."""
+    faux = FauxServeur(1.0, 1.0, 0.0, mur_x=1.02)
+    faux.cap_visible = False
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    impact = r.deplacer((1.5, 1.0))
+    assert [c['distance'] for c in chemins(faux, '/move')] == [0.15, -0.15]
+    assert r.cap_fiable and abs(angle_normalise(r.cap - faux.cap)) < 0.05
+    assert impact is not None and math.dist(impact, (1.17, 1.0)) < 0.03
 
 
 def test_stalled_wheels_are_a_bump() -> None:
@@ -267,6 +284,19 @@ def test_lost_link_is_not_a_bump() -> None:
     assert not r.rover_joignable()
 
 
+def test_a_few_lost_answers_are_not_a_lost_link() -> None:
+    """Wi-Fi drops answers for 1 s in the middle of a step: the server keeps driving, the
+    adapter keeps asking, and the brain never hears of it (no no-go zone)."""
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    r.deplacer((1.2, 1.0))
+    faux.coupure = (faux.t + 0.5, faux.t + 1.5)
+    assert r.deplacer((1.6, 1.0)) is None
+    assert r.rover_joignable()
+    assert math.dist((faux.x, faux.y), (1.6, 1.0)) < 0.03
+
+
 def test_waits_for_the_gyro_before_the_first_move() -> None:
     faux = FauxServeur(1.0, 1.0, 0.0)
     faux.gyro_pret_a = 3.0  # ESP32 boot + gyro bias, the rover must stand still
@@ -287,14 +317,23 @@ def test_waits_for_the_gyro_before_the_first_move() -> None:
 def test_slow_camera_gives_no_false_bump() -> None:
     """A camera with one image a second, without the rover's heading: the position comes from
     the odometry while the rover moves, and from an image taken after it stopped. (With the
-    previous adapter, which trusted every image: 4 false bumps and 35 to 54 cm of error.)"""
+    previous adapter, which trusted every image: 4 false bumps and 35 to 54 cm of error.
+    Without waiting for an image taken after the stop: 4 to 7 cm of error at every stop.)"""
     carte = CarteFusion(niveau_plan=4, rayon_robot=0.155)
     for msg in decouper(np.zeros((48, 48)), 0.0, 0.0, 4, carte, 'drone'):
         carte.recevoir(msg)
     faux = FauxServeur(0.4, 0.4, math.radians(-120), periode_camera=1.0)
     faux.cap_visible = False
-    lignes = []
+    lignes, erreurs = [], []
     r = robot(faux, carte, attente_image=1.1)
+    deplacer = r.deplacer
+
+    def deplacer_et_mesurer(cible):
+        impact = deplacer(cible)
+        erreurs.append(math.dist(r.position(), (faux.x, faux.y)))
+        return impact
+
+    r.deplacer = deplacer_et_mesurer
     cerveau.mission(
         r,
         carte,
@@ -308,7 +347,7 @@ def test_slow_camera_gives_no_false_bump() -> None:
     assert 'ARRIVE pres de la victime' in texte
     assert 'CHOC' not in texte
     assert math.dist((faux.x, faux.y), (2.0, 1.8)) <= 0.2
-    assert math.dist(r.position(), (faux.x, faux.y)) < 0.02
+    assert len(erreurs) >= 5 and max(erreurs) < 0.01  # right at every stop
 
 
 def test_the_brain_runs_with_a_position_without_heading() -> None:

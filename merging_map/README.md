@@ -64,16 +64,28 @@ gets a 404).
   every stop).
 * **Bumps.** `stalled` from the server (wheels not turning), or wheels that spun while the
   camera saw the rover stay in place.
-* **Links.** Only a missing answer means "rover unreachable". An HTTP error (400, 404) raises
-  `ServeurRoverError` instead of starting the recovery. When the link is lost the server
-  finishes its current step and stops: there is no on-board return program, the brain waits
-  for the link to come back.
-* **Measured** against the real server in simulation (`rover_server.py --sim`, slope drift
-  0.1 rad/s), with the camera in a frame rotated by 30 degrees, one image a second, 1 cm
-  noise and no heading: arrived, no false bump, 1 to 3 cm position error at each stop, 1 to
-  4 cm drift during a step. The previous adapter, which trusted every image, made 4 false
-  bumps and 35 to 54 cm of error with the same slow camera (in its own simulation).
-* Not yet run on the real robot.
+* **Links.** Only 2 s without any answer (`delai_liaison`) means "rover unreachable": a few
+  answers lost on the Wi-Fi do not count, the server keeps driving meanwhile. An HTTP error
+  (400, 404) raises `ServeurRoverError` instead of starting the recovery. When the link is
+  really lost, the server finishes its current step and stops: there is no on-board return
+  program, the brain waits for the link to come back.
+* **Known problem, small arena:** after a real cut (2 s or more), the brain marks a 1.5 m
+  no-go zone (`RAYON_ZONE` in `cerveau.py`, sized for the 25 m forest). In a 2.4 m arena that
+  blocks almost everything: with the fake server, a 2 s cut ended the mission 1.05 m from the
+  victim. The brain's distances need scaling for the arena.
+* **Measured against the real server** in simulation (`rover_server.py --sim`, slope drift
+  0.1 rad/s): the camera in a frame rotated by 30 degrees and shifted, taking an image every
+  second on its own clock (so up to 1 s late), 1 cm noise, no heading. Arrived around a box,
+  no false bump, 1 to 2 cm position error at each stop, 1 to 5 cm odometry drift during a
+  step. That run checks the API, the frames and the slow camera; bumps (`stalled`, spinning
+  wheels) and link losses are only tested against the fake server (`test_rover_reel.py`).
+  The previous adapter, which trusted every image, made 4 false bumps and 35 to 54 cm of
+  error with a camera at one image a second (in its own simulation).
+* **The adapter relies on `/state` fields** that the rover README does not list:
+  `ctrl.mode`, `ctrl.queued`, `ctrl.current`, `ctrl.history[0].status`, `odom.x`, `odom.y`,
+  `odom.heading_deg`, `odom.gyro_ready`, `link.connected`. Changing them breaks the brain.
+* Not yet run on the real robot. Its first move, when the camera gives no heading, is a
+  15 cm straight line in an unknown direction.
 
 ## With the overhead camera (branch `overhead-camera`)
 
