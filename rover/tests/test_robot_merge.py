@@ -189,7 +189,8 @@ def test_recorder_runs_in_the_loop_and_its_error_is_caught() -> None:
         rover.recorder.add = broken
         assert wait_for(lambda: rover.loop_errors >= 1, 2.0)
         assert rover._thread.is_alive() and 'recorder bug' in rover.last_loop_error
-        assert rover.ctrl.mode == 'idle'  # the error stopped the drive
+        # the error zeroes the wheels at once; manual mode itself ends after manual_timeout
+        assert wait_for(lambda: rover.ctrl.mode == 'idle', 2.0)
         assert rover.ctrl.fault.startswith('controller error')
         rover.stop()
         with rover.lock:
