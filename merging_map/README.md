@@ -397,6 +397,71 @@ actually passable, where would I go?" It then asks the drone to zoom on exactly 
 the drone confirms they are blocked, the rover goes to the closest reachable point and raises
 the alert.
 
+## Known problems
+
+### The victim is seen as an obstacle
+
+The overhead camera (or the drone) sees the victim as an object, so it is an obstacle on the
+map, grown by the rover radius like any other. Arrival means "a free cell within `tolerance`
+of the victim point", and those cells are all inside the grown victim:
+
+* with the arena settings (`tolerance=0.15`, `rayon_robot=0.155`) no cell can ever count as
+  arrived: the brain ends in `OBJECTIF_DEGRADE` ("AUCUN PASSAGE") next to the victim;
+* with the field tolerance (0.5 m, `rayon_robot=0.15`) it only works if the edge of the victim
+  is less than about 35 cm from the victim point.
+
+The victim must not be made "free": the rover would drive over it. What is wrong is the
+definition of arrival. Planned fix:
+
+* arrival at contact: any free cell within *victim radius + `rayon_effectif` + tolerance* of the
+  victim point;
+* the victim radius measured on the map: the group of obstacle cells that touches the victim
+  point, capped at about 0.5 m so that a wall is not taken for the victim (beyond that, the
+  closest reachable point, as today);
+* later, a "victim" class sent by the camera (e.g. an ArUco marker on the victim), which needs
+  a change of the tile format.
+
+Partly done (real-hardware integration, 15 Nov): an arrival cell may now be up to
+*tolerance + `rayon_effectif` + drone margin + one cell* from the victim point, so a victim
+object whose edge is within about tolerance + one cell (0.20 m in the arena) of the victim
+point is reached with `SUIVRE` (`test_fusion_reel.py`, a 10 cm object). The measured victim
+radius above is not done: a larger victim still ends in `OBJECTIF_DEGRADE`.
+
+### A false bump stays for the whole mission
+
+A bump (`stalled` from the server, or wheels that spun while the camera saw the rover stay in
+place) is written by `signaler_obstacle()` into the rover's tiles, always as the newest data,
+and the rover wins over the drone. With `lancer_overhead.py` and no `percevoir`, the rover
+sends no tiles of its own, so nothing ever writes those cells again: a false bump (a carpet
+edge, a low battery, a camera error taken for a spin) closes that passage until the end of the
+mission. Planned fix:
+
+* bumps in a layer of their own (x, y, radius, time, number of hits), added to the planning
+  grid as blocked instead of being written into the tiles, so that they can be removed;
+* a first bump is provisional, a second one within about 15 cm makes it final; a provisional
+  bump is dropped when no path exists without it, and the rover tries again at `careful_step`;
+* the cells the rover's body actually drove over are free (swept footprint);
+* in the arena, the overhead camera (which sees everything) may clear a provisional bump when
+  it sees free floor there after the bump. Not on the field: a bump exists precisely because
+  the drone does not see that obstacle. A `mission_settings` value.
+
+Partly done (real-hardware integration, 15 Nov): `MissionSettings.bump_lifetime` (off by
+default) makes a bump expire after that many seconds, and `CarteFusion.oublier_rover(zone,
+source)` forgets the rover's observations. The separate bump layer above is not done.
+
+### Before the first real mission
+
+* `rover_reel.py` has never driven the real rover: stall detection, gyro and `/path` timings
+  are only checked against `rover_server.py --sim` and the fake server.
+* Live reader for the overhead camera: done since this list was written
+  (`guidance_global_map.drone.camera_reader`, used by `lancer_overhead.py --camera`, and
+  `drone.LiveCamera`), never tried on a real stream.
+* Provisional values to measure on site: `rayon_robot` (0.155 m), the `ARENA` settings, the
+  arrival tolerance (0.15 m), the camera height (`--hauteur`, 1.9 m) and the ArUco marker that
+  gives the rover's heading.
+* The live fusion on the forest simulation (`sim/fusion_live.py`) is open loop: the simulated
+  rover drives its own route, the brain has never driven it there.
+
 ## Tests and lint
 
 ```bash
