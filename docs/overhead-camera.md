@@ -184,8 +184,11 @@ Plain Python: the fields of `OverheadSettings` (`pipeline.py`). ROS: the same na
     a video mode, which crops and resizes, hence one warning in the log.
 - **Where the camera height goes.** `--hauteur` of `lancer_overhead.py`, `--camera-height` of
   `segment_image`, and `camera_height` in `overhead.yaml` (three nodes). The default is 1.8 m
-  everywhere. It only has to be roughly right when one of the two checks below measures the
-  scale. The dashboard's real-rover maps (`sim/fusion_reelle.py`) take no height: they do not
+  everywhere. **It does not have to be known**: it is only a starting point. The scale is
+  measured on the rover (its marker, or its move), whatever height was given, and the height
+  that this scale means for the lens is reported (`OverheadDrone.estimated_height`, the
+  mission's log, `hauteur_estimee_m` in the dashboard's status). What has to be right is the
+  camera setup: the lens (`focal_length_35mm`, or `--drone-champ` for the dashboard). The dashboard's real-rover maps (`sim/fusion_reelle.py`) take no height: they do not
   use the overhead camera's map yet.
 - **Scale read off the rover's marker** (`marker_size`, `--taille-marqueur`,
   `segment_image --marker-size`): with the side of the marker's black square given, the scale
@@ -194,6 +197,18 @@ Plain Python: the fields of `OverheadSettings` (`pipeline.py`). ROS: the same na
   measured `metres_per_pixel` wins over it. The marker's side is read to about a pixel, so a
   marker 30 pixels wide gives the scale to about 3 %: make the marker as large as the rover's
   top allows.
+- **No marker on the rover.** The rover is found by its move, in both programs:
+  - `merging_map/lancer_overhead.py` (mission): the rover drives 15 cm and back at the start
+    (scale), then measures its heading on its first straight line.
+  - `sim/fusion_reelle.py` (the dashboard's maps): it sends no motor command, so it waits for
+    the rover to be driven. The camera's pictures at two stops at least 12 cm apart
+    (`--drone-pas-min`) show one object that moved, the rover; the same move in its odometry
+    gives the direction of the camera's frame and corrects its scale
+    (`scale_check.frame_from_move`). The drone map is then placed on the rover's maps and
+    fused, and the rover's own cells are freed. A marker seen while the rover stands still
+    still places the map at once and takes priority.
+  It needs the rover in view and away from the obstacles at both stops, and nothing else
+  moving in the picture. The ROS nodes cannot do this: they have no odometry.
 - **Another phone or lens** changes `focal_length_35mm` (and `sensor_size` if the photo size
   differs). The 0.5x ultrawide lens of an iPhone 14 is 13 mm equivalent, still 4032 x 3024:
   `--focale-35mm 13` for `lancer_overhead.py`, `--focal-length-35mm 13` for `segment_image`,

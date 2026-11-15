@@ -288,6 +288,9 @@ def etalonner_echelle(
         journal(
             f'Echelle confirmee par le deplacement du rover ({(correction - 1) * 100:+.0f} %).'
         )
+    hauteur = getattr(camera, 'estimated_height', lambda: None)()
+    if hauteur is not None:
+        journal(f"  hauteur de la camera d'apres cette echelle et l'objectif : {hauteur:.2f} m")
     taille = getattr(camera.settings, 'rover_size', None)
     if taille and not size_matches(rover_vu, correction if adoptee else 1.0, taille):
         c = correction if adoptee else 1.0
@@ -656,8 +659,9 @@ def analyser(argv=None):
         '--hauteur',
         type=float,
         default=1.8,
-        help="hauteur de la camera (m) ; approximative suffit : l'echelle est ensuite "
-        'mesuree sur le marqueur (--taille-marqueur) ou sur le deplacement du rover',
+        help="hauteur de la camera (m). Inutile de la connaitre : c'est un point de depart, "
+        "l'echelle est mesuree sur le marqueur (--taille-marqueur) ou sur le deplacement "
+        'du rover, et la hauteur trouvee est affichee',
     )
     p.add_argument(
         '--taille-marqueur',

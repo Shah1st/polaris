@@ -15,8 +15,13 @@ Outside a mission: read only (GET /state of the rover, GET /obstacles of the per
 Frame: the odometry frame at start (or at the last /reset), origin at the start point, x towards
 the front of the rover at that time. A view is fused only while the rover stands still.
 The drone (--drone-nom: e.g. the iPhone above the area) is declared as the real drone source;
-its picture is not fused into the rover's map until it is calibrated on the floor (scale, and
-the rover located in its picture).
+its picture is not fused into the rover's map until the rover is located in it. Two ways, both
+passive (this program still sends no motor command outside a mission):
+- the rover's ArUco marker, seen while the rover stands still: one picture is enough;
+- no marker: the rover's own move. The camera's pictures at two stops at least
+  --drone-pas-min apart show one object that moved, the rover; the same move in its odometry
+  gives the direction of the camera's frame and corrects its scale. Drive the rover a little
+  (the dashboard's keys) and stop: the drone map is then placed and fused.
 
     python sim/fusion_reelle.py --rover http://127.0.0.1:18080 \\
         --perception http://127.0.0.1:8095 --port 8096 [--drone-nom "iPhone (CamStream)"]
@@ -76,6 +81,17 @@ def sans_traits(m, cases):
     return out
 
 
+def sans_rover(m, res, rover, rayon):
+    """The drone's matrix with the cells within `rayon` m of the rover (x, y, ...) free: seen
+    from above without a marker, the rover looks like any obstacle."""
+    h, w = m.shape
+    ys, xs = np.mgrid[0:h, 0:w]
+    pres = np.hypot((xs + 0.5) * res - rover[0], (ys + 0.5) * res - rover[1]) <= rayon
+    out = m.copy()
+    out[pres & (m == 1)] = 0
+    return out
+
+
 class Odometrie:
     """Stands in for the overhead camera of RaspRoverReel: the rover pose in the frame of the
     maps, from GET /state."""
@@ -129,6 +145,7 @@ class FusionReelle:
 
         a = self.args
         mpp = a.drone_mpp
+        self.mpp_mesure = mpp is not None  # measured by hand: the rover's move does not change it
         if mpp is None:  # width seen on the floor / width of the picture, set at the first one
             mpp = 1.0
             self.mpp_auto = True
@@ -166,7 +183,8 @@ class FusionReelle:
                 return
             a = self.args
             largeur = 2 * a.drone_hauteur * math.tan(math.radians(a.drone_champ) / 2)
-            mpp = largeur / max(image.shape[:2])  # the field is the long side's
+            # the field is the long side's; the rover's move may have corrected the scale
+            mpp = largeur / max(image.shape[:2]) * self.correction_echelle
             if abs(mpp / self.camera.settings.metres_per_pixel - 1.0) > 1e-6:
                 self.camera.settings = dataclasses.replace(
                     self.camera.settings, metres_per_pixel=mpp
@@ -181,22 +199,38 @@ class FusionReelle:
         vu = None
         if r.rover_position is not None:
             vu = (r.rover_position[0], r.rover_position[1], r.rover_heading)
+        objets = self.camera.seen_in(r)
         with self.verrou:
             pose = self.pose
-            # The camera may be held by hand: a picture is placed in the frame of the maps only
-            # by the marker seen in that same picture, while the rover stands still. Without
-            # it, the last placed view stays on the maps.
-            calage = None
+            # The camera may be held by hand: a picture is placed in the frame of the maps by
+            # the marker seen in that same picture, while the rover stands still. Without a
+            # marker, by a move of the rover, which holds for the later pictures only as long
+            # as the camera itself has not moved. Otherwise the last placed view stays.
+            calage, par, echelle_changee = None, None, False
             if vu is not None and vu[2] is not None and pose is not None and self.immobile:
-                calage = (angle(pose[2] - vu[2]), vu[0], vu[1], pose[0], pose[1])
-                self.calage, self.t_calage = calage, time.time()
+                calage, par = (angle(pose[2] - vu[2]), vu[0], vu[1], pose[0], pose[1]), 'marker'
+            else:
+                if self.calage_mvt is not None and not self.camera_immobile(objets):
+                    self.calage_mvt, self.appui = None, None
+                    self.info_mouvement = 'the camera moved: waiting for a new move of the rover'
+                if pose is not None and self.immobile:
+                    echelle_changee = self.caler_sur_mouvement(objets, pose)
+                if self.calage_mvt is not None and not echelle_changee and pose is not None:
+                    calage, par = self.calage_mvt, 'movement'
+                    # no marker: the rover is where its odometry says, in the camera's frame.
+                    # It must not be an obstacle under itself.
+                    vu = self.rover_dans_camera(calage, pose)
+                    m = sans_rover(m, res, vu, self.camera.settings.rover_radius)
+            if calage is not None:
+                self.calage, self.t_calage, self.cale_par = calage, time.time(), par
             place = None if self.vue_drone is None else self.vue_drone['place']
             if calage is not None:
                 place = self.placer_vue(m, res, calage)
                 self.carte.tuiles['drone'] = {}  # the camera sees its whole area every time
                 self.carte.maj['drone'] = {}
-                for msg in decouper(place[0], place[1], place[2], 4, self.carte, 'drone',
-                                    t=time.monotonic()):
+                for msg in decouper(
+                    place[0], place[1], place[2], 4, self.carte, 'drone', t=time.monotonic()
+                ):
                     self.carte.recevoir(msg)
             self.vue_drone = {'m': m, 'res': res, 'rover': vu, 'place': place}
         self.drone = {
@@ -204,14 +238,115 @@ class FusionReelle:
             't': time.time(),
             'cale': place is not None,
             'cale_sur_cette_image': calage is not None,
+            'cale_par': self.cale_par if place is not None else None,
             'age_calage_s': None if self.calage is None else round(time.time() - self.t_calage),
+            'mouvement': self.info_mouvement,
             'rover_vu': vu is not None,
             'cap_vu': vu is not None and vu[2] is not None,
             'obstacles': int((m == 1).sum()),
             'libres': int((m == 0).sum()),
             'metres_par_pixel': self.camera.settings.metres_per_pixel,
+            'hauteur_estimee_m': self.hauteur_estimee(),
             'zone_m': [round(m.shape[1] * res, 2), round(m.shape[0] * res, 2)],
         }
+
+    def hauteur_estimee(self):
+        """The camera height that the scale in use means for --drone-champ: once the rover's
+        move corrected the scale, the height found, whatever --drone-hauteur said."""
+        taille = getattr(self.camera, '_image_size', None)
+        if taille is None:
+            return None
+        vu = self.camera.settings.metres_per_pixel * max(taille)  # long side on the floor
+        return round(vu / (2 * math.tan(math.radians(self.args.drone_champ) / 2)), 2)
+
+    def caler_sur_mouvement(self, objets, pose):
+        """Place the camera's frame from a move of the rover, without a marker. Call with the
+        rover standing still (and self.verrou held).
+
+        The first call keeps what the camera sees and where the odometry puts the rover. At a
+        later stop at least --drone-pas-min away, the one object that is at another place is
+        the rover: its displacement in the picture and in the odometry gives the rotation
+        between the two frames, and the camera's scale (corrected unless --drone-mpp gave a
+        measured one). The result is self.calage_mvt. Returns True when the scale was changed:
+        the picture in hand is then at the old scale and must not be placed; the next one is.
+        """
+        from guidance_global_map.scale_check import find_mover, frame_from_move, size_matches
+
+        if self.appui is None:
+            self.appui = (objets, pose)
+            self.info_mouvement = 'waiting for the rover to move and stop (no marker seen)'
+            return False
+        objets0, pose0 = self.appui
+        if math.dist(pose0[:2], pose[:2]) < self.args.drone_pas_min:
+            return False
+        self.appui = (objets, pose)  # the next move starts from here
+        paire = find_mover(objets0, objets)
+        if paire is None:
+            self.info_mouvement = (
+                'the rover moved but the camera did not see exactly one object move: is the '
+                'rover in view, away from the obstacles, with nothing else moving?'
+            )
+            return False
+        avant, apres = paire
+        rotation, correction = frame_from_move(
+            (avant.x, avant.y), (apres.x, apres.y), pose0[:2], pose[:2]
+        )
+        taille = self.camera.settings.rover_size
+        # the height given may be far off: what tells the rover from anything else that
+        # moved is its real size, at the scale its own move gives
+        if not 0.2 <= correction <= 5.0 or not size_matches(apres, correction, taille, 0.4):
+            self.info_mouvement = (
+                f'an object moved, but not like the rover (scale x{correction:.2f}, '
+                f'{apres.short * correction * 100:.0f} x {apres.long * correction * 100:.0f} cm)'
+            )
+            return False
+        changee = False
+        if self.mpp_mesure or abs(correction - 1.0) <= 0.03:
+            correction = 1.0
+        else:
+            import dataclasses
+
+            reglages = self.camera.settings
+            self.camera.settings = dataclasses.replace(
+                reglages, metres_per_pixel=reglages.metres_per_pixel * correction
+            )
+            self.correction_echelle *= correction
+            self.appui = None  # what was kept is at the old scale
+            changee = True
+        # the picture's origin (bottom left) stays put when the scale changes
+        self.calage_mvt = (
+            rotation,
+            apres.x * correction,
+            apres.y * correction,
+            pose[0],
+            pose[1],
+        )
+        self.repere_fixe = [(o.x * correction, o.y * correction) for o in objets if o is not apres]
+        self.info_mouvement = (
+            f'placed by the rover move ({math.dist(pose0[:2], pose[:2]) * 100:.0f} cm)'
+            + (f', scale corrected by {(correction - 1) * 100:+.0f} %' if changee else '')
+        )
+        return changee
+
+    def camera_immobile(self, objets, ecart=0.06):
+        """True while what stood still when the rover's move placed the camera is still at the
+        same place in its picture (most of it: the rover may hide a thing or two). With
+        nothing but floor in view there is nothing to check, and the answer is True."""
+        if not self.repere_fixe:
+            return True
+        retrouves = sum(
+            any(math.dist(point, (o.x, o.y)) <= ecart for o in objets)
+            for point in self.repere_fixe
+        )
+        return retrouves >= 0.6 * len(self.repere_fixe)
+
+    @staticmethod
+    def rover_dans_camera(calage, pose):
+        """The rover (x, y, heading) in the camera's frame, from its pose in the maps' frame."""
+        th, cx, cy, mx, my = calage
+        c, s = math.cos(th), math.sin(th)
+        dx, dy = pose[0] - mx, pose[1] - my
+        return cx + c * dx + s * dy, cy - s * dx + c * dy, angle(pose[2] - th)
 
     @staticmethod
     def placer_vue(m, res, calage):
@@ -251,8 +386,14 @@ class FusionReelle:
             self.decision = None
             self.n_scan = {'points': 0, 'free': 0, 'obstacle': 0}
             self.immobile = False
-            self.calage = None  # camera frame -> frame of the maps, from the rover's marker
+            self.calage = None  # camera frame -> frame of the maps, of the last placed picture
             self.t_calage = 0.0
+            self.cale_par = None  # 'marker' or 'movement'
+            self.calage_mvt = None  # the placement found from a move of the rover
+            self.repere_fixe = []  # what stood still in the camera's view when it was found
+            self.appui = None  # (objects the camera saw, rover pose) at the last stop
+            self.info_mouvement = None
+            self.correction_echelle = 1.0  # what the rover's move said of the camera's scale
             self.vue_drone = None
 
     def en_mission(self):
@@ -511,10 +652,11 @@ class FusionReelle:
             ff.draw_frame(drone, vue, 1.0)
             ff.draw_polyline(drone, vue, chemin, ff.PATH_C, 2)
             ff.draw_markers(drone, vue, pose, objectif, depart, None)
+            par = 'marker' if etat_drone.get('cale_par') == 'marker' else 'move'
             titres = (
-                'Drone: placed by the rover marker'
+                f'Drone: placed by the rover {par}'
                 if etat_drone.get('cale_sur_cette_image')
-                else f'Drone: view of {etat_drone.get("age_calage_s")} s ago (no marker now)',
+                else f'Drone: view of {etat_drone.get("age_calage_s")} s ago (not placed now)',
                 'Click: goal for the rover',
             )
         elif vd is not None:
@@ -536,8 +678,8 @@ class FusionReelle:
             drone[TAILLE - ph - 8 : TAILLE - 8, 8 : 8 + pw] = petit
             cv2.rectangle(drone, (8, TAILLE - ph - 8), (8 + pw, TAILLE - 8), ff.INK_C, 1)
             titres = (
-                f'Drone: not placed (needs ArUco {self.args.drone_marqueur} on the rover)',
-                'Click: goal for the rover. Corner: camera view',
+                'Drone: not placed. Drive the rover 15 cm and stop,',
+                f'or show its marker (ArUco {self.args.drone_marqueur}). Corner: camera view',
             )
         else:
             drone = np.full((TAILLE, TAILLE, 3), ff.PALETTE[ff.K_UNKNOWN], np.uint8)
@@ -548,7 +690,13 @@ class FusionReelle:
             titres = (titres[0], 'OLD PICTURE: ' + str(etat_drone.get('etat'))[:34])
         for k, t in enumerate(titres):
             cv2.putText(
-                drone, t, (12, 24 + 22 * k), cv2.FONT_HERSHEY_SIMPLEX, 0.5, ff.INK_C, 1,
+                drone,
+                t,
+                (12, 24 + 22 * k),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                ff.INK_C,
+                1,
                 cv2.LINE_AA,
             )
         val_rover = np.where(gr.src == 2, gr.val, -1)
@@ -588,10 +736,11 @@ class FusionReelle:
                 'source': (
                     f'{self.args.drone_nom or "overhead camera"} (REAL drone): '
                     + (
-                        'placed on the map by the rover marker, fused'
+                        f'placed on the map by the rover {etat_drone.get("cale_par")}, fused'
                         if etat_drone.get('cale')
-                        else 'obstacles seen in its own frame, not fused until the rover '
-                        f'marker (ArUco {self.args.drone_marqueur}) is seen'
+                        else 'obstacles seen in its own frame, not fused until the rover has '
+                        'moved and stopped in view, or its marker (ArUco '
+                        f'{self.args.drone_marqueur}) is seen'
                         if etat_drone.get('etat') == 'ok'
                         else str(etat_drone.get('etat'))
                     )
@@ -778,7 +927,13 @@ def options(argv=None):
         "fused once the rover's ArUco marker was seen. Read only. Default: none",
     )
     p.add_argument('--drone-periode', type=float, default=1.0, help='s between two pictures')
-    p.add_argument('--drone-hauteur', type=float, default=1.8, help='camera height (m)')
+    p.add_argument(
+        '--drone-hauteur',
+        type=float,
+        default=1.8,
+        help='camera height (m): only a starting point, it need not be known. The scale '
+        "is corrected on the rover's first move, and the height found is in the status",
+    )
     p.add_argument(
         '--drone-champ',
         type=float,
@@ -796,6 +951,13 @@ def options(argv=None):
         help='m: what the drone sees thinner than this is a line on the floor, not an obstacle',
     )
     p.add_argument('--drone-marqueur', type=int, default=10, help="ArUco id on the rover's top")
+    p.add_argument(
+        '--drone-pas-min',
+        type=float,
+        default=0.12,
+        help='m: without a marker, the rover must have moved this far between two stops '
+        'for its move to place the drone map',
+    )
     p.add_argument(
         '--drone-hauteur-marqueur', type=float, default=0.0, help='marker height above floor (m)'
     )
