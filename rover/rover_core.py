@@ -1345,6 +1345,10 @@ class Controller:
             self._pending_result = {'status': reason, 'duration': t - self._task['t0']}
             self._finish_result()
         elif self.mode == 'settle':
+            # The step ended (status 'done'), but a stop, a manual command, another client's
+            # step or a fault came before the rover had settled: log that reason, not 'done'.
+            if self._pending_result and self._pending_result.get('status') == 'done':
+                self._pending_result['status'] = reason
             self._finish_result()
         self.current = None
 
@@ -1689,12 +1693,24 @@ class Rover:
             self.link.send({'T': 13, 'X': 0, 'Z': 0})
 
     def reset_odometry(self) -> None:
-        with self.lock:
-            self.odom.reset()
+        # Stop first: a step in the 'odom' frame aims at absolute points of the old origin and
+        # would drive the whole way back to them from the new one.
+        try:
+            with self.lock:
+                self.ctrl.stop(time.monotonic(), 'odometry reset')
+                self.odom.reset()
+        finally:
+            self.link.send({'T': 13, 'X': 0, 'Z': 0})
 
     def recalibrate_gyro(self) -> None:
-        with self.lock:
-            self.odom.recalibrate_gyro()
+        # Stop first, as for reset_odometry: the heading restarts and a running step would chase
+        # a goal in the old one (and moving would spoil the bias measurement).
+        try:
+            with self.lock:
+                self.ctrl.stop(time.monotonic(), 'gyro recalibration')
+                self.odom.recalibrate_gyro()
+        finally:
+            self.link.send({'T': 13, 'X': 0, 'Z': 0})
 
     def gimbal_rate(self, pan_rate: float, tilt_rate: float) -> None:
         """Move the camera while repeated (like the arrow keys): -1, 0 or 1 per axis."""

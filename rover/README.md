@@ -226,6 +226,12 @@ Checked on our rover (2026-11-15): T:133 moves both servos although the boot mis
   `merging_map/rover_reel.py`) reads it before each step: if it grew by more than the stops the
   client sent itself, someone pressed STOP, and the client must not send the next step. It
   starts again at 0 with a new `boot_id`; an older server has no such field.
+- `POST /reset_odom` and `/calibrate_gyro` first stop whatever runs (step, queue, manual
+  driving; logged `odometry reset` / `gyro recalibration`): a step in the `odom` frame would
+  otherwise chase its old absolute target from the new origin. They do not count in
+  `stop_count` (a client sees the reset by `odom.odometer` going down).
+- A stop, a manual command, another client's step or a fault that comes during the 0.4 s
+  settle after a step is logged with its own reason in `ctrl.history`, not as `done`.
 
 ## Deploying to the robot
 
