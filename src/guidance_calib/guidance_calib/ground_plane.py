@@ -65,6 +65,32 @@ def metres_per_pixel_from_height(
     return ground_diagonal / math.hypot(sensor_width_px, sensor_height_px)
 
 
+def metres_per_pixel_for_image(
+    camera_height: float,
+    focal_length_35mm: float,
+    sensor_width_px: int,
+    sensor_height_px: int,
+    image_width_px: int,
+) -> float:
+    """Ground size of one pixel of an image `image_width_px` wide showing the sensor's view.
+
+    A video frame or a resized photo shows the same field of view with fewer pixels, so each
+    pixel covers more ground: 4032 / 1280 times more for a 1280-px frame of a 4032-px sensor.
+    Assumes the whole sensor width is in view; a cropped image (most 16:9 video modes, digital
+    stabilisation) breaks that, so measure the scale with a ruler for video.
+    """
+    at_sensor = metres_per_pixel_from_height(
+        camera_height, focal_length_35mm, sensor_width_px, sensor_height_px
+    )
+    return at_sensor * sensor_width_px / image_width_px
+
+
+def aspect_differs(image_size: tuple[int, int], sensor_size: tuple[int, int]) -> bool:
+    """True when (width, height) of the image and of the sensor differ in shape by over 1 %."""
+    (width, height), (sensor_width, sensor_height) = image_size, sensor_size
+    return abs(width * sensor_height - height * sensor_width) > 0.01 * width * sensor_height
+
+
 def straight_down_homography(metres_per_pixel: float, image_rows: int) -> np.ndarray:
     """Image -> map homography for a camera looking straight down, without floor markers.
 

@@ -13,7 +13,9 @@ import numpy as np
 from guidance_calib.aruco_compat import DEFAULT_DICTIONARY, detect_markers
 from guidance_calib.ground_plane import (
     MapBounds,
+    aspect_differs,
     map_to_top_down,
+    metres_per_pixel_for_image,
     metres_per_pixel_from_height,
     pixels_to_map,
     straight_down_homography,
@@ -85,13 +87,12 @@ class OverheadSettings:
         if self.metres_per_pixel is not None:
             return self.metres_per_pixel
         sensor_width, sensor_height = self.sensor_size
-        at_sensor = metres_per_pixel_from_height(
-            self.camera_height, self.focal_length_35mm, sensor_width, sensor_height
-        )
         if image_size is None:
-            return at_sensor
+            return metres_per_pixel_from_height(
+                self.camera_height, self.focal_length_35mm, sensor_width, sensor_height
+            )
         width, height = image_size
-        if abs(width * sensor_height - height * sensor_width) > 0.01 * width * sensor_height:
+        if aspect_differs(image_size, self.sensor_size):
             _warn_once(
                 ('aspect', width, height, sensor_width, sensor_height),
                 'image %dx%d does not have the aspect ratio of the declared sensor %dx%d: the '
@@ -102,7 +103,9 @@ class OverheadSettings:
                 sensor_width,
                 sensor_height,
             )
-        return at_sensor * sensor_width / width
+        return metres_per_pixel_for_image(
+            self.camera_height, self.focal_length_35mm, sensor_width, sensor_height, width
+        )
 
 
 @dataclass(frozen=True)

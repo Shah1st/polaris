@@ -11,9 +11,15 @@ calib_node:
   ros__parameters:
     # camera_height: scale from the height and the lens. markers: ArUco markers on the floor.
     mode: camera_height
+    # Ground size of one image pixel, measured with a ruler on the floor
+    # (python -m guidance_global_map.measure_scale). Recommended for any live stream.
+    # 0.0: derived from camera_height and the lens below.
+    metres_per_pixel: 0.0
     camera_height: 1.9
     # 35 mm equivalent focal length and the full, uncropped image size it refers to. These are
-    # for an iPhone 12 Pro Max main camera photo. Video and resized streams differ.
+    # for an iPhone 12 Pro Max main camera photo. A resized image of the same view is handled
+    # (the scale follows the image width); a cropped one (most 16:9 video modes) is not, and
+    # the node warns once: measure metres_per_pixel instead.
     focal_length_35mm: 26.0
     sensor_width_px: 4032
     sensor_height_px: 3024
@@ -64,6 +70,10 @@ global_map_node:
     dictionary: DICT_4X4_50
     rover_marker_id: 10
     rover_radius: 0.20
+    # Height of the rover's marker above the floor, and the camera's (same as calib_node), to
+    # correct the marker's parallax. 0.0: no correction. Write floats (0.0, not 0).
+    marker_height: 0.0
+    camera_height: 1.9
     update_period: 1.0
 
 rover_pose_node:
@@ -77,3 +87,6 @@ rover_pose_node:
     yaw_offset: 0.0
     position_std: 0.03
     yaw_std: 0.05
+    # As in global_map_node. The correction assumes a camera looking straight down.
+    marker_height: 0.0
+    camera_height: 1.9
