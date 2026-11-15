@@ -18,6 +18,8 @@ final class StreamModel {
     private(set) var cameraAccessDenied = false
     /// Incrémenté après chaque (re)configuration de la caméra, pour rafraîchir l'aperçu.
     private(set) var configurationID = 0
+    /// The stabilization mode actually in use ("off", "standard", "cinematic"…).
+    private(set) var stabilizationActive = "off"
 
     // MARK: Réglages (mémorisés entre les lancements)
 
@@ -53,6 +55,15 @@ final class StreamModel {
         didSet {
             guard arkit != oldValue else { return }
             defaults.set(arkit, forKey: Keys.arkit)
+            restartCaptureIfRunning()
+        }
+    }
+
+    /// Video stabilization asked for (none while the LiDAR depth is captured).
+    var stabilization: VideoStabilization {
+        didSet {
+            guard stabilization != oldValue else { return }
+            defaults.set(stabilization.rawValue, forKey: Keys.stabilization)
             restartCaptureIfRunning()
         }
     }
@@ -104,6 +115,7 @@ final class StreamModel {
         static let lens = "lens"
         static let lidar = "lidar"
         static let arkit = "arkit"
+        static let stabilization = "stabilization"
         static let resolution = "resolution"
         static let fps = "fps"
         static let quality = "quality"
@@ -114,6 +126,7 @@ final class StreamModel {
         lens = CameraLens(rawValue: defaults.string(forKey: Keys.lens) ?? "") ?? .wide
         lidar = defaults.bool(forKey: Keys.lidar)
         arkit = defaults.bool(forKey: Keys.arkit)
+        stabilization = VideoStabilization(rawValue: defaults.string(forKey: Keys.stabilization) ?? "") ?? .off
         resolution = StreamResolution(rawValue: defaults.string(forKey: Keys.resolution) ?? "") ?? .hd720
         let savedFPS = defaults.integer(forKey: Keys.fps)
         fps = Self.fpsOptions.contains(savedFPS) ? savedFPS : 30
@@ -225,6 +238,12 @@ final class StreamModel {
         lidarAvailable && position == .back && captureSource != .testPattern
     }
 
+    /// The stabilization picker: not with the LiDAR depth, which must stay aligned with the
+    /// picture, nor with ARKit, whose pose is that of the picture as the sensor took it.
+    var canStabilize: Bool {
+        !(lidar && position == .back) && !arkitActive && captureSource != .testPattern
+    }
+
     var statusText: String {
         if !isRunning { return "Arrêté" }
         if case .failed(let message) = captureSource { return message }
@@ -236,7 +255,8 @@ final class StreamModel {
             }
             if captureSource == .testPattern { return "En direct · mire" }
             if depthActive { return "En direct · LiDAR" }
-            return activeLens == .ultraWide ? "En direct · grand angle" : "En direct"
+            let steady = stabilizationActive == "off" ? "" : " · stabilisé"
+            return (activeLens == .ultraWide ? "En direct · grand angle" : "En direct") + steady
         }
         return "Démarrage…"
     }
@@ -317,6 +337,7 @@ final class StreamModel {
                 }
             }
             captureSource = .arkit
+            stabilizationActive = "off" // ARKit's pictures are never stabilized
             configurationID += 1
             pushStreamInfo()
             return
@@ -325,16 +346,18 @@ final class StreamModel {
         let position = self.position
         let lens = self.lens
         let lidar = self.lidar
+        let stabilization = self.stabilization
         // The other way round: ARKit lets go of the camera first.
         arCapture.stop { [weak self] in
-            camera.start(position: position, lens: lens, lidar: lidar,
-                         resolution: resolution) { [weak self] source in
+            camera.start(position: position, lens: lens, lidar: lidar, resolution: resolution,
+                         stabilization: stabilization) { [weak self] source in
                 guard let self else { return }
                 Self.onMain {
                     guard self.isRunning, !self.arkitActive else { return }
                     self.captureSource = source
+                    self.stabilizationActive = self.camera.stabilizationInUse()
                     self.configurationID += 1
-                    self.pushStreamInfo() // the lens actually in use, for /status
+                    self.pushStreamInfo() // the lens and stabilization actually in use, for /status
                 }
             }
         }
@@ -362,7 +385,8 @@ final class StreamModel {
             camera: position == .front ? "front" : "back",
             lens: activeLens?.rawValue ?? "none",
             depth: depthActive ? "lidar" : (lidarAvailable ? "off" : "unavailable"),
-            pose: captureSource == .arkit ? "arkit" : (arkitAvailable ? "off" : "unavailable")
+            pose: captureSource == .arkit ? "arkit" : (arkitAvailable ? "off" : "unavailable"),
+            stabilization: stabilizationActive
         ))
     }
 

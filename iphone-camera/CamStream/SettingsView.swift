@@ -35,6 +35,17 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Picker("Stabilisation", selection: $model.stabilization) {
+                        ForEach(VideoStabilization.allCases) { Text($0.title).tag($0) }
+                    }
+                    .disabled(!model.canStabilize)
+                } header: {
+                    Text("Stabilisation")
+                } footer: {
+                    Text(stabilizationFooter)
+                }
+
+                Section {
                     Toggle("Position (ARKit)", isOn: $model.arkit)
                         .disabled(!model.arkitAvailable || model.position == .front)
                 } header: {
@@ -108,6 +119,22 @@ struct SettingsView: View {
             return "Avec la position ARKit, chaque carte de profondeur part avec la position de la caméra (/depth, en-tête X-Pose), environ 5 fois par seconde : la hauteur de chaque point du sol, en mètres. Les points peu sûrs valent 0. Objectif 1×."
         }
         return "Mesure la distance de chaque point (en mètres, jusqu'à environ 5 m), servie sur /depth ; aperçu sur /depth.jpg. Le flux vidéo passe alors par l'objectif 1× : le grand angle n'est pas disponible avec le LiDAR."
+    }
+
+    private var stabilizationFooter: String {
+        if model.arkitActive {
+            return "Coupée avec la position ARKit : elle recadrerait et décalerait l'image, la position envoyée avec elle serait fausse."
+        }
+        if model.lidar && model.position == .back {
+            return "Coupée avec le LiDAR : la profondeur doit rester alignée sur l'image."
+        }
+        var now = ""
+        if model.isLive && model.stabilization != .off {
+            now = model.stabilizationActive == "off"
+                ? " Pas disponible avec cette caméra et cette résolution : l'image n'est pas stabilisée."
+                : " En cours : \(model.stabilizationActive)."
+        }
+        return "Lisse les tremblements d'un iPhone tenu à la main en recadrant l'image : le champ de vue rétrécit (l'échelle de la carte vue du dessus change) et les modes Cinéma et Maximum retardent le flux d'une fraction de seconde. iPhone fixe au-dessus de la zone : laisser sur Aucune." + now
     }
 
     private var lensFooter: String {

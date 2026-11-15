@@ -80,6 +80,56 @@ enum CameraLens: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Video stabilization asked for. iOS steadies a handheld picture by cropping and shifting it:
+/// the field of view narrows (the scale of a map seen from above changes) and the cinematic
+/// modes delay the stream by a fraction of a second.
+enum VideoStabilization: String, CaseIterable, Identifiable, Sendable {
+    case off
+    case standard
+    case cinematic
+    /// The strongest mode this iPhone accepts with this lens and resolution.
+    case maximum
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .off: "Aucune"
+        case .standard: "Standard"
+        case .cinematic: "Cinéma"
+        case .maximum: "Maximum"
+        }
+    }
+
+    /// One iOS mode and its name for `/status`.
+    struct Choice {
+        let mode: AVCaptureVideoStabilizationMode
+        let name: String
+    }
+
+    /// iOS modes to try, strongest first: the first one the camera's format supports is used.
+    var choices: [Choice] {
+        let standard = Choice(mode: .standard, name: "standard")
+        let cinematic = Choice(mode: .cinematic, name: "cinematic")
+        let extended = Choice(mode: .cinematicExtended, name: "cinematic-extended")
+        switch self {
+        case .off:
+            return []
+        case .standard:
+            return [standard]
+        case .cinematic:
+            return [cinematic, standard]
+        case .maximum:
+            if #available(iOS 18.0, *) {
+                let enhanced = Choice(mode: .cinematicExtendedEnhanced,
+                                      name: "cinematic-extended-enhanced")
+                return [enhanced, extended, cinematic, standard]
+            }
+            return [extended, cinematic, standard]
+        }
+    }
+}
+
 /// The newest LiDAR depth map, ready to be served (`/depth`).
 struct DepthFrame: Sendable {
     let width: Int
@@ -134,6 +184,8 @@ final class CameraManager: NSObject, @unchecked Sendable {
     /// The newest depth map, at most `depthPeriod` old while the LiDAR runs.
     private let depth = OSAllocatedUnfairLock<DepthFrame?>(initialState: nil)
     private let videoRotation = OSAllocatedUnfairLock<Double>(initialState: 0)
+    /// Name of the stabilization mode asked of the video connection ("off" when none).
+    private let stabilizationName = OSAllocatedUnfairLock<String>(initialState: "off")
     /// Depth maps are converted at most this often (s): ~5 a second is plenty for a map.
     private let depthPeriod: CFTimeInterval = 0.2
     private let ciContext = CIContext(options: [.cacheIntermediates: false])
@@ -174,6 +226,12 @@ final class CameraManager: NSObject, @unchecked Sendable {
         camera(.builtInLiDARDepthCamera, position: .back) != nil
     }
 
+    /// The stabilization mode in use: "off", "standard", "cinematic", "cinematic-extended" or
+    /// "cinematic-extended-enhanced".
+    func stabilizationInUse() -> String {
+        stabilizationName.withLock { $0 }
+    }
+
     /// The newest LiDAR depth map, or nil (LiDAR off, missing, or nothing received yet).
     func latestDepth() -> DepthFrame? {
         depth.withLock { $0 }
@@ -203,12 +261,13 @@ final class CameraManager: NSObject, @unchecked Sendable {
     /// Configure (ou reconfigure) la capture puis la démarre.
     /// `lens` only applies to the back camera; the front one is always 1×. `lidar`: capture the
     /// LiDAR depth too (back camera of a Pro iPhone); the video is then the 1× lens's.
+    /// `stabilization`: none while the LiDAR depth is captured.
     func start(position: AVCaptureDevice.Position, lens: CameraLens, lidar: Bool,
-               resolution: StreamResolution,
+               resolution: StreamResolution, stabilization: VideoStabilization,
                completion: @escaping @Sendable (CaptureSource) -> Void) {
         sessionQueue.async { [self] in
             let source = configure(position: position, lens: lens, lidar: lidar,
-                                   resolution: resolution)
+                                   resolution: resolution, stabilization: stabilization)
             switch source {
             case .camera:
                 stopTestPattern()
@@ -236,7 +295,9 @@ final class CameraManager: NSObject, @unchecked Sendable {
     // MARK: - Configuration
 
     private func configure(position: AVCaptureDevice.Position, lens: CameraLens, lidar: Bool,
-                           resolution: StreamResolution) -> CaptureSource {
+                           resolution: StreamResolution,
+                           stabilization: VideoStabilization) -> CaptureSource {
+        stabilizationName.withLock { $0 = "off" } // until set on the new connection below
         let wanted: CameraLens = position == .back ? lens : .wide
         // The LiDAR camera is the 1× lens with the LiDAR scanner: it wins over the lens choice.
         let lidarDevice = lidar && position == .back
@@ -305,7 +366,21 @@ final class CameraManager: NSObject, @unchecked Sendable {
         session.commitConfiguration()
 
         setupRotation(for: device)
+        applyStabilization(capturesDepth ? .off : stabilization, device: device)
         return .camera(name: device.localizedName, lens: usedLens, depth: capturesDepth)
+    }
+
+    /// Asks the video connection for the strongest mode of `wanted` that the camera's active
+    /// format supports (none when it supports none of them).
+    private func applyStabilization(_ wanted: VideoStabilization, device: AVCaptureDevice) {
+        var used: VideoStabilization.Choice?
+        if let connection = videoOutput.connection(with: .video),
+           connection.isVideoStabilizationSupported {
+            used = wanted.choices.first { device.activeFormat.isVideoStabilizationModeSupported($0.mode) }
+            connection.preferredVideoStabilizationMode = used?.mode ?? .off
+        }
+        let name = used?.name ?? "off"
+        stabilizationName.withLock { $0 = name }
     }
 
     /// Picks, on the LiDAR camera, the video format nearest to `resolution` that also gives
