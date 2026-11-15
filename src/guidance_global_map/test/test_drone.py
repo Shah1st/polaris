@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from guidance_calib.synthetic import Box, Scene, render_top_down
+from guidance_global_map import pipeline
 from guidance_global_map.drone import LiveCamera, OverheadDrone, cut_tiles
 from guidance_global_map.pipeline import OverheadSettings, process_image
 from guidance_global_map.segmentation import OCCUPIED, ROVER
@@ -187,18 +188,66 @@ def test_zoom_looks_again_and_returns_the_overlapping_tiles() -> None:
 # ---- scale from the camera height follows the actual image size --------------------------
 
 
-def test_scale_from_height_follows_the_image_width(caplog) -> None:
+def test_scale_from_height_for_resized_and_cropped_images(monkeypatch) -> None:
+    warnings = []
+    monkeypatch.setattr(pipeline, '_warned', set())
+    monkeypatch.setattr(pipeline.log, 'warning', lambda *args: warnings.append(args))
     photo = OverheadSettings(camera_height=1.9)
     full = photo.scale()
 
     assert photo.scale((4032, 3024)) == pytest.approx(full)
-    assert photo.scale((1280, 960)) == pytest.approx(full * 4032 / 1280)
-    assert not caplog.records
-    with caplog.at_level('WARNING'):
-        photo.scale((1920, 1080))
-        photo.scale((1920, 1080))
-    assert len([r for r in caplog.records if 'aspect ratio' in r.getMessage()]) == 1
+    assert photo.scale((1280, 960)) == pytest.approx(full * 4032 / 1280)  # resized whole view
+    assert not warnings
+    # another shape is a crop: the sensor's scale, with one warning per image size
+    assert photo.scale((2595, 2829)) == pytest.approx(full)
+    assert photo.scale((2595, 2829)) == pytest.approx(full)
+    assert photo.scale((1920, 1080)) == pytest.approx(full)
+    assert len(warnings) == 2 and all('taken as a crop' in w[0] for w in warnings)
     assert OverheadSettings(metres_per_pixel=0.004).scale((640, 480)) == 0.004
+
+
+def test_a_cropped_photo_keeps_its_scale_and_its_rover() -> None:
+    """A photo cut down to another shape, with the camera-height scale: the area and the
+    rover's place come out as in the whole photo (the bug: 1.55 times too large, and another
+    object taken for the rover)."""
+    image = render_top_down(scene_with_marked_rover())  # 780 x 630 at 300 px per metre
+    sensor = (image.shape[1], image.shape[0])
+    height = 1.9
+    focal = 43.27 * height / (math.hypot(*sensor) / 300.0)  # the lens that gives 300 px/m
+    whole = OverheadSettings(
+        camera_height=height,
+        focal_length_35mm=focal,
+        sensor_size=sensor,
+        floor_window=0.6,
+        rover_marker_id=10,
+    )
+    crop = image[90:, :600]  # cut 0.30 m off the top and 0.60 m off the right
+
+    full, cut = process_image(image, whole), process_image(crop, whole)
+
+    assert cut.bounds.x_max == pytest.approx(2.0, abs=0.01)
+    assert cut.bounds.y_max == pytest.approx(1.8, abs=0.01)
+    assert cut.rover_position == pytest.approx(full.rover_position, abs=0.01)
+
+
+def test_objects_and_rescale() -> None:
+    """The camera adapter lists what it sees and takes a scale correction."""
+    image = render_top_down(scene_with_marked_rover())
+    camera = FakeCamera(image)
+    drone = OverheadDrone(camera, settings(), clock=lambda: 0.0)  # 1 / 300 m per pixel
+
+    seen = drone.objects()
+    box = min(seen, key=lambda o: math.dist((o.x, o.y), (1.625, 1.375)))
+    assert (box.x, box.y) == pytest.approx((1.625, 1.375), abs=0.02)
+    assert (box.short, box.long) == pytest.approx((0.25, 0.35), abs=0.02)
+    assert drone.current_scale() == pytest.approx(1 / 300)
+
+    new = drone.rescale(2.0)
+
+    assert new == pytest.approx(2 / 300) == drone.current_scale()
+    assert drone.zone() == pytest.approx((0.0, 0.0, 5.2, 4.2), abs=0.02)
+    box = min(drone.objects(), key=lambda o: math.dist((o.x, o.y), (3.25, 2.75)))
+    assert (box.short, box.long) == pytest.approx((0.50, 0.70), abs=0.04)
 
 
 def test_a_resized_frame_covers_the_same_area() -> None:
@@ -406,3 +455,17 @@ def test_drone_follows_a_live_camera() -> None:
         assert drone.position_drone()[:2] == pytest.approx((0.80, 0.90), abs=0.01)
     finally:
         camera.close()
+
+
+def test_a_rover_found_by_its_marker_is_among_the_objects() -> None:
+    """With a marker the rover is left out of the obstacle blobs; the scale check still needs
+    to see it move, so it is listed at its marker's position."""
+    camera = FakeCamera(render_top_down(scene_with_marked_rover()))
+    drone = OverheadDrone(camera, settings(rover_marker_id=10), clock=lambda: 0.0)
+
+    seen = drone.objects()
+
+    rover = min(seen, key=lambda o: math.dist((o.x, o.y), (0.80, 0.90)))
+    assert (rover.x, rover.y) == pytest.approx((0.80, 0.90), abs=0.01)
+    assert (rover.short, rover.long) == (0.20, 0.23)
+    assert len(seen) == 2  # the rover and the box

@@ -17,9 +17,11 @@ calib_node:
     metres_per_pixel: 0.0
     camera_height: 1.9
     # 35 mm equivalent focal length and the full, uncropped image size it refers to. These are
-    # for an iPhone 12 Pro Max main camera photo. A resized image of the same view is handled
-    # (the scale follows the image width); a cropped one (most 16:9 video modes) is not, and
-    # the node warns once: measure metres_per_pixel instead.
+    # for an iPhone 12 Pro Max main camera photo. An image shaped like the sensor (4:3, either
+    # way up) with other pixel counts is the whole view resized, and the scale follows its
+    # width. An image of another shape is taken as a crop, at the sensor's own scale: right for
+    # a cropped photo, wrong for a video mode, and the node warns once: for video, measure
+    # metres_per_pixel instead.
     focal_length_35mm: 26.0
     sensor_width_px: 4032
     sensor_height_px: 3024

@@ -85,6 +85,41 @@ def metres_per_pixel_for_image(
     return at_sensor * sensor_width_px / image_width_px
 
 
+def metres_per_pixel_for_view(
+    camera_height: float,
+    focal_length_35mm: float,
+    sensor_size: tuple[int, int],
+    image_size: tuple[int, int],
+) -> tuple[float, str]:
+    """Ground size of one pixel of an image from the camera height and the lens, and how the
+    image was taken to relate to the sensor: 'full', 'resized' or 'cropped'.
+
+    One pixel of the sensor covers a fixed angle, so on the floor it covers
+    camera_height * (a constant of the camera mode). What an image file cannot say is whether
+    it was cropped (same scale as the sensor) or resized (larger pixels). The rule:
+
+    - the sensor's own size: 'full', the sensor's scale;
+    - the sensor's shape with another size: 'resized', the whole view with other pixels;
+    - another shape: 'cropped', the sensor's scale. This is right for a cropped photo and
+      wrong for a video mode, which crops and resizes: give a measured scale for those.
+
+    A portrait image of a landscape sensor (the phone held the other way) is compared with the
+    sensor turned the same way.
+    """
+    sensor_width, sensor_height = sensor_size
+    if (image_size[0] > image_size[1]) != (sensor_width > sensor_height):
+        sensor_width, sensor_height = sensor_height, sensor_width
+        sensor_size = (sensor_width, sensor_height)
+    at_sensor = metres_per_pixel_from_height(
+        camera_height, focal_length_35mm, sensor_width, sensor_height
+    )
+    if tuple(image_size) == (sensor_width, sensor_height):
+        return at_sensor, 'full'
+    if not aspect_differs(image_size, sensor_size):
+        return at_sensor * sensor_width / image_size[0], 'resized'
+    return at_sensor, 'cropped'
+
+
 def aspect_differs(image_size: tuple[int, int], sensor_size: tuple[int, int]) -> bool:
     """True when (width, height) of the image and of the sensor differ in shape by over 1 %."""
     (width, height), (sensor_width, sensor_height) = image_size, sensor_size

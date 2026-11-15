@@ -7,8 +7,13 @@ lancer_overhead.py - Mission sur le vrai RaspRover, avec la camera au-dessus de 
         --metres-par-pixel 0.0012 --victime 1.2 0.9 --rover http://<IP du rover>:8080 --dry-run
 
 --camera : la camera en direct (flux d'une application camera IP, RTSP, ou numero de
-peripherique). Son echelle n'est pas celle d'une photo : il faut --metres-par-pixel, mesure sur
-une image de ce flux (un objet de longueur connue pose au sol) ; seul --dry-run s'en passe.
+peripherique). Son echelle n'est pas celle d'une photo. Deux facons de la donner :
+- --hauteur seulement (approximative) : au depart le rover avance de 15 cm puis revient, et
+  l'echelle se mesure sur ce deplacement (etalonner_echelle). Le programme affiche la valeur
+  trouvee, a reprendre avec --metres-par-pixel ;
+- --metres-par-pixel, mesure a la regle sur une image de ce flux : le deplacement du rover
+  sert alors de verification, et la mission s'arrete s'il dit autre chose a 10 % pres.
+--sans-etalonnage enleve cette ligne droite (il faut alors --metres-par-pixel).
 --image a la place : une photo fixe, pour essayer sans camera ; elle ne voit pas le rover
 bouger.
 
@@ -43,7 +48,13 @@ import time
 from cerveau import ETAT_SUIVI, RESUMES, avancer, mission
 from fusion_carte import INCONNU, OBSTACLE, SRC_ROVER, CarteFusion
 from mission_settings import ARENA
-from rover_reel import ArretOperateur, RaspRoverReel, ServeurRoverError, client_http
+from rover_reel import (
+    ArretOperateur,
+    RaspRoverReel,
+    ServeurRoverError,
+    client_http,
+    pose_odom,
+)
 
 # Reglages pour une petite zone (point 3) : planification en cases de 5 cm, objectif atteint a
 # 15 cm. Les valeurs par defaut (cases de 10 cm, arrivee a 50 cm) bloquaient 45 % du sol de la
@@ -54,9 +65,19 @@ from rover_reel import ArretOperateur, RaspRoverReel, ServeurRoverError, client_
 # toucher un obstacle en pivotant.
 # Provisoire : a ajuster apres un essai sur le vrai robot.
 RAYON_ROVER = 0.155
-REGLAGES_PETITE_ZONE = {'niveau_plan': 4, 'rayon_robot': RAYON_ROVER}
+# marge_securite : en plus du rayon, pour ce que le A* ne sait pas (le suivi du pas a 3 cm
+# pres, les coins du chemin coupes a l'interieur d'un pas). Sur IMG_4099 elle fait passer
+# le sol bloque de 41 a 45 % sans fermer de passage de plus.
+MARGE_SECURITE = 0.03
+REGLAGES_PETITE_ZONE = {
+    'niveau_plan': 4,
+    'rayon_robot': RAYON_ROVER,
+    'marge_securite': MARGE_SECURITE,
+}
 TOLERANCE_PETITE_ZONE = 0.15
 PAS_AFFICHES = 3  # --dry-run : pas affiches apres la premiere decision
+PAS_ETALONNAGE = 0.15  # m : ligne droite qui sert a verifier l'echelle de la camera
+ECART_ECHELLE = 0.10  # ecart tolere entre l'echelle donnee et celle que montre le rover
 
 
 def dans_la_zone(point, zone, marge=0.0):
@@ -113,6 +134,141 @@ def sans_post(requete, journal=print):
         return requete(methode, chemin, corps)
 
     return requete_lecture
+
+
+def _rover_pret(requete, dormir, horloge, delai=15.0):
+    """Attend l'ESP32 connecte et le gyroscope calibre, comme RaspRoverReel avant un pas."""
+    debut = horloge()
+    while True:
+        etat = requete('GET', '/state')
+        if etat and (etat.get('link') or {}).get('connected') and etat['odom'].get('gyro_ready'):
+            return
+        if horloge() - debut > delai:
+            raise RuntimeError(
+                f'Rover pas pret apres {delai:.0f} s : ESP32 non connecte ou gyroscope pas '
+                'calibre (GET /state, link et odom.gyro_ready).'
+            )
+        dormir(0.5)
+
+
+def _ligne_droite(requete, distance, dormir, horloge, delai=30.0):
+    """POST /move de `distance` m et attente de la fin. Renvoie (statut du serveur, distance
+    parcourue d'apres l'odometrie du rover)."""
+    avant = requete('GET', '/state')
+    if avant is None:
+        raise RuntimeError('Le rover ne repond plus a GET /state.')
+    dernier = (avant['ctrl'].get('history') or [None])[0]
+    if requete('POST', '/move', {'distance': distance}) is None:
+        raise RuntimeError('Le rover ne repond pas a POST /move.')
+    debut, vu_en_cours = horloge(), False
+    while horloge() - debut < delai:
+        dormir(0.2)
+        etat = requete('GET', '/state')
+        if etat is None:
+            continue  # une reponse perdue : le serveur continue sans nous
+        if etat.get('boot_id') != avant.get('boot_id'):
+            raise RuntimeError(
+                "Le serveur du rover a redemarre pendant la verification de l'echelle : "
+                'relancer la mission.'
+            )
+        ctrl = etat['ctrl']
+        en_cours = ctrl.get('mode') in ('move', 'turn', 'path', 'settle')
+        if en_cours or ctrl.get('queued') or ctrl.get('current') is not None:
+            vu_en_cours = True
+            continue
+        historique = ctrl.get('history') or []
+        if historique and (vu_en_cours or historique[0] != dernier):
+            roule = math.dist(pose_odom(avant)[:2], pose_odom(etat)[:2])
+            return historique[0].get('status'), roule
+    raise RuntimeError(f"Le rover n'a pas fini une ligne droite de {distance} m en {delai:.0f} s.")
+
+
+def etalonner_echelle(
+    camera,
+    requete,
+    journal=print,
+    dormir=time.sleep,
+    horloge=time.monotonic,
+    pas=PAS_ETALONNAGE,
+    ecart=ECART_ECHELLE,
+):
+    """Verifie l'echelle de la camera sur un deplacement connu du rover, avant la mission.
+
+    Le rover avance de `pas` m puis revient. Ses roues disent de combien il a roule ; la
+    camera voit de combien a bouge le seul objet qui a bouge, qui est donc le rover. Le
+    rapport des deux corrige l'echelle (guidance_global_map.scale_check).
+
+    - Echelle deduite de la hauteur (approximative) : l'echelle mesuree la remplace.
+    - Echelle donnee (--metres-par-pixel) : elle est gardee si le rover la confirme a `ecart`
+      pres, sinon RuntimeError : la camera a bouge, ou ce n'est pas le bon mode.
+
+    Le rover roule sans connaitre son cap : il lui faut `pas` m de libre devant et derriere.
+    Renvoie {'correction', 'metres_par_pixel', 'adoptee'}."""
+    from guidance_global_map.scale_check import find_mover, scale_correction, size_matches
+
+    donnee = getattr(camera.settings, 'metres_per_pixel', None) is not None
+    avant = camera.objects(force=True)
+    if avant is None:
+        raise RuntimeError("La camera ne donne pas d'image : echelle non verifiee.")
+    _rover_pret(requete, dormir, horloge)
+    corrections, rover_vu = [], None
+    for distance in (pas, -pas):  # aller, puis retour au depart
+        statut, roule = _ligne_droite(requete, distance, dormir, horloge)
+        apres = camera.objects(force=True)
+        if apres is None:
+            raise RuntimeError("La camera ne donne plus d'image : echelle non verifiee.")
+        paire = find_mover(avant, apres) if roule >= pas / 3 else None
+        if paire is not None:
+            vu = math.dist((paire[0].x, paire[0].y), (paire[1].x, paire[1].y))
+            corrections.append(scale_correction(vu, roule))
+            rover_vu = paire[1]
+        else:
+            journal(
+                f'  etalonnage : ligne droite de {distance:+.2f} m ({statut}, {roule:.2f} m '
+                "d'apres les roues) non mesuree par la camera"
+            )
+        avant = apres
+    if not corrections:
+        raise RuntimeError(
+            "Echelle non verifiee : la camera n'a pas vu le rover bouger (il n'a pas roule, "
+            "autre chose a bouge dans l'image, ou il touche un obstacle). Degager "
+            f'{pas:.2f} m devant et derriere le rover, ou --sans-etalonnage avec une echelle '
+            'mesuree a la regle.'
+        )
+    correction = sum(corrections) / len(corrections)
+    echelle = camera.current_scale()
+    if donnee and abs(correction - 1.0) > ecart:
+        raise RuntimeError(
+            f'Echelle fausse : --metres-par-pixel donne {echelle * 1000:.3f} mm/pixel, le '
+            f'deplacement du rover en montre {echelle * correction * 1000:.3f} '
+            f'({(correction - 1) * 100:+.0f} %). La camera a bouge ou a change de mode : '
+            'remesurer, ou enlever --metres-par-pixel pour prendre la valeur du rover.'
+        )
+    adoptee = not donnee
+    if adoptee:
+        nouvelle = camera.rescale(correction)
+        journal(
+            f'Echelle mesuree sur le deplacement du rover : {nouvelle * 1000:.3f} mm/pixel '
+            f'({(correction - 1) * 100:+.0f} % par rapport a celle de --hauteur). Pour la '
+            f'reprendre telle quelle : --metres-par-pixel {nouvelle:.6f}'
+        )
+    else:
+        journal(
+            f'Echelle confirmee par le deplacement du rover ({(correction - 1) * 100:+.0f} %).'
+        )
+    taille = getattr(camera.settings, 'rover_size', None)
+    if taille and not size_matches(rover_vu, correction if adoptee else 1.0, taille):
+        c = correction if adoptee else 1.0
+        journal(
+            f"  ATTENTION : l'objet qui a bouge mesure {rover_vu.short * c * 100:.0f} x "
+            f'{rover_vu.long * c * 100:.0f} cm, pas la taille du rover ({taille[0] * 100:.0f} x '
+            f'{taille[1] * 100:.0f} cm) : la camera le reconnaitra mal (rover_size).'
+        )
+    return {
+        'correction': correction,
+        'metres_par_pixel': camera.current_scale(),
+        'adoptee': adoptee,
+    }
 
 
 def decrire_echelle(camera):
@@ -233,9 +389,12 @@ def lancer(
     settings=ARENA,
     suivi=None,
     dry_run=False,
+    etalonner=True,
     **reglages_carte,
 ):
     """Lance la mission. `depart` par defaut : la ou la camera voit le rover.
+    `etalonner` : avant tout, verifier l'echelle de la camera sur une ligne droite du rover
+    (etalonner_echelle), si la camera le permet (OverheadDrone) et hors dry_run.
     `settings`: the mission's distances, ARENA by default (mission_settings).
     `suivi` : fichier JSON de suivi (voir Suivi). `dry_run` : `requete` ne doit envoyer aucun
     POST (voir sans_post) ; on s'arrete apres la premiere decision, sans rouler.
@@ -258,6 +417,20 @@ def lancer(
         )
     else:
         journal('Rover non joint (dry-run) : seule la camera est verifiee.')
+    peut_etalonner = hasattr(camera, 'objects') and hasattr(camera, 'rescale')
+    if etalonner and peut_etalonner and not dry_run:
+        temps = options_rover or {}
+        try:
+            etalonner_echelle(
+                camera,
+                requete,
+                journal,
+                temps.get('dormir', time.sleep),
+                temps.get('horloge', time.monotonic),
+            )
+        except BaseException:
+            arreter_le_rover(requete, journal=journal)
+            raise
     zone = camera.zone()
     if zone is None:
         raise RuntimeError("La camera ne donne pas d'image : impossible de connaitre la zone.")
@@ -408,7 +581,7 @@ def analyser(argv=None):
         '--camera',
         help='camera du dessus en direct : indice local (0), URL http(s) MJPEG ou snapshot '
         '(application camera IP du telephone), rtsp://, ou fichier '
-        '(guidance_global_map.drone.camera_reader). Demande --metres-par-pixel',
+        '(guidance_global_map.drone.camera_reader)',
     )
     source.add_argument(
         '--image',
@@ -458,6 +631,12 @@ def analyser(argv=None):
     )
     p.add_argument('--vitesse', type=float, help='vitesse de croisiere du rover (m/s, 0.2)')
     p.add_argument(
+        '--sans-etalonnage',
+        action='store_true',
+        help="ne pas verifier l'echelle de la camera sur une ligne droite du rover au "
+        f'depart ({PAS_ETALONNAGE:g} m en avant puis en arriere)',
+    )
+    p.add_argument(
         '--delai-http', type=float, default=1.0, help="delai d'une requete au rover (s)"
     )
     args = p.parse_args(argv)
@@ -465,11 +644,13 @@ def analyser(argv=None):
         p.error('--image (photo fixe) seulement avec --dry-run : il faut --camera pour rouler')
     if args.rover is None and not args.dry_run:
         p.error('--rover est obligatoire sans --dry-run')
-    if args.camera is not None and args.metres_par_pixel is None and not args.dry_run:
+    sans_echelle = args.camera is not None and args.metres_par_pixel is None
+    if sans_echelle and args.sans_etalonnage and not args.dry_run:
         p.error(
-            "--camera demande --metres-par-pixel : l'echelle d'un flux video n'est pas celle "
-            "d'une photo (a mesurer a la regle, python -m guidance_global_map.measure_scale). "
-            "Seul --dry-run s'en passe, pour voir l'echelle deduite de --hauteur."
+            "--sans-etalonnage demande --metres-par-pixel : l'echelle d'un flux video n'est pas "
+            "celle d'une photo (a mesurer a la regle, python -m "
+            'guidance_global_map.measure_scale). Sans --sans-etalonnage, le rover la mesure '
+            'lui-meme au depart a partir de --hauteur.'
         )
     return args
 
@@ -527,6 +708,7 @@ def main(argv=None):
             options_rover=options,
             suivi=args.suivi,
             dry_run=args.dry_run,
+            etalonner=not args.sans_etalonnage,
         )
     except KeyboardInterrupt:
         sys.exit('Interrompu (Ctrl-C) : /stop envoye au rover.')

@@ -48,13 +48,17 @@ class MergingMapNode(Node):
         # whole 0.20 x 0.23 m rover (hypot / 2 = 0.152 m), not the doc's 0.115 half-length.
         self.declare_parameter('niveau_plan', 4)
         self.declare_parameter('rayon_robot', 0.155)
+        # on top of the radius, for what the planner cannot know (path tracking error)
+        self.declare_parameter('marge_securite', 0.03)
         self.declare_parameter('tolerance', 0.15)
         self.declare_parameter('goal_x', math.nan)
         self.declare_parameter('goal_y', math.nan)
         self.declare_parameter('period', 1.0)
         p = self.get_parameter
         self.carte = CarteFusion(
-            niveau_plan=p('niveau_plan').value, rayon_robot=p('rayon_robot').value
+            niveau_plan=p('niveau_plan').value,
+            rayon_robot=p('rayon_robot').value,
+            marge_securite=p('marge_securite').value,
         )
         self.tolerance = p('tolerance').value
         gx, gy = p('goal_x').value, p('goal_y').value

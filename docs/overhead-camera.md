@@ -174,10 +174,32 @@ Plain Python: the fields of `OverheadSettings` (`pipeline.py`). ROS: the same na
   recommended way for any live camera. It is per pixel of the frames the mission gets: measure
   again when the stream's resolution changes.
 - Without it, `camera_height`, `focal_length_35mm` and `sensor_size` (`sensor_width_px`,
-  `sensor_height_px`) give the scale for the full sensor; it is then scaled to the actual
-  image width, so a resized image of the whole view is fine. A frame with another aspect
-  ratio (16:9 video of a 4:3 sensor, stabilisation) is cropped: the scale is a guess, and a
-  warning is logged once. The defaults are an iPhone 12 Pro Max main-camera photo at 1.9 m.
+  `sensor_height_px`) give the scale: one sensor pixel covers a fixed angle, so the scale is
+  the height times a constant of the camera mode (0.000330 per metre for the 12 MP photo
+  mode of an iPhone 12 Pro Max, the defaults). What an image cannot say is whether it was
+  cropped or resized, so the rule is fixed (`ground_plane.metres_per_pixel_for_view`):
+  - the sensor's shape (4:3, either way up) with other pixel counts: the whole view resized,
+    the scale follows the width;
+  - any other shape: a crop, at the sensor's own scale. Right for a cropped photo; wrong for
+    a video mode, which crops and resizes, hence one warning in the log.
+- **Another phone or lens** changes `focal_length_35mm` (and `sensor_size` if the photo size
+  differs). The 0.5x ultrawide lens of an iPhone 14 is 13 mm equivalent, still 4032 x 3024:
+  `--focale-35mm 13` for `lancer_overhead.py`, `--focal-length-35mm 13` for `segment_image`,
+  `focal_length_35mm: 13.0` in `overhead.yaml`. Each pixel then covers twice the ground
+  (0.000660 per metre of height; 1.25 mm at 1.9 m, a view of about 5.1 x 3.8 m). Not tried on
+  a real ultrawide photo. Its lens bends straight lines towards the edges of the picture, so
+  the scale is less even across the view than with the main lens; keep "Lens Correction" on
+  in the phone's camera settings, and keep the rover and the obstacles away from the edges.
+- **The mission checks the scale on the rover** (`lancer_overhead.etalonner_echelle`,
+  `scale_check.py`). Before anything else the rover drives 15 cm and back. Its wheels say how
+  far it went; the camera sees how far the one thing that moved went; the ratio corrects the
+  scale. With only a height given (it may be approximate), the measured scale replaces the
+  derived one and is printed as a `--metres-par-pixel` value to reuse. With a measured scale
+  given, the mission stops if the rover contradicts it by more than 10 %. The rover's size
+  alone could not do this: at a scale 1.55 times too large a 13 x 15 cm pack measures
+  20 x 23 cm, the rover's size, and was taken for it on IMG_4099. The rover needs 15 cm free
+  ahead and behind; `--sans-etalonnage` skips the check. One move measures the scale to
+  about 5 %; a ruler on the floor is still better.
 - `rover_marker_id` and `marker_height`: the ArUco marker on the rover and its height above
   the floor. The marker is seen higher than the floor, so the floor mapping places it too far
   from the point under the camera, by d * h / (H - h) at a distance d from that point
