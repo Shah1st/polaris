@@ -57,6 +57,35 @@ def dilater(masque, r):
     return out
 
 
+def gonfler(masque, rayon, res):
+    """Gonfle un masque booleen d'un rayon `rayon` (m) : somme de Minkowski EXACTE des cases
+    obstacles (des carres de cote `res`) avec le disque du robot, evaluee au centre des cases.
+
+    Une case libre est bloquee si son CENTRE est a `rayon` ou moins du carre d'une case
+    obstacle. Le robot peut alors etre traite comme un POINT : tout chemin fait de centres de
+    cases libres laisse au moins `rayon` entre le robot et tout obstacle. Contrairement a
+    dilater(masque, ceil(rayon / res)), qui compte en distance entre centres, ca ne laisse pas
+    passer le robot trop pres d'un coin en diagonale (case grosse) et ne bloque pas plus qu'il
+    ne faut (case grosse aussi)."""
+    out = masque.copy()
+    if rayon <= 0:
+        return out
+    nh, nw = masque.shape
+    rmax = math.ceil(rayon / res + 0.5)
+    for di in range(-rmax, rmax + 1):
+        for dj in range(-rmax, rmax + 1):
+            if di == 0 and dj == 0:
+                continue
+            # distance du centre de la case (i, j) au carre de la case obstacle (i - di, j - dj)
+            ecart = res * math.hypot(max(abs(di) - 0.5, 0.0), max(abs(dj) - 0.5, 0.0))
+            if ecart > rayon + 1e-9:
+                continue
+            out[max(di, 0) : nh + min(di, 0), max(dj, 0) : nw + min(dj, 0)] |= masque[
+                max(-di, 0) : nh + min(-di, 0), max(-dj, 0) : nw + min(-dj, 0)
+            ]
+    return out
+
+
 def reduire(grille, k):
     """Reduit une grille -1/0/1 d'un facteur k (k x k -> 1) de facon prudente :
     obstacle si au moins un obstacle, inconnu si tout est inconnu, sinon libre."""
@@ -123,18 +152,23 @@ class CarteFusion:
         niveau_zoom=2,
         rayon_robot=0.15,
         cout_inconnu=3.0,
+        marge_securite=0.0,
     ):
         """
         n            : cases par cote de tuile
         res_fine     : taille d'une case au niveau zmax (m)
         niveau_plan  : niveau sur lequel tourne le A* (plus grossier = plus rapide)
         niveau_zoom  : niveau demande au drone quand il faut regarder de plus pres
-        rayon_robot  : marge de securite autour des obstacles (m)
+        rayon_robot  : rayon du robot (m), cercle qui englobe toute sa carrosserie : les
+                       obstacles sont gonfles de ce rayon, le robot devient un point pour le A*
         cout_inconnu : cout d'une case inconnue (1 = libre). Infini = interdit.
+        marge_securite : marge en plus du rayon (m) pour ce que le A* ne sait pas : erreur de
+                       suivi du chemin par le rover, bruit du capteur, imprecision de la carte
         """
         self.n, self.res_fine, self.zmax = n, res_fine, zmax
         self.niveau_plan, self.niveau_zoom = niveau_plan, niveau_zoom
         self.rayon_robot, self.cout_inconnu = rayon_robot, cout_inconnu
+        self.marge_securite = marge_securite
         self.tuiles = {s: {} for s in SOURCES}  # source -> {(z, x, y): matrice}
         self.maj = {s: {} for s in SOURCES}  # source -> {(z, x, y): t}
         self.demandes = set()  # tuiles deja demandees au drone
@@ -151,6 +185,11 @@ class CarteFusion:
         self.zones_interdites = []
 
     # ---- geometrie --------------------------------------------------------
+    @property
+    def rayon_effectif(self):
+        """Rayon dont les obstacles sont gonfles : le robot + sa marge de securite (m)."""
+        return self.rayon_robot + self.marge_securite
+
     def res(self, z):
         return self.res_fine * 2 ** (self.zmax - z)
 
@@ -270,7 +309,7 @@ class CarteFusion:
         k = 2 ** (self.zmax - self.niveau_plan)
         val = self._reduire_aligne(g, g.val)
         res = g.res * k
-        r = math.ceil(self.rayon_robot / res)
+        r = self.rayon_effectif  # m : apres gonflage, le robot est un point pour le A*
         if self.marge_drone > 0:
             # Marge elargie seulement pour les obstacles du drone situes loin de ce que le
             # rover a vu lui-meme : la ou il vient de regarder de pres, on se fie a ses yeux.
@@ -279,20 +318,20 @@ class CarteFusion:
             rover = self._reduire_aligne(g, (obstacle & (g.src == SRC_ROVER)).astype(np.int8))
             vu = self._reduire_aligne(g, (g.src == SRC_ROVER).astype(np.int8)) == 1
             pres_du_vu = dilater(vu, math.ceil(0.5 / res))
-            r_drone = math.ceil((self.rayon_robot + self.marge_drone) / res)
+            r_drone = r + self.marge_drone
             bloque = (
-                dilater(rover == 1, r)
-                | dilater((drone == 1) & pres_du_vu, r)
-                | dilater((drone == 1) & ~pres_du_vu, r_drone)
+                gonfler(rover == 1, r, res)
+                | gonfler((drone == 1) & pres_du_vu, r, res)
+                | gonfler((drone == 1) & ~pres_du_vu, r_drone, res)
             )
         else:
-            bloque = dilater(val == OBSTACLE, r)
+            bloque = gonfler(val == OBSTACLE, r, res)
         if self.zones_interdites:
             nh, nw = val.shape
             xs = (np.arange(nw) + g.j0 // k + 0.5) * res
             ys = (np.arange(nh) + g.i0 // k + 0.5) * res
             for zx, zy, zr in self.zones_interdites:
-                rr = zr + self.rayon_robot
+                rr = zr + self.rayon_effectif
                 bloque |= (xs[None, :] - zx) ** 2 + (ys[:, None] - zy) ** 2 <= rr * rr
         return GrillePlan(val, bloque, g.i0 // k, g.j0 // k, res)
 
@@ -303,7 +342,7 @@ class CarteFusion:
     # ---- planification ----------------------------------------------------
     def _liberer_depart(self, plan, i, j):
         """Le robot doit pouvoir quitter sa case meme s'il frole un obstacle."""
-        r = math.ceil((self.rayon_robot + self.marge_drone) / plan.res)
+        r = math.ceil((self.rayon_effectif + self.marge_drone) / plan.res)
         bloque = plan.bloque.copy()
         for di in range(-r, r + 1):
             for dj in range(-r, r + 1):
@@ -408,7 +447,7 @@ class CarteFusion:
         if len(morceau) < 2:
             return None
         res_plan = self.res(self.niveau_plan)
-        marge = self.rayon_robot + self.marge_drone + 2 * res_plan
+        marge = self.rayon_effectif + self.marge_drone + 2 * res_plan
         xs, ys = [p[0] for p in morceau], [p[1] for p in morceau]
         fenetre = [min(xs) - marge, min(ys) - marge, max(xs) + marge, max(ys) + marge]
         if zone is not None:  # rien n'est bloque hors de la zone de travail
@@ -425,7 +464,7 @@ class CarteFusion:
         # le A* l'autorise a en sortir (_liberer_depart), on ne bloque donc pas non plus les
         # premiers centimetres du chemin, sinon il replanifierait en boucle sur place.
         x0, y0 = morceau[0]
-        sortie = self.rayon_robot + self.marge_drone + res_plan if self.marge_drone > 0 else 0
+        sortie = self.rayon_effectif + self.marge_drone + res_plan if self.marge_drone > 0 else 0
         for x, y in morceau[1:]:
             if math.hypot(x - x0, y - y0) <= sortie:
                 continue
@@ -522,7 +561,7 @@ class CarteFusion:
         optimiste, plan2, douteux_plan = self._chemin_optimiste(
             g, depart, objectif, tolerance, self.zmax + 1, exclure=self.inspectees
         )
-        distance_min = self.rayon_robot + self.marge_drone + 0.35
+        distance_min = self.rayon_effectif + self.marge_drone + 0.35
         distance_max = max(1.2, distance_min + 0.6)
         if not optimiste:
             return None
