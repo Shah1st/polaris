@@ -91,6 +91,7 @@ class SimCameraDepth:
             float(frame['t']),
             self.max_range,
             ff.CAM_HEIGHT,
+            rgb=frame.get('rgb'),
         )
 
 
@@ -114,6 +115,7 @@ class SimD405:
             float(frame['t']),
             float(frame['d405_range'][1]),
             float(frame['d405_mount'][2]),  # camera height: its mount above the ground
+            rgb=frame.get('d405_rgb'),
         )
 
 
@@ -249,7 +251,7 @@ class LiveFusion:
             self.t_drone = time.monotonic()
 
         t1 = time.monotonic()
-        local = ff.classify_scan(scan)
+        local = ff.classify_scan(scan, vegetation=self.args.vegetation)
         msgs = decouper(
             local.data, local.x0, local.y0, self.carte.zmax, self.carte, 'rover', scan.t
         )
@@ -493,6 +495,12 @@ def main() -> None:
     ap.add_argument('--port', type=int, default=8094)
     ap.add_argument('--period', type=float, default=1.0, help='seconds between cycles')
     ap.add_argument('--range', type=float, default=2.0, help='rover sensor range (m)')
+    ap.add_argument(
+        '--vegetation',
+        type=float,
+        default=0.15,
+        help='excess green above which a low point is driven-through vegetation (0 = off)',
+    )
     ap.add_argument('--source', default='camera', choices=('camera', 'd405'), help='rover points')
     ap.add_argument('--replan', type=float, default=10.0, help='decide at least this often (s)')
     ap.add_argument('--min-gap', type=float, default=3.0, help='and at most this often (s)')

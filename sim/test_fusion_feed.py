@@ -98,6 +98,31 @@ def test_flat_ground_with_a_wall():
     assert local.stats['drop'] == 0
 
 
+def test_low_vegetation_is_driven_through_but_a_grey_block_is_not():
+    T = camera_pose()
+    depth = render(T, wall=(1.02, 0.2, 0.25))
+    brown = np.full((HH, W, 3), (100, 85, 60), np.uint8)  # RGB, soil
+    block = depth < 1.03  # pixels on the block's face (the ground that near is below the image)
+    assert block.any()
+    green = brown.copy()
+    green[block] = (60, 110, 30)  # fern
+    grey = brown.copy()
+    grey[block] = (70, 68, 66)  # rock
+    pose = (0.0, 0.0, 0.0)
+    fern = ff.classify_scan(ff.scan_from_depth(depth, K, T, pose, 1.0, rgb=green))
+    rock = ff.classify_scan(ff.scan_from_depth(depth, K, T, pose, 1.0, rgb=grey))
+    assert cell(fern, 1.02, 0.0) == ff.FREE
+    assert fern.stats['vegetation_points'] > 0
+    assert (fern.point_kind == ff.POINT_VEGETATION).sum() == fern.stats['vegetation_points']
+    assert cell(rock, 1.02, 0.0) == ff.OBSTACLE
+    assert rock.stats['vegetation_points'] == 0
+    # switched off, or without a picture, green changes nothing
+    off = ff.classify_scan(ff.scan_from_depth(depth, K, T, pose, 1.0, rgb=green), vegetation=0)
+    assert cell(off, 1.02, 0.0) == ff.OBSTACLE
+    plain = ff.classify_scan(ff.scan_from_depth(depth, K, T, pose, 1.0))
+    assert cell(plain, 1.02, 0.0) == ff.OBSTACLE
+
+
 def test_branches_above_the_rover_do_not_block():
     T = camera_pose()
     # a wall from 0.5 to 2 m high: the rover passes under it, its foot is not seen
