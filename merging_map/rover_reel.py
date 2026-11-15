@@ -59,6 +59,13 @@ Securite
   alors repartie de zero : avant le pas suivant on attend que l'ESP32 et le gyroscope soient
   prets, puis on recale le repere carte <- odometrie sur une image neuve (le cap aussi est
   oublie si la camera ne le donne pas : il est remesure).
+- Panne du serveur : un pas qui finit 'no ESP32 feedback', 'ESP32 link lost' ou
+  'controller error: ...' (le serveur a arrete le rover de lui-meme, voir ctrl.fault) n'est pas
+  un pas fini : ServeurRoverError, et le pas suivant se recale d'abord sur une image neuve.
+- STOP entre deux pas : rover_core ne laisse alors aucune trace dans ctrl.history. Un serveur
+  recent compte les /stop recus (stop_count dans GET /state) : avant chaque pas, s'il en a recu
+  plus que l'adaptateur n'en a envoye (avec une reponse), ArretOperateur. Sans ce champ
+  (serveur plus ancien), ce STOP n'est pas vu.
 - Borne : un POST /path dont la cible est plus loin de la pose odometrique actuelle que le pas
   demande + marge_pas n'est jamais envoye (ServeurRoverError).
 - Le pas de mesure du cap est un /path vers un point absolu de l'odometrie : le renvoyer apres
@@ -98,6 +105,17 @@ class ArretOperateur(Exception):  # noqa: N818 - nom fixe par l'interface entre 
 
 # Statuts de ctrl.history qui, si l'adaptateur ne les a pas causes, viennent d'un operateur
 ARRETS_OPERATEUR = ('stopped', 'cancelled by manual control', 'replaced by a new command')
+
+# Statuts de ctrl.history d'un pas que le serveur a abandonne de lui-meme (Controller.fail de
+# rover/rover_core.py) : plus de retour de l'ESP32, liaison serie perdue, erreur dans sa boucle
+PANNES_SERVEUR = ('no ESP32 feedback', 'ESP32 link lost', 'controller error')
+
+
+def panne_serveur(statut):
+    """True si `statut` (de ctrl.history ou ctrl.fault) dit que le serveur a arrete le rover a
+    cause d'une panne : le pas n'est pas fini."""
+    return isinstance(statut, str) and statut.startswith(PANNES_SERVEUR)
+
 
 # m : le serveur tient la fin d'un /path pour atteinte a cette distance pres (path_goal_tol de
 # rover/rover_core.py) ; le rover s'arrete donc jusqu'a autant avant le point vise.
@@ -249,6 +267,10 @@ class RaspRoverReel(RobotOdometrie):
         self._dernier_etat = None  # derniere reponse de GET /state
         self._redemarrage = False  # le serveur a redemarre depuis le dernier recalage
         self.redemarrages = 0
+        # /stop : stop_count du serveur au dernier controle (None : champ absent ou pas encore
+        # lu) et /stop envoyes par l'adaptateur depuis, comptes seulement s'ils ont eu une
+        # reponse (un /stop recu dont la reponse se perd donne au pire un faux arret operateur)
+        self._stops_vus, self._stops_envoyes = None, 0
         super().__init__(carte)  # appelle placer((0, 0)), qui ne parle pas encore au rover
 
     # ---- liaisons et temps -------------------------------------------------
@@ -258,7 +280,15 @@ class RaspRoverReel(RobotOdometrie):
         if reponse is not None and (methode, chemin) == ('GET', '/state'):
             if self._dernier_etat is not None and serveur_redemarre(self._dernier_etat, reponse):
                 self._redemarrage = True
+            if self._dernier_etat is not None and self._stops_vus is not None:
+                if self._dernier_etat.get('boot_id') != reponse.get('boot_id'):
+                    # nouveau processus : son stop_count part de zero, et tout /stop qu'il a
+                    # recu sans qu'on le sache compte comme un STOP d'operateur (un /reset_odom
+                    # garde le boot_id et le compteur : rien a remettre a zero)
+                    self._stops_vus, self._stops_envoyes = 0, 0
             self._dernier_etat = reponse
+        elif reponse is not None and (methode, chemin) == ('POST', '/stop'):
+            self._stops_envoyes += 1
         return reponse
 
     def _insister(self, methode, chemin, corps=None):
@@ -304,6 +334,34 @@ class RaspRoverReel(RobotOdometrie):
 
     def arreter(self):
         self._demander('POST', '/stop')
+
+    def _controler_stops(self, etat):
+        """Avant un pas : un STOP presse pendant que le rover attendait (aucune trace dans
+        ctrl.history) se voit au compteur stop_count, s'il a grandi de plus que les /stop de
+        l'adaptateur. Sans ce champ (serveur plus ancien) : rien a controler."""
+        n = etat.get('stop_count')
+        if n is None:
+            return
+        vus, envoyes = self._stops_vus, self._stops_envoyes
+        if vus is not None and n < vus:
+            # compteur reparti de zero sous le meme boot_id (Rover recree) : comme apres un
+            # redemarrage, tout /stop qu'il a compte vient d'ailleurs
+            vus, envoyes = 0, 0
+        if vus is not None and n - vus > envoyes:
+            raise ArretOperateur(
+                f'STOP recu par le serveur du rover entre deux pas (stop_count {vus} -> {n}, '
+                f'{envoyes} /stop de la mission) : fin de mission'
+            )
+        self._stops_vus, self._stops_envoyes = n, 0  # premier controle, ou rien d'anormal
+
+    def _panne(self, statut, ctrl):
+        """Le serveur a arrete le rover de lui-meme pendant le pas : ce n'est pas un pas fini.
+        Le pas suivant se recalera sur une image neuve (le cerveau arrete et reessaie)."""
+        self._a_recaler = True
+        raise ServeurRoverError(
+            f"Pas abandonne par le serveur du rover (statut '{statut}', ctrl.fault "
+            f"{ctrl.get('fault')!r}) : rover arrete, voir GET /state (link, ctrl.fault)."
+        )
 
     def temps(self):
         return self.horloge()
@@ -430,6 +488,7 @@ class RaspRoverReel(RobotOdometrie):
             return None, None
         if self._redemarrage:
             return 'redemarrage', avant  # le repere a perime : rien n'est envoye
+        self._controler_stops(avant)
         if chemin == '/path':
             self._borner(corps, avant, longueur)
         dernier = (avant['ctrl'].get('history') or [None])[0]
@@ -466,7 +525,14 @@ class RaspRoverReel(RobotOdometrie):
             nouvelles = nouvelles_entrees(ctrl.get('history') or [], dernier)
             if nouvelles:
                 self._controler_operateur(nouvelles, envois)
+                if panne_serveur(nouvelles[0].get('status')):
+                    self._panne(nouvelles[0].get('status'), ctrl)
                 return nouvelles[0].get('status'), etat
+            if panne_serveur(ctrl.get('fault')):
+                # Pas sorti de la file sans trace, panne apres notre POST (qui remet ctrl.fault
+                # a None) : un STOP compte par le serveur passe avant la panne.
+                self._controler_stops(etat)
+                self._panne(ctrl.get('fault'), ctrl)
             if vu_en_cours:  # parti de la file sans laisser de trace : un /stop l'a videe
                 raise ArretOperateur("pas annule avant de partir (/stop d'un autre client)")
         self.arreter()

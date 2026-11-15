@@ -197,6 +197,12 @@ Checked on our rover (2026-11-15): T:133 moves both servos although the boot mis
 - `/snapshot.jpg` never serves an old picture as new: header `X-Age-Ms`, and HTTP 503 when no
   picture newer than 2 s arrives within 3 s. `/state` has `boot_id` (new at each server start)
   and `uptime_s`.
+- `/state` → `stop_count` counts the stops received since the server started (`POST /stop` and
+  `/cmd {"T":0}`), also those pressed while the rover stands still, which leave no trace in
+  `ctrl.history`. A client that drives the rover step by step (the mission,
+  `merging_map/rover_reel.py`) reads it before each step: if it grew by more than the stops the
+  client sent itself, someone pressed STOP, and the client must not send the next step. It
+  starts again at 0 with a new `boot_id`; an older server has no such field.
 
 ## Deploying to the robot
 

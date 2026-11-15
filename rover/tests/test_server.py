@@ -102,6 +102,17 @@ def test_state_has_identity_and_strict_json(bench: Bench) -> None:
     assert s2['boot_id'] == s1['boot_id'] and s2['uptime_s'] >= s1['uptime_s']
 
 
+def test_stop_count_counts_every_stop_even_on_an_idle_rover(bench: Bench) -> None:
+    """A STOP on an idle rover leaves no trace in ctrl.history: stop_count shows it."""
+    n0 = strict_json(bench.request('GET', '/state')[2])['stop_count']
+    assert bench.request('POST', '/stop', '{}')[0] == 200
+    assert bench.request('POST', '/cmd', '{"T": 0}')[0] == 200  # the raw RaspRover stop
+    s = strict_json(bench.request('GET', '/state')[2])
+    assert s['stop_count'] == n0 + 2 and s['ctrl']['mode'] == 'idle'
+    assert bench.request('POST', '/move', '{"distance": 0.05}')[0] == 200
+    assert strict_json(bench.request('GET', '/state')[2])['stop_count'] == n0 + 2  # steps: no
+
+
 def test_nan_inside_the_state_becomes_null(bench: Bench) -> None:
     with bench.rover.lock:
         bench.rover.ctrl.history.appendleft({'kind': 'move', 'target': float('nan')})

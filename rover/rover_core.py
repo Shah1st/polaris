@@ -1322,6 +1322,7 @@ class Rover:
         self._was_connected = False
         self.loop_errors = 0
         self.last_loop_error: str | None = None
+        self.stop_count = 0  # stop() calls (POST /stop, /cmd {"T":0}) since this Rover started
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name='rover-loop', daemon=True)
 
@@ -1348,6 +1349,9 @@ class Rover:
     def stop(self) -> None:
         try:
             with self.lock:
+                # Counted even when the rover is idle (that stop leaves no trace in history):
+                # a mission client compares it with the stops it sent itself.
+                self.stop_count += 1
                 self.ctrl.stop(time.monotonic())
         finally:
             self.link.send({'T': 13, 'X': 0, 'Z': 0})
@@ -1449,6 +1453,7 @@ class Rover:
                 },
                 'loop_errors': self.loop_errors,
                 'last_loop_error': self.last_loop_error,
+                'stop_count': self.stop_count,
                 'battery_v': battery_volts(self.chassis.get('v')),
                 **tilt_deg(self.chassis),
                 'counters_cm': self.odom.counters,
