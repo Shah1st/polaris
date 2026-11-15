@@ -190,3 +190,89 @@ def test_the_placement_by_move_is_dropped_when_the_camera_itself_moves() -> None
 
     assert f.calage_mvt is None
     assert not f.drone['cale_sur_cette_image'] and f.drone['cale']  # the old view stays
+
+
+# ---- the vision model (--drone-detecteur ia) together with the rover's move -------------------
+
+
+class Trouve:
+    """What sim/rover_du_dessus.py returns: the rover's box in the picture (pixels, y down)."""
+
+    def __init__(self, x, y, cap=None):
+        self.x, self.y, self.cap = x, y, cap
+        self.taille, self.score = 0.215 * 300, 0.8  # sqrt(0.20 x 0.23) m at 300 px per metre
+
+
+def fusion_ia(found):
+    """A FusionReelle in vision-model mode; `found[0]` is what the model answers."""
+    f, reader = fusion()
+    f.args.drone_taille_rover = 0.215
+    f.ia = lambda image: found[0]
+    return f, reader
+
+
+def model_stop(f, reader, found, rover_x, pose, cap=None):
+    """The rover stands still at `pose`; the model finds it at scene point (rover_x, 0.50)."""
+    image = picture(rover_x)
+    found[0] = Trouve((rover_x + SHIFT) * 300, image.shape[0] - (0.50 + SHIFT) * 300, cap)
+    reader.image = image
+    with f.verrou:
+        f.pose, f.immobile = pose, True
+    f.tour_drone()
+
+
+def test_with_the_vision_model_a_rover_without_heading_is_placed_by_its_move() -> None:
+    """The model finds the rover in every picture but not which way it faces. Before: never
+    placed. Now two stops of the rover give the direction of the camera's frame."""
+    found = [None]
+    f, reader = fusion_ia(found)
+    heading = math.pi / 2
+
+    model_stop(f, reader, found, 0.50, (20.0, 20.0, heading))
+    assert not f.drone['cale'] and f.drone['rover_vu'] and not f.drone['cap_vu']
+    assert 'drive it a little' in f.drone['mouvement']
+
+    model_stop(f, reader, found, 0.70, (20.0, 20.2, heading))
+    assert f.drone['cale_sur_cette_image'] and f.drone['cale_par'] == 'movement'
+    assert f.rotation_ia == pytest.approx(math.pi / 2, abs=math.radians(3))
+    assert f.carte.tuiles['drone']
+    px, py = 20.0 - (1.07 - 0.50), 20.2 + (1.32 - 0.70)  # the middle of the box, on the maps
+    g = f.carte.grille(px - 0.05, py - 0.05, px + 0.05, py + 0.05)
+    assert int(g.val[g.val.shape[0] // 2, g.val.shape[1] // 2]) == 1
+    # the move-by-objects placement stays out of the way in this mode
+    assert f.calage_mvt is None and f.appui is None
+
+
+def test_with_the_vision_model_a_heading_seen_in_the_picture_wins() -> None:
+    found = [None]
+    f, reader = fusion_ia(found)
+
+    # heading in the picture: 0 = x right; the maps' frame is the picture's here
+    model_stop(f, reader, found, 0.50, (20.0, 20.0, 0.0), cap=0.0)
+
+    assert f.drone['cale_sur_cette_image'] and f.drone['cale_par'] == 'marker'
+    assert f.rotation_ia is None  # no move was needed
+
+
+def test_with_the_vision_model_a_move_that_the_pictures_contradict_is_refused() -> None:
+    """The rover drove 20 cm but is 60 cm further in the picture: the camera moved."""
+    found = [None]
+    f, reader = fusion_ia(found)
+
+    model_stop(f, reader, found, 0.30, (20.0, 20.0, 0.0))
+    model_stop(f, reader, found, 0.90, (20.2, 20.0, 0.0))
+
+    assert not f.drone['cale'] and f.rotation_ia is None
+    assert 'did the camera move' in f.drone['mouvement']
+
+
+def test_with_the_vision_model_a_rover_not_found_changes_nothing() -> None:
+    found = [None]
+    f, reader = fusion_ia(found)
+    reader.image = picture(0.50)
+    with f.verrou:
+        f.pose, f.immobile = (20.0, 20.0, 0.0), True
+
+    f.tour_drone()  # the model answers None
+
+    assert f.drone['etat'] == 'ok' and not f.drone['rover_vu'] and not f.drone['cale']

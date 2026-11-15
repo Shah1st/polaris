@@ -287,6 +287,11 @@ class FusionReelle:
                     # It must not be an obstacle under itself.
                     vu = self.rover_dans_camera(calage, pose)
                     m = sans_rover(m, res, vu, self.camera.settings.rover_radius)
+            elif vu is not None and pose is not None and self.immobile:
+                # the vision model found the rover but not which way it faces (the marker's
+                # paper is hidden or too small): two stops of the rover give the direction
+                calage = self.caler_ia_sur_mouvement(vu, pose)
+                par = None if calage is None else 'movement'
             if calage is not None:
                 self.calage, self.t_calage, self.cale_par = calage, time.time(), par
             place = None if self.vue_drone is None else self.vue_drone['place']
@@ -396,6 +401,44 @@ class FusionReelle:
         )
         return changee
 
+    def caler_ia_sur_mouvement(self, vu, pose):
+        """With the vision model: place a picture in which the rover was found without its
+        heading. Call with the rover standing still (and self.verrou held).
+
+        The model gives where the rover is and the picture's scale, in every picture. What is
+        missing is the direction of the camera's frame. Two stops of the rover at least
+        --drone-pas-min apart give it: the same move seen in the pictures and in the odometry
+        (scale_check.frame_from_move). The direction is kept for the next pictures and
+        measured again at every new stop, so it follows a camera that turns slowly; it is
+        refused when the two distances disagree by more than 40 %, which is what a camera
+        moved between the two stops looks like. Returns the placement, or None."""
+        from guidance_global_map.scale_check import frame_from_move
+
+        if self.appui_ia is None:
+            self.appui_ia = (vu[:2], pose)
+        else:
+            vu0, pose0 = self.appui_ia
+            if math.dist(pose0[:2], pose[:2]) >= self.args.drone_pas_min:
+                self.appui_ia = (vu[:2], pose)
+                rotation, correction = frame_from_move(vu0, vu[:2], pose0[:2], pose[:2])
+                if 1 / 1.4 <= correction <= 1.4:
+                    self.rotation_ia = rotation
+                    self.info_mouvement = (
+                        f'direction from the rover move '
+                        f'({math.dist(pose0[:2], pose[:2]) * 100:.0f} cm)'
+                    )
+                else:
+                    self.info_mouvement = (
+                        f'the rover move and the pictures disagree (x{correction:.2f}): did '
+                        'the camera move?'
+                    )
+        if self.rotation_ia is None:
+            self.info_mouvement = self.info_mouvement or (
+                'rover found without its heading: drive it a little and stop'
+            )
+            return None
+        return (self.rotation_ia, vu[0], vu[1], pose[0], pose[1])
+
     def camera_immobile(self, objets, ecart=0.06):
         """True while what stood still when the rover's move placed the camera is still at the
         same place in its picture (most of it: the rover may hide a thing or two). With
@@ -497,6 +540,8 @@ class FusionReelle:
             self.calage_mvt = None  # the placement found from a move of the rover
             self.repere_fixe = []  # what stood still in the camera's view when it was found
             self.appui = None  # (objects the camera saw, rover pose) at the last stop
+            self.appui_ia = None  # (rover in the picture, rover pose) at the last stop
+            self.rotation_ia = None  # camera frame -> maps, from a move (vision model)
             self.info_mouvement = None
             self.correction_echelle = 1.0  # what the rover's move said of the camera's scale
             self.vue_drone = None
