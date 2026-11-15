@@ -3,6 +3,8 @@
 The overhead-camera nodes (calib, global_map, rover_pose) take their parameters from
 config/overhead.yaml. Pass overhead_source:=<image or video file> to feed them from a file.
 Pass rover_vo:=true to also start the bridge from the rover mapper (guidance_rover_vo).
+merging_map_node (the map fusion and its planner) starts with the rest and waits for a
+goal on /goal_pose.
 """
 
 from launch import LaunchDescription
@@ -19,6 +21,7 @@ GUIDANCE_NODES = [
     ('guidance_rover_pose', 'rover_pose_node'),
     ('guidance_rover_vo', 'rover_vo_bridge_node'),
     ('guidance_supervisor', 'supervisor_node'),
+    ('guidance_supervisor', 'merging_map_node'),
 ]
 # Nodes started only when their launch argument is true (off by default, so a launch that
 # does not use them is unchanged).

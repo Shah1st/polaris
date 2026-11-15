@@ -53,7 +53,7 @@ steps on one photo and writes the grid as a picture (`_grid.png`), as numbers (`
 `_grid.npy`), in the map-fusion convention (`_fusion.npy`), and an overlay on the photo
 (`_overlay.jpg`).
 
-## Feeding the map fusion (`merging_map`, branch `mergingmap`)
+## Feeding the map fusion (`merging_map`)
 
 `merging_map` merges drone and rover maps, plans the path and drives the rover. It is plain
 Python with no ROS. It takes the drone's map as tiles, and its rover controller
@@ -107,42 +107,39 @@ To import the adapter from their plain-Python side, put `src/guidance_calib`,
 `src/guidance_global_map` and `src/guidance_rover_pose` on `PYTHONPATH` (or source the built
 workspace) and have `opencv-contrib-python` and `numpy` installed.
 
-### Needed from the `mergingmap` author
+### How the two are connected today
 
-1. **Use the adapter**: feed `camera.tiles()` at the start, and pass `position_drone`, `drone`
-   and `zone` as in the snippet above.
-2. **Accept a rover position with or without a heading.** The rover has no marker for now, so
-   this pipeline knows where the rover is but not which way it faces. `RaspRoverReel` counts
-   the drone as available only when `position_drone()` returns a position, and it assigns the
-   heading from it without checking. So today the adapter returns None, and the mission runs
-   in "drone lost" mode the whole time: half speed, position from wheel odometry only and
-   never corrected by the camera, and a return-and-wait once the uncertainty passes 60 cm.
-   Both cases should work:
-   - **No heading (now).** Take `(x, y, None)`, correct the position, and keep the odometry
-     heading. `OverheadDrone.rover_pose()` already returns this.
-   - **With a heading (later).** Take `(x, y, heading)` as today. It will come from an ArUco
-     marker on the rover (id 10, `DICT_4X4_50`, top edge facing forward), which this pipeline
-     already reads, or from the rover's motion between frames, which is not built.
+All of this is in `main`.
 
-   Once `RaspRoverReel` handles a None heading, `position_drone=camera.rover_pose` is the only
-   change in the snippet above.
-3. **Planner settings for our small area**, all arguments that exist already. On photo
-   IMG_4099 the defaults block 45% of the floor (10 cm planning cells, 15 cm radius rounded up
-   to 20 cm) and count a goal as reached 50 cm away. Proposed until a test drive gives real
-   numbers: `CarteFusion(niveau_plan=4, rayon_robot=0.115)` for a 15 cm margin, and
-   `tolerance=0.15`.
-4. **The frame.** Start, goal and rover-camera tiles must be in this pipeline's frame: origin
-   at the image's bottom-left corner, x right, y up, metres. It holds while the camera does
-   not move.
-5. **The demo test and matplotlib.** Without matplotlib installed, a plain `pytest` in the
-   container collected nothing at all once `merging_map` was in `testpaths`. The Dockerfile
-   on this branch now installs it; the image has to be rebuilt.
-6. **ROS, since the team wants it.** The adapter above works without ROS. To join the ROS
-   side, `merging_map` needs a node around it, for example in the placeholder
-   `guidance_supervisor` package, that subscribes to `/map` and `/rover/pose_overhead` and
-   calls the same module. `/map` becomes tiles with `segmentation.grid_to_fusion` and
-   `drone.cut_tiles`. This pipeline's side of it is done: both topics are published. Who
-   writes the node is not decided.
+| Way | Entry point | What it does |
+|---|---|---|
+| Plain Python | `merging_map/lancer_overhead.py` | Runs a whole mission: `OverheadDrone` as the drone, the planner, and the real rover through its server (`rover/rover_server.py`). `--camera <stream>` for a live camera, `--image <file>` for trials without one. |
+| ROS | `merging_map_node` in `guidance_supervisor`, started by `guidance.launch.py` | Subscribes to `/map` and `/rover/pose_overhead`, waits for a goal on `/goal_pose`, publishes `/fusion/map`, `/fusion/plan` and `/fusion/decision`. It plans; it does not drive. |
+
+Points that were open and how they were settled:
+
+- **Rover heading.** The rover controller accepts a position with or without a heading. With
+  no marker it drives a short straight line first and works out its heading from how the
+  camera saw it move. That line is limited to the floor the map shows free all around the
+  rover; next to an obstacle it is the shortest measurable step (12 cm), protected by bump
+  detection only.
+- **Planner settings for a small area**: 5 cm planning cells, arrival within 15 cm, and a
+  rover radius of 0.155 m, the circle around the whole 0.20 x 0.23 m rover. The 0.115 m once
+  proposed here was the half-width and let a corner touch an obstacle while turning.
+- **Planning area.** Both ways plan only where the camera saw the floor: `camera.zone()` in
+  the script, the cells of `/map` that are not unknown in the ROS node.
+- **Live camera.** `drone.LiveCamera(source)` reads a stream and always gives its newest
+  picture. A stream has its own scale: measure `metres_per_pixel` on a picture of that stream
+  (`segment_image --metres-per-pixel` shows the result). The script waits `--latence` seconds
+  (0.5 by default) after the rover stops before it looks, because a stream is late.
+
+Still open:
+
+- **The rover's own map.** Nothing turns the rover camera into tiles on the real rover, so
+  the planner works from the overhead map alone. `sim/fusion_feed.py` already does it for a
+  depth image with a known camera pose (`scan_from_depth`, `classify_scan`); what is missing
+  is feeding it real depth (the D405 in `camera-test/`, or the mapper in `rover_mapper/`).
+- **The frame** holds only while the camera does not move.
 
 ## Setting it up
 
@@ -162,15 +159,18 @@ handles a tilted camera and gives the rover's heading. See the README.
 
 ## What has been verified
 
-- Unit tests of the logic on synthetic images and masks, and node start-up tests: 45 tests,
-  run in the dev container (ROS 2 Jazzy, OpenCV 4.6).
+- Unit tests of the logic on synthetic images and masks, and node start-up tests, run in
+  the dev container (ROS 2 Jazzy, OpenCV 4.6) with the rest of the repository.
 - Six real photos (IMG_4097 to IMG_4102, floor mock-up, phone at 1.9 m) through the photo
   tool: all obstacles detected, the rover found in all six.
-- One of them (IMG_4099) through the launched ROS nodes in the container: `/map` and
+- One of them (IMG_4099) through the launched ROS nodes in the container, planner
+  included: a goal sent on `/goal_pose` gave a path on `/fusion/plan` that stays inside the
+  photo. Also `/map` and
   `/rover/pose_overhead` published, and the grid equal to the photo tool's except 1 of 1,188
   cells (the container has OpenCV 4.6, the photo tool was run with 5.0).
 
-Not verified: the absolute scale against a ruler; a live camera stream; a moving camera; the
+Not verified: the absolute scale against a ruler; a real live camera stream (`LiveCamera`
+is tested against a fake one only); a moving camera; the
 marker setup through the launched nodes; anything outdoors.
 
 ## Decisions and why
@@ -198,14 +198,12 @@ marker setup through the launched nodes; anything outdoors.
 
 ## Next steps, in order
 
-1. Run a mission of `merging_map` with the adapter on the real rover, with a marker on the
-   rover, once its author has done the points listed above.
-2. Rover heading without a marker, from its motion between frames.
+1. A first run on the real rover with the live camera: check the stream's scale and delay,
+   and the planner's margin.
+2. The rover's own map on the real rover (see "Still open" above).
 3. Check the scale with a tape measure on the floor.
-4. Live phone stream instead of saved photos: a reader function for `OverheadDrone`, and
-   the stream's own scale (`metres_per_pixel`, measured with a ruler in view).
-5. Make rover detection sturdier than size alone (colour, or tracking from the last position).
-6. Later: tilted or moving camera without markers, uneven ground, a learned segmentation for
+4. Make rover detection sturdier than size alone (colour, or tracking from the last position).
+5. Later: tilted or moving camera without markers, uneven ground, a learned segmentation for
    outdoor scenes.
 
 ## For coding agents

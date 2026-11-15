@@ -1,0 +1,6 @@
+# Same rules as the repository, plus: math notation for cameras (K = intrinsics, P = points)
+# and http.server's do_GET/do_POST.
+extend = "../ruff.toml"
+
+[lint.per-file-ignores]
+"*.py" = ["N802", "N803", "N806"]

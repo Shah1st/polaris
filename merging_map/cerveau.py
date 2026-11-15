@@ -9,12 +9,14 @@ RaspRover (rover_reel.RaspRoverReel).
 
 import math
 
-PAS = 0.3  # avance du rover par pas (m), liaison drone OK
-PAS_PRUDENT = 0.15  # sans drone : deux fois plus lent
-BUDGET_INCERTITUDE = 0.6  # au-dela (m), retour au dernier point vu par le drone
-ATTENTE_MAX = 300.0  # temps d'attente du drone au point de retour (s), puis arret
-RECUL_RESEAU = 0.5  # liaison rover perdue : retour jusqu'a 50 cm avant le dernier point connecte
-RAYON_ZONE = 1.5  # rayon de la zone marquee interdite, devant le point ou la liaison a lache
+from mission_settings import FIELD
+
+# The field values under their former names (the dashboard reads them). The distances of a
+# mission now come from its `settings` (mission_settings.FIELD or ARENA).
+PAS, PAS_PRUDENT = FIELD.step, FIELD.careful_step
+BUDGET_INCERTITUDE = FIELD.uncertainty_budget
+ATTENTE_MAX = FIELD.drone_wait_max
+RECUL_RESEAU, RAYON_ZONE = FIELD.link_backoff, FIELD.no_go_radius
 
 RESUMES = {
     'capteur': 'le rover regarde autour de lui',
@@ -37,6 +39,7 @@ RESUMES = {
     'poursuite': 'incertitude elevee, mais la victime est plus proche que le retour',
     'perte_rover': 'LIAISON ROVER PERDUE -> retour au dernier point connecte',
     'reprise_rover': 'liaison rover retrouvee -> zone interdite, replanification',
+    'link_back': 'liaison rover retrouvee -> replanification, sans zone interdite',
 }
 
 
@@ -73,18 +76,22 @@ def mission(
     max_tours=600,
     journal=print,
     evenement=None,
+    settings=FIELD,
 ):
     """Mene le rover de `depart` a `victime`.
 
     Sans liaison drone : le rover roule deux fois plus lentement, sa position ne vient plus
     que de l'odometrie (incertitude qui grandit), les obstacles du drone sont gonfles d'autant,
     il fait la reconnaissance lui-meme, et revient au dernier point vu par le drone si
-    l'incertitude depasse BUDGET_INCERTITUDE (sauf si la victime est plus proche).
+    l'incertitude depasse settings.uncertainty_budget (sauf si la victime est plus proche).
     Sans liaison rover : retour au dernier point connecte, zone interdite, replanification.
 
     `zone` : rectangle (x0, y0, x1, y1) ou planifier (defaut : zone survolee par le drone).
     `evenement(type, action, **infos)` est appele a chaque etape (tableau de bord).
+    `settings` : distances and delays of the mission (mission_settings.FIELD, the default, or
+    ARENA for the 2.4 m arena); the map's own inspection settings are set from it too.
     Renvoie des instantanes pour la figure de la demo."""
+    settings.apply_to_map(carte)
     instantanes, demandees, replans = {}, [], []
     traj, traj_vraie = [], []
     essais = {}
@@ -145,10 +152,10 @@ def mission(
             if (
                 budget
                 and not robot.drone_disponible()
-                and robot.incertitude() > BUDGET_INCERTITUDE
+                and robot.incertitude() > settings.uncertainty_budget
             ):
                 return 'budget'
-            pas = PAS if robot.drone_disponible() else PAS_PRUDENT
+            pas = settings.step if robot.drone_disponible() else settings.careful_step
             cible, chemin = avancer(robot.position(), chemin, pas)
             impact = robot.deplacer(cible)
             noter_position()
@@ -166,7 +173,9 @@ def mission(
             if arrive(robot.position()) or (finir_sur_place and not chemin):
                 return 'arrive'
             if verifier:
-                bloque = carte.premier_point_bloque([robot.position()] + chemin, zone, horizon=3.0)
+                bloque = carte.premier_point_bloque(
+                    [robot.position()] + chemin, zone, horizon=settings.check_horizon
+                )
                 if bloque:
                     replans.append(robot.position())
                     emettre('replan', action, obstacle=bloque, **infos)
@@ -188,10 +197,11 @@ def mission(
         return attendre_drone('RETOUR', but)
 
     def attendre_drone(action, point):
-        """Immobile, LED allumees, le rover attend le retour du drone (au plus ATTENTE_MAX)."""
+        """Immobile, LED allumees, le rover attend le retour du drone (au plus
+        settings.drone_wait_max)."""
         emettre('attente', action, point=point, sigma=robot.incertitude())
         attendu = 0.0
-        while not robot.drone_disponible() and attendu < ATTENTE_MAX:
+        while not robot.drone_disponible() and attendu < settings.drone_wait_max:
             robot.attendre(5.0)
             attendu += 5.0
             if not robot.drone_disponible():
@@ -204,10 +214,11 @@ def mission(
     def secours_rover():
         """Plus d'ordre de l'ordinateur depuis 1 s. Le programme de secours embarque sur le
         rover enregistre l'instant et le dernier point ou la liaison marchait, puis le ramene
-        sur sa propre trace jusqu'a RECUL_RESEAU m avant ce point. La liaison revient : le
-        rover renvoie ce qu'il a vu, l'ordinateur marque la zone perdue comme interdite (une
-        zone de RAYON_ZONE m devant ce point) et replanifie avec la carte globale et le drone.
-        Pendant tout ce temps, le drone continue de voir le rover."""
+        sur sa propre trace jusqu'a settings.link_backoff m avant ce point. La liaison
+        revient : le rover renvoie ce qu'il a vu, l'ordinateur marque la zone perdue comme
+        interdite (une zone de settings.no_go_radius m devant ce point ; aucune si c'est 0) et
+        replanifie avec la carte globale et le drone. Pendant tout ce temps, le drone continue
+        de voir le rover."""
         instant = robot.temps()
         dernier_ok = traj[-2] if len(traj) >= 2 else traj[-1]
         ici = robot.position()
@@ -217,10 +228,10 @@ def mission(
         points = list(reversed(traj[:-1]))
         chemin, d = [points[0]], 0.0
         for a, b in zip(points, points[1:], strict=False):
+            if d >= settings.link_backoff:
+                break
             chemin.append(b)
             d += math.dist(a, b)
-            if d >= RECUL_RESEAU:
-                break
         if robot.retour_embarque:
             # le vrai rover revient tout seul : l'ordinateur ne peut que l'attendre
             robot.attendre_retour_embarque(chemin)
@@ -236,10 +247,14 @@ def mission(
                 point=dernier_ok,
             )
         robot.vider_tampon()
+        radius = settings.no_go_radius
+        if radius <= 0:  # the link loss does not come from a place: just plan again
+            emettre('link_back', 'SECOURS', point=dernier_ok, instant=instant)
+            return
         zone_interdite = (
-            dernier_ok[0] + dx / norme * RAYON_ZONE,
-            dernier_ok[1] + dy / norme * RAYON_ZONE,
-            RAYON_ZONE,
+            dernier_ok[0] + dx / norme * radius,
+            dernier_ok[1] + dy / norme * radius,
+            radius,
         )
         carte.interdire_zone(*zone_interdite)
         emettre('reprise_rover', 'SECOURS', point=dernier_ok, zone=zone_interdite, instant=instant)

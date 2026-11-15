@@ -183,6 +183,11 @@ class CarteFusion:
         # traite comme des obstacles ; elles restent a part pour pouvoir etre retirees (relais
         # radio) et pour que le drone ne vienne pas les « zoomer ».
         self.zones_interdites = []
+        # Inspection by the rover itself (no drone): it stops at least inspect_reserve m
+        # outside the safety margin of the obstacle, and at most inspect_max_distance m from
+        # it. Field values; mission_settings.ARENA sets smaller ones for the 2.4 m arena.
+        self.inspect_reserve = 0.35
+        self.inspect_max_distance = 1.2
 
     # ---- geometrie --------------------------------------------------------
     @property
@@ -555,14 +560,15 @@ class CarteFusion:
         de loin etaient franchissables ?), mais tous les obstacles du drone sont douteux pour
         le rover, qui voit plus fin. Le premier point douteux du chemin optimiste devient la
         cible ; le rover va a la case atteignable la plus proche (a moins de distance_max m)
-        pour l'observer, avec une reserve de 35 cm hors de la marge de securite (qui grandit
-        avec l'incertitude). Un secteur (tuile du niveau le plus fin) n'est inspecte qu'une
-        fois ; ensuite ses obstacles comptent comme confirmes et la recherche passe ailleurs."""
+        pour l'observer, avec une reserve (inspect_reserve, 35 cm par defaut) hors de la marge
+        de securite (qui grandit avec l'incertitude). Un secteur (tuile du niveau le plus fin)
+        n'est inspecte qu'une fois ; ensuite ses obstacles comptent comme confirmes et la
+        recherche passe ailleurs."""
         optimiste, plan2, douteux_plan = self._chemin_optimiste(
             g, depart, objectif, tolerance, self.zmax + 1, exclure=self.inspectees
         )
-        distance_min = self.rayon_effectif + self.marge_drone + 0.35
-        distance_max = max(1.2, distance_min + 0.6)
+        distance_min = self.rayon_effectif + self.marge_drone + self.inspect_reserve
+        distance_max = max(self.inspect_max_distance, distance_min + self.inspect_max_distance / 2)
         if not optimiste:
             return None
         atteignable = None
