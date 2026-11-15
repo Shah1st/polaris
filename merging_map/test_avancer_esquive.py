@@ -155,8 +155,8 @@ def test_une_boite_qui_apparait_apres_le_premier_segment_est_evitee() -> None:
     boites = []
     boite = Box(D + 2.0, D - 0.25, 0.4, 0.5)
 
-    def avant(methode, chemin):
-        if chemin == '/path' and not boites and len(posts(faux, '/path')) >= 1:
+    def avant(methode, chemin):  # le premier segment est fini : la boite arrive
+        if chemin == '/state' and posts(faux, '/path') and faux.history and not boites:
             boites.append(boite)
 
     issue, bilan, lignes = conduire(
