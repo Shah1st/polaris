@@ -40,6 +40,11 @@ HTTP API (JSON bodies). The first two match the shared simulation in sim/run_wor
                        is held (repeat it like /cmd), {"pan": deg, "tilt": deg} (pan + = right,
                        tilt + = up), or {"center": true}. A raw {"T":133,...} on /cmd works too.
   GET  /config         settings;  POST /config {"name": value, ...} changes and saves them
+  GET  /d405/color.jpg, /d405/depth.jpg?max=1.0, /d405/status
+                       the D405 depth camera, through its capture server on the robot
+                       (rover_mapper/d405_server.py, --d405 URL): colour picture, depth as a
+                       colour map (red near, blue at max metres), health and centre distance.
+                       503 {"error"} when that server does not answer.
 
 Numbers must be finite and within the limits of rover_core (MAX_*, CONFIG_LIMITS): otherwise
 HTTP 400 and nothing moves or changes. Steps before "Gyro OK": HTTP 409.
@@ -58,6 +63,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from d405_view import DEFAULT_URL as D405_URL
+from d405_view import D405UnavailableError, D405View
 from rover_core import (
     MAX_MANUAL_V,
     Config,
@@ -278,6 +285,8 @@ class App:
         self.camera: Camera | None = None
         self.sim_board = None
         self._switch_lock = threading.Lock()
+        d405 = getattr(args, 'd405', D405_URL)
+        self.d405 = D405View(None if d405 in (None, '', 'off') else d405)
 
     def set_mode(self, mode: str) -> None:
         """Start driving the real rover ('real') or the simulated one ('sim')."""
@@ -415,6 +424,8 @@ def make_handler(app: App):
                 self.wfile.write(data)
             elif path == '/snapshot.jpg':
                 self._snapshot()
+            elif path.startswith('/d405/'):
+                self._d405(path)
             else:
                 self._json({'error': 'not found'}, 404)
 
@@ -532,6 +543,38 @@ def make_handler(app: App):
             else:
                 raise ValueError('expected {"v","omega"} or a RaspRover {"T": ...} command')
 
+        def _d405(self, path: str) -> None:
+            query = self.path.partition('?')[2]
+            params = dict(kv.partition('=')[::2] for kv in query.split('&') if kv)
+            try:
+                if path == '/d405/status':
+                    self._json(app.d405.status())
+                    return
+                if path == '/d405/color.jpg':
+                    body, age = app.d405.color_jpg()
+                elif path == '/d405/depth.jpg':
+                    max_m = float(params.get('max', 1.0))
+                    if not (math.isfinite(max_m) and 0.1 <= max_m <= 10.0):
+                        raise ValueError('max must be between 0.1 and 10 m')
+                    body, age = app.d405.depth_jpg(max_m)
+                else:
+                    self._json({'error': 'not found'}, 404)
+                    return
+            except D405UnavailableError as e:
+                self._json({'error': str(e)}, 503)
+                return
+            except ValueError as e:
+                self._json({'error': f'bad request: {e}'}, 400)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/jpeg')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Cache-Control', 'no-store')
+            if age is not None:
+                self.send_header('X-Age-Ms', str(age))
+            self.end_headers()
+            self.wfile.write(body)
+
         def _snapshot(self) -> None:
             cam = app.camera
             cam.request()  # keeps the camera open while a client polls pictures
@@ -634,6 +677,11 @@ def main() -> None:
     )
     ap.add_argument('--camera', default='0', help='camera index or device (default 0)')
     ap.add_argument('--no-camera', action='store_true')
+    ap.add_argument(
+        '--d405',
+        default=D405_URL,
+        help=f'D405 capture server (rover_mapper/d405_server.py), default {D405_URL}; off: none',
+    )
     ap.add_argument('--width', type=int, default=640)
     ap.add_argument('--height', type=int, default=480)
     ap.add_argument('--fps', type=float, default=15.0)
