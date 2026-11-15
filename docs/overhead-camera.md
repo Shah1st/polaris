@@ -153,6 +153,18 @@ All parameters are in `src/guidance_bringup/config/overhead.yaml`.
 - `color_threshold`, `floor_window`: obstacle detection. `floor_window` must be wider than
   twice the largest obstacle.
 - `cell_size`, `margin`: the grid.
+- `min_obstacle_width` (0 = off): parts of the obstacle mask thinner than this are dropped.
+  0.03 m removed a 1 cm tape line across a real arena (it was a wall) and the rover's cables.
+  A real obstacle that thin is dropped too.
+- `rover_hint` (None): a map point known to be the rover's centre. The rover is then the blob
+  under it, whatever its size, at that point. The real rover with its cables measures
+  0.26 x 0.38 m from above and is not found by size.
+- `clear_areas` (none): discs (x, y, radius) forced to free floor, e.g. the goal's mark taped on
+  the floor.
+
+These three are used by `lancer_overhead.py --photo-unique` (`--epaisseur-min`, `--depart`,
+`--effacer-objectif`), the mode where one photo gives the map and the start and the rover then
+drives on its odometry.
 
 A marker setup also exists (ArUco markers on the floor and on the rover; `mode: markers`). It
 handles a tilted camera and gives the rover's heading. See the README.
@@ -168,6 +180,11 @@ handles a tilted camera and gives the rover's heading. See the README.
   photo. Also `/map` and
   `/rover/pose_overhead` published, and the grid equal to the photo tool's except 1 of 1,188
   cells (the container has OpenCV 4.6, the photo tool was run with 5.0).
+
+- 2026-11-15, first real mission from one photo (arena of airbed boxes, yellow X as the
+  goal, phone photo 844 x 1125 px, scale 2.18 mm per pixel estimated from the rover's size):
+  with the three settings above, path found around the boxes, and the real rover reached the
+  X after 2.40 m (`lancer_overhead.py --photo-unique`).
 
 Not verified: the absolute scale against a ruler; a real live camera stream (`LiveCamera`
 is tested against a fake one only); a moving camera; the
