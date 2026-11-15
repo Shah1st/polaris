@@ -311,6 +311,206 @@ def test_un_redemarrage_pendant_un_segment_arrete_la_mission(segment) -> None:
     assert bilan['fin'] - fait[0] < 15.0  # au premier GET /state apres la duree prevue
 
 
+class FauxBosse(FauxSegments):
+    """Une bosse que la camera voit comme du sol libre, de x = bosse_x a bosse_x + long, en
+    |y - D| <= demi : le garde-fou d'inclinaison du serveur y arrete le pas ('tilt: ...'),
+    recule le rover de 15 cm puis le tient 1 s ('hold')."""
+
+    def __init__(self, *args, bosse_x=D + 0.8, long=math.inf, demi=math.inf, **options):
+        super().__init__(*args, **options)
+        self.bosse_x, self.long, self.demi = bosse_x, long, demi
+        self.garde, self.fin_hold, self.basculements = 'ok', -1.0, []
+
+    def _tick(self):
+        if self.garde == 'hold' and self.t >= self.fin_hold:
+            self.garde = 'ok'
+        super()._tick()
+
+    def _rouler(self):
+        dx = self.x - self.bosse_x
+        sur_la_bosse = 0.0 <= dx <= self.long and abs(self.y - D) <= self.demi
+        if self.mode == 'path' and sur_la_bosse:
+            self.basculements.append((self.x, self.y))
+            self._resultat('tilt: pitch 32 deg')
+            self.queued, self.mode, self.tache = [], 'idle', None
+            self.fault = 'tilt: pitch 32 deg'
+            self.x -= 0.15 * math.cos(self.cap)
+            self.y -= 0.15 * math.sin(self.cap)
+            self.ox -= 0.15 * math.cos(self.oh)
+            self.oy -= 0.15 * math.sin(self.oh)
+            self.odometre += 0.15
+            self.garde, self.fin_hold = 'hold', self.t + 1.0
+            return
+        super()._rouler()
+
+
+def test_le_garde_fou_d_inclinaison_marque_la_bosse_et_le_rover_la_contourne() -> None:
+    """Une bosse de 0,4 x 0,3 m sur la ligne, invisible a la camera : le garde-fou arrete
+    le premier segment et recule. Le pilote marque la bosse (choc) et passe a cote, sans y
+    remonter."""
+    faux = FauxBosse(D, D, 0.0, long=0.3, demi=0.2)
+    issue, _, lignes = conduire(faux, faux.requete, percevoir_faux(faux, []), distance=3.0)
+    assert issue == 'arrive', lignes
+    assert len(faux.basculements) == 1, faux.basculements
+    assert any('CHOC' in ligne for ligne in lignes)
+
+
+def test_un_sol_qui_fait_basculer_partout_bloque_apres_deux_declenchements() -> None:
+    """La bosse barre tout le couloir : apres le 2e declenchement du garde-fou, bloque (et pas
+    40 segments renvoyes sur la meme bosse)."""
+    faux = FauxBosse(D, D, 0.0)
+    issue, bilan, lignes = conduire(faux, faux.requete, percevoir_faux(faux, []), distance=3.0)
+    assert issue == 'bloque', lignes
+    assert len(faux.basculements) == ae.BASCULEMENTS_MAX == bilan['segments']
+    # le 2e segment n'est pas reparti au meme endroit
+    assert math.dist(*faux.basculements) > 0.2, faux.basculements
+
+
+def coupure_apres_le_post(faux, numero, duree, pendant=None):
+    """La liaison tombe juste apres le POST /path numero `numero` (recu), pendant `duree` s ;
+    `pendant(faux)` est appele a chaque pas du monde pendant la coupure."""
+    tick, coupure = faux._tick, []
+
+    def avant(methode, chemin):
+        if (methode, chemin) == ('POST', '/path') and not coupure:
+            if len(posts(faux, '/path')) == numero:
+                coupure.append(faux.t)
+                faux.coupure = (faux.t + 0.01, faux.t + duree)
+
+    def tick_et_coupure():
+        tick()
+        if pendant is not None and faux.coupure[0] <= faux.t < faux.coupure[1]:
+            pendant(faux)
+
+    faux._tick = tick_et_coupure
+    return avant, coupure
+
+
+@pytest.mark.parametrize('cas', ['move', 'clavier'])
+def test_un_operateur_qui_reprend_le_rover_pendant_une_coupure_arrete_la_mission(cas) -> None:
+    """Coupure de 60 s juste apres le POST du segment 2 ; un operateur sur le reseau du robot
+    reprend le rover : un /move d'un autre client qui remplace le segment, ou 40 cm au
+    clavier une fois le segment fini (aucune trace dans ctrl.history, seul l'odometre le
+    dit). Au retour de la liaison : arret_operateur, plus aucun /path."""
+    fait = []
+
+    def operateur(faux):
+        if fait or faux.t < faux.coupure[0] + (3.0 if cas == 'move' else 15.0):
+            return
+        fait.append(faux.t)
+        if cas == 'move':
+            faux._reponse('POST', '/move', {'distance': -0.3})
+        else:
+            faux.x -= 0.4
+            faux.ox -= 0.4
+            faux.odometre += 0.4
+
+    faux = FauxSegments(D, D, 0.0)
+    avant, coupure = coupure_apres_le_post(faux, 1, 60.0, operateur)
+    issue, _, lignes = conduire(
+        faux, lent(faux, 0.0, 0, avant=avant), percevoir_faux(faux, []), distance=3.0
+    )
+    assert coupure and fait
+    assert issue == 'arret_operateur', lignes
+    assert len(posts(faux, '/path')) == 2
+
+
+def test_un_redemarrage_du_serveur_pendant_une_coupure_arrete_la_mission() -> None:
+    """Coupure juste apres le POST du segment 1 ; le serveur (sans boot_id) redemarre pendant
+    la coupure, le rover ayant roule 0,5 m. Au retour : la pose n'est plus connue,
+    erreur_rover (pas d'arrivee declaree depuis une pose fausse de 0,5 m)."""
+    fait = []
+
+    def redemarrage(faux):
+        if not fait and faux.mode == 'path' and faux.x > D + 0.5:
+            fait.append((faux.t, faux.x))
+            faux.redemarrer()
+
+    faux = FauxSegments(D, D, 0.0)
+    avant, _ = coupure_apres_le_post(faux, 0, 60.0, redemarrage)
+    issue, _, lignes = conduire(
+        faux, lent(faux, 1.5, 0, avant=avant), percevoir_faux(faux, []), distance=3.0
+    )
+    assert fait
+    assert issue == 'erreur_rover', lignes
+    assert len(posts(faux, '/path')) == 1
+
+
+def test_un_choc_pendant_une_coupure_est_marque() -> None:
+    """Le rover bute contre un mur bas que la camera ne voit pas pendant une coupure : le
+    segment finit 'stalled' sans que le pilote le voie. Au retour de la liaison, le choc est
+    marque quand meme, et le segment suivant ne repart pas tout droit dans le mur."""
+    faux = FauxSegments(D, D, 0.0, mur_x=D + 0.6)
+    avant, _ = coupure_apres_le_post(faux, 0, 40.0)
+    issue, _, lignes = conduire(
+        faux,
+        lent(faux, 1.5, 0, avant=avant),
+        percevoir_faux(faux, []),
+        distance=3.0,
+        max_segments=2,
+    )
+    assert issue == 'max_segments', lignes  # le mur barre tout : 2 segments, puis fin
+    k = next(i for i, ligne in enumerate(lignes) if 'liaison revenue' in ligne)
+    assert 'stalled' in lignes[k], lignes
+    assert 'CHOC' in lignes[k + 1], lignes
+    premier, second = (c['points'] for c in posts(faux, '/path'))
+    assert len(second) > 1 and second[-1] != premier[-1]  # un detour, pas le meme segment
+
+
+def test_la_reponse_du_post_et_le_get_de_controle_perdus_ne_renvoient_pas_le_segment() -> None:
+    """Le tunnel se refait : la reponse au POST /path du segment 2 se perd (le serveur l'a
+    recu) et le GET /state de controle est refuse. Le pilote ne sait pas : il ne renvoie
+    PAS le segment (renvoye, il repartirait de son premier point), attend la fin du segment
+    et continue. Un seul POST de ce segment arrive au serveur."""
+    faux = FauxSegments(D, D, 0.0)
+    etape = []
+
+    def requete(methode, chemin, corps=None):
+        faux.dormir(0.75)
+        if (methode, chemin) == ('POST', '/path') and not etape and len(posts(faux, '/path')) == 1:
+            faux.requete(methode, chemin, corps)  # recu par le serveur
+            etape.append('post')
+            faux.dormir(4.0)  # la reponse ne revient pas (connexion remise a zero)
+            return None
+        if (methode, chemin) == ('GET', '/state') and etape == ['post']:
+            etape.append('get')
+            return None  # tunnel en train de se refaire : connexion refusee
+        reponse = faux.requete(methode, chemin, corps)
+        faux.dormir(0.75)
+        return reponse
+
+    issue, _, lignes = conduire(faux, requete, percevoir_faux(faux, []), distance=3.0)
+    assert etape == ['post', 'get']
+    assert issue == 'arrive', lignes
+    corps = [c['points'] for c in posts(faux, '/path')]
+    assert all(a != b for a, b in zip(corps, corps[1:], strict=False)), corps
+    assert 'replaced by a new command' not in [h['status'] for h in faux.history]
+
+
+def test_un_redemarrage_quand_la_reponse_du_post_se_perd() -> None:
+    """Rover amene au depart au clavier (odometrie non nulle, historique vide). Le premier
+    POST /path se perd et le serveur redemarre a ce moment-la. Le GET /state de controle
+    voit le redemarrage : le segment, en points de l'ancienne odometrie, n'est PAS renvoye ;
+    le pilote attend le rover, se recale et arrive droit devant."""
+    faux = FauxSegments(D, D, 0.0)
+    faux.ox, faux.oy, faux.oh, faux.odometre = 3.0, 2.0, math.radians(90), 6.0
+    fait = []
+
+    def avant(methode, chemin):
+        if (methode, chemin) == ('POST', '/path') and not fait:
+            fait.append(faux.t)
+            faux.redemarrer(boot=0.5)
+            faux.coupure = (faux.t, faux.t + 0.01)  # ce POST-la n'arrive pas
+
+    issue, _, lignes = conduire(
+        faux, lent(faux, 1.5, 0, avant=avant), percevoir_faux(faux, []), distance=3.0
+    )
+    assert fait
+    assert issue == 'arrive', lignes
+    assert max(abs(y - D) for _, y in faux.trace) < 0.1  # jamais parti de travers
+    assert math.dist((faux.x, faux.y), (D + 3.0, D)) < 0.35
+
+
 # ---- faux serveur, liaison LENTE --------------------------------------------------------
 def boucle_par_pas(requete, percevoir, horloge, dormir, distance, pas=0.25, max_pas=80):
     """La boucle qui a roule sur le vrai rover le 15 novembre (avance_esquive.py) : un pas

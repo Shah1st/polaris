@@ -157,7 +157,9 @@ python merging_map/lancer_overhead.py --camera 0 --metres-par-pixel 0.0021 --mar
 | `--hauteur-marqueur H` | marker height above the floor (m): parallax correction of the rover's position, with `--hauteur` (default 0: none) |
 | `--perception URL` | rover perception service (`perception_rover.percevoir_http`) |
 | `--suivi FILE` | JSON document rewritten (atomically) after every decision and step |
-| `--tolerance`, `--vitesse`, `--delai-http` | arrival distance (0.15 m), cruise speed (0.2 m/s), HTTP timeout (1 s; use 6 through the slow tunnel to the VM) |
+| `--tolerance`, `--vitesse`, `--delai-http` | arrival distance (0.15 m), cruise speed (0.2 m/s), HTTP timeout (1 s; 8 with `--liaison-lente`) |
+| `--liaison-lente` | slow link (the tunnel to the VM, 1.5-4 s per request): HTTP timeout 8 s, link lost after 15 s without an answer, no `GET /state` before a step's expected duration, one read per second. An explicit `--delai-http` or `--delai-liaison` wins |
+| `--delai-liaison S` | seconds without any answer before "rover unreachable" (2 s; 15 with `--liaison-lente`) |
 
 * **Before anything** `GET /state` must answer, or it stops with a clear message.
 * **On every way out** (arrival, operator stop, error, Ctrl-C) it sends `POST /stop` (3 tries).

@@ -495,7 +495,8 @@ def test_a_rover_still_driving_is_not_ready() -> None:
 
 def test_tilt_guard_back_off_is_still_a_motion() -> None:
     """The tilt guard ends the step ('tilt: ...') then backs the rover off in mode 'idle'
-    (ctrl.guard.state 'backoff', then 'hold' 1 s): the step is over only after that."""
+    (ctrl.guard.state 'backoff', then 'hold' 1 s): the step is over only after that. It is a
+    bump, past the back-off: otherwise the next step drives onto the same slope."""
     faux = FauxServeur(1.0, 1.0, 0.0)
     faux.garde = 'ok'
     debut = []
@@ -518,8 +519,20 @@ def test_tilt_guard_back_off_is_still_a_motion() -> None:
     faux.dormir = dormir_et_garde
     r = robot(faux)
     r.placer((1.0, 1.0))
-    assert r.deplacer((1.3, 1.0)) is None  # not a bump, not a finished step
+    impact = r.deplacer((1.3, 1.0))
     assert faux.t >= debut[0] + 3.0  # the picture was taken after the back-off and the hold
+    assert impact is not None and math.isclose(impact[0], r.position()[0] + 0.30, abs_tol=0.02)
+
+
+def test_a_step_that_times_out_is_a_bump() -> None:
+    """'timeout': the server gave up a step that never ended (wheels spinning against a soft
+    obstacle): a bump, not a step to send again."""
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    pendant_le_pas(faux, 0.6, lambda: faux._finir('timeout'))
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    impact = r.deplacer((1.3, 1.0))
+    assert impact is not None and math.isclose(impact[0], r.position()[0] + 0.15, abs_tol=0.02)
 
 
 def test_a_step_done_while_a_fault_is_set_is_a_fault() -> None:

@@ -36,6 +36,13 @@ Le reste :
 - Carte et chemin : CarteFusion.decider(drone_disponible=False), A* sur des cases de 5 cm.
 - Conduite : RoverSegments, une sous-classe de rover_reel.RaspRoverReel (STOP operateur
   definitif, redemarrage du serveur detecte, panne du serveur, borne de longueur).
+- Choc : un segment fini 'stalled', 'timeout' ou arrete par le garde-fou d'inclinaison du
+  serveur ('tilt: ...') marque un obstacle et une zone interdite devant le rover (la camera,
+  qui l'a vu libre, ne l'efface pas) ; au 2e declenchement du garde-fou : bloque.
+- Coupure de liaison pendant un segment : on attend le rover sans rien renvoyer ; au retour,
+  un STOP, une commande d'un autre client ou un odometre qui a plus grandi que le segment
+  (clavier) -> arret_operateur ; un redemarrage du serveur apres le POST -> erreur_rover ;
+  un choc pendant la coupure est marque.
 - Fin : arrive, bloque, perception_indisponible, arret_operateur, erreur_rover, max_segments
   (ou essai), puis le trajet et un bilan (m roules, segments, requetes, temps, s/m).
   --suivi FICHIER ecrit le document de suivi (interface 6, lancer_overhead.Suivi) que la page
@@ -44,7 +51,8 @@ Le reste :
 
 Limites :
 - La « camera du dessus » est l'odometrie : le patinage contre un obstacle ne se voit pas,
-  seul un pas 'stalled' du serveur compte comme choc. La derive n'est corrigee par rien.
+  seuls les statuts du serveur ('stalled', 'timeout', 'tilt: ...') comptent comme choc. La
+  derive n'est corrigee par rien.
 - Apres un redemarrage du serveur, l'odometrie repart de zero : Odometrie reprend la derniere
   pose connue comme nouvelle origine (un deplacement pendant le redemarrage est perdu).
 - Seule la ligne du chemin est controlee « vue libre » : les flancs du rover peuvent passer
@@ -65,15 +73,19 @@ from lancer_overhead import Suivi, arreter_sans_interruption, sans_post
 from perception_rover import percevoir_http
 from rover_reel import (
     ARRETS_OPERATEUR,
+    RECUL_GARDE,
     ArretOperateur,
     RaspRoverReel,
     ServeurRoverError,
     angle_normalise,
     client_http,
+    garde_declenche,
     nouvelles_entrees,
     odometre,
+    panne_serveur,
     pose_odom,
     serveur_redemarre,
+    statut_de_choc,
 )
 
 DECALAGE = 10.0  # m : le depart est en (10, 10) dans le repere de la mission (coordonnees > 0)
@@ -81,6 +93,7 @@ PANS_TOUR = (-40.0, 40.0, 0.0)  # deg (+ = a droite) : gauche, droite, et retour
 SEGMENT_MIN = 0.15  # m : moins a rouler sur du vu libre -> regarder autour d'abord
 PREFERENCE_LIGNE = 1.15  # le couloir etroit gagne si son chemin n'est pas plus long que ca
 VITESSE_PIVOT = 1.0  # rad/s, pour prevoir la duree d'un segment
+BASCULEMENTS_MAX = 2  # garde-fou d'inclinaison declenche autant de fois : bloque
 ISSUES = (
     'arrive',
     'bloque',
@@ -175,9 +188,9 @@ class RoverSegments(RaspRoverReel):
 
     Toutes les requetes passent par _transmettre : chaque GET /state recu nourrit
     l'Odometrie ; une reponse perdue a un POST /path est verifiee par un GET /state avant
-    d'etre renvoyee (renvoye, le chemin repartirait de son premier point, en arriere). Apres
-    un POST /path recu, attente_pas : pas de GET /state avant le temps prevu du segment
-    (_duree_pas)."""
+    d'etre renvoyee (renvoye, le chemin repartirait de son premier point, en arriere) ; sans
+    GET /state qui reponde, il n'est jamais renvoye. Apres un POST /path recu, attente_pas :
+    pas de GET /state avant le temps prevu du segment (_duree_pas)."""
 
     def __init__(self, carte, requete, odo, percevoir, **options):
         self.odo = odo
@@ -185,6 +198,9 @@ class RoverSegments(RaspRoverReel):
         self._prevu = 0.0  # s : duree prevue du segment en cours d'envoi
         self._vies = 0  # redemarrages de l'Odometrie au dernier recalage du repere
         self._poste = None  # GET /state d'avant le POST /path accepte du segment en cours
+        self.envois = 0  # POST /path partis pour le dernier segment (renvois compris)
+        self.accepte = False  # le serveur a repondu a un POST /path du dernier segment
+        self._incertain = False  # POST /path peut-etre recu, sans GET /state pour le dire
         super().__init__(
             carte,
             self._transmettre,
@@ -198,6 +214,10 @@ class RoverSegments(RaspRoverReel):
 
     def _transmettre(self, methode, chemin, corps=None):
         avant = self.odo.etat
+        if (methode, chemin) == ('POST', '/path'):
+            if self._incertain:
+                return None  # peut-etre deja recu : jamais renvoye a l'aveugle (voir _recu)
+            self.envois += 1
         reponse = self._brute(methode, chemin, corps)
         if reponse is not None and (methode, chemin) == ('GET', '/state'):
             self._controler_segment(reponse)
@@ -231,18 +251,36 @@ class RoverSegments(RaspRoverReel):
             )
 
     def _recu(self, avant):
-        """Reponse au POST /path perdue : un GET /state dit si le serveur l'a recu (pas en
-        cours, ou nouvelle entree dans ctrl.history). None s'il ne l'a pas recu."""
-        etat = self._brute('GET', '/state')
-        if etat is None:
-            return None
+        """Reponse au POST /path perdue : un GET /state dit si le serveur l'a recu (en
+        cours, ou nouvelle entree dans ctrl.history). None s'il ne l'a pas recu : _envoyer le
+        renvoie. GET /state sans reponse pendant delai_liaison s : on ne sait pas, rien n'est
+        renvoye (_incertain) et le segment finit en 'liaison'. Serveur redemarre entre-temps :
+        /stop ; ServeurRoverError s'il a recu le segment (points de l'ancienne odometrie),
+        sinon _RienEnvoye (rien n'a roule)."""
+        debut = self.temps()
+        while True:
+            etat = self._brute('GET', '/state')
+            if etat is not None:
+                break
+            if self.temps() - debut >= self.delai_liaison:
+                self._incertain = True
+                return None
+            self.dormir(self.periode)
+        vies = self.odo.redemarrages
         self.odo.nouvel_etat(etat)
         ctrl, ctrl0 = etat.get('ctrl') or {}, (avant or {}).get('ctrl') or {}
         en_cours = ctrl.get('mode') in ('path', 'settle') or ctrl.get('queued')
         nouveau = (ctrl.get('history') or [None])[0] != (ctrl0.get('history') or [None])[0]
-        if en_cours or ctrl.get('current') is not None or nouveau:
-            return {'ok': True}
-        return None
+        recu = en_cours or ctrl.get('current') is not None or nouveau
+        if self.odo.redemarrages != vies:
+            self.arreter()
+            if recu:
+                raise ServeurRoverError(
+                    "serveur du rover redemarre pendant l'envoi d'un segment, recu dans le "
+                    "repere de l'ancienne odometrie : rover arrete, position incertaine"
+                )
+            raise _RienEnvoye
+        return {'ok': True} if recu else None
 
     def _duree_pas(self, longueur):
         return self._prevu or super()._duree_pas(longueur)
@@ -257,6 +295,7 @@ class RoverSegments(RaspRoverReel):
         'stalled', 'timeout'...), 'delai', 'redemarrage' (rien envoye) ou 'liaison' (liaison
         perdue) ; impact = point d'un choc, ou None. Leve ArretOperateur (STOP, conduite a la
         main) et ServeurRoverError (panne du serveur, segment trop long pour le repere)."""
+        self.envois, self._incertain, self.accepte = 0, False, False
         # le GET /state des controles sert aussi au POST : rien ne part entre les deux
         etat = self._etat()
         if etat is None:
@@ -290,8 +329,10 @@ class RoverSegments(RaspRoverReel):
         self._prevu = duree  # attente_pas : le premier GET /state ne part qu'apres `duree`
         try:
             statut, etat = self._faire_un_pas('/path', corps, longueur, etat)
+        except _RienEnvoye:  # serveur redemarre avant d'avoir recu le segment : /stop envoye
+            statut, etat = 'redemarrage', None
         finally:
-            accepte = self._poste is not None
+            accepte = self.accepte = self._poste is not None
             self._prevu, self._poste = 0.0, None
         if statut is None:
             return 'liaison', None
@@ -308,15 +349,32 @@ class RoverSegments(RaspRoverReel):
                 )
             return statut, None
         patine = self._arret(statut, etat)
-        if not (patine or statut == 'stalled'):
-            return statut, None
+        return statut, self.point_de_choc(statut, patine)
+
+    def signaler_choc(self, impact):
+        """Aussi une zone interdite : un obstacle de la carte serait efface par la prochaine
+        vue de la camera, qui voit libre la ou le rover a bute ou bascule."""
+        super().signaler_choc(impact)
+        self.carte.interdire_zone(*impact, 0.1)
+
+    def point_de_choc(self, statut, patine=False):
+        """Ou marquer l'obstacle d'un segment fini contre quelque chose ('stalled', 'timeout',
+        garde-fou d'inclinaison qui a deja recule le rover de RECUL_GARDE) : devant le rover.
+        None si le segment n'a rien touche."""
+        if not (patine or statut_de_choc(statut)):
+            return None
+        d = 0.15 + (RECUL_GARDE if garde_declenche(statut) else 0.0)
         cap = self.cap if self.cap is not None else 0.0
-        return statut, (self.est[0] + 0.15 * math.cos(cap), self.est[1] + 0.15 * math.sin(cap))
+        return self.est[0] + d * math.cos(cap), self.est[1] + d * math.sin(cap)
 
     def recaler_apres(self):
         """Apres un redemarrage du serveur ou une coupure : nouveau repere sur l'odometrie."""
         self.recaler()
         self._vies = self.odo.redemarrages
+
+
+class _RienEnvoye(Exception):  # noqa: N818 - interne a RoverSegments
+    """Le serveur a redemarre avant de recevoir le segment : rien n'a roule."""
 
 
 def longueur_chemin(chemin):
@@ -548,9 +606,14 @@ def conduire(
             dormir(1.0)
             rover.requete('GET', '/state')
 
-    def attendre_liaison(avant):
-        """Liaison perdue pendant un segment : le serveur le finit puis s'arrete. On attend
-        que la liaison revienne et que le rover soit arrete, puis on se recale."""
+    def attendre_liaison(avant, vies, longueur):
+        """Liaison perdue pendant un segment (`longueur` m, `vies` : redemarrages de
+        l'Odometrie avant lui) : le serveur le finit puis s'arrete. On attend que la liaison
+        revienne et que le rover soit arrete, on regarde ce qui s'est passe pendant la
+        coupure, puis on se recale. Renvoie le statut du segment dans ctrl.history (None s'il
+        n'y est pas). Leve ArretOperateur (STOP, commande d'un autre client, rover conduit au
+        clavier : l'odometre a plus grandi que le segment) et ServeurRoverError (serveur
+        redemarre apres un POST /path : la pose n'est plus connue ; panne du serveur)."""
         journal(f'  liaison perdue : attente du rover ({attente_liaison:.0f} s au plus)')
         debut = horloge()
         while horloge() - debut < attente_liaison:
@@ -558,6 +621,13 @@ def conduire(
             etat = rover.requete('GET', '/state')
             if etat is None:
                 continue
+            redemarre = odo.redemarrages != vies
+            if redemarre and rover.envois:
+                rover.arreter()
+                raise ServeurRoverError(
+                    'serveur du rover redemarre pendant une coupure, apres un POST /path : '
+                    'position du rover incertaine, mission arretee'
+                )
             ctrl = etat.get('ctrl') or {}
             if ctrl.get('mode') == 'manual':
                 raise ArretOperateur('rover conduit a la main pendant la coupure')
@@ -565,11 +635,49 @@ def conduire(
                 continue
             dernier = ((avant.get('ctrl') or {}).get('history') or [None])[0]
             nouvelles = nouvelles_entrees(ctrl.get('history') or [], dernier)
-            if any(h.get('status') in ARRETS_OPERATEUR[:2] for h in nouvelles):
+            statuts = [h.get('status') for h in nouvelles]
+            # seuls nos propres renvois du segment expliquent un 'replaced by a new command'
+            remplaces = statuts.count('replaced by a new command')
+            autre = any(h.get('kind', 'path') != 'path' for h in nouvelles)
+            if autre or remplaces > rover.envois - 1:
+                raise ArretOperateur("commande d'un autre client pendant la coupure")
+            if any(s in ARRETS_OPERATEUR[:2] for s in statuts):
                 raise ArretOperateur('STOP ou conduite a la main pendant la coupure')
-            journal('  liaison revenue')
+            if rover.accepte and not nouvelles:
+                # comme RoverSegments._controler_segment : redemarrage invisible (pas de
+                # boot_id, odometre a zero au depart) ou /stop d'un autre client
+                raise ServeurRoverError(
+                    'segment accepte puis disparu sans trace pendant la coupure (serveur du '
+                    "rover redemarre, ou /stop d'un autre client) : position du rover "
+                    'incertaine, mission arretee'
+                )
+            statut = statuts[0] if statuts else None
+            o0, o1 = odometre(avant), odometre(etat)
+            if not redemarre and o0 is not None and o1 is not None:
+                # m que le segment explique : ce qu'en dit ctrl.history (distance, serveur
+                # recent), sinon sa longueur et une marge (pure poursuite qui arrondit)
+                faits = [h.get('distance') for h in nouvelles]
+                if faits and None not in faits:
+                    permis = sum(float(d) for d in faits) + 0.05
+                else:
+                    permis = 1.1 * longueur + 0.1
+                if garde_declenche(statut):
+                    permis += RECUL_GARDE + 0.05
+                if o1 - o0 > permis:
+                    raise ArretOperateur(
+                        f'rover deplace pendant la coupure ({o1 - o0:.2f} m aux roues, '
+                        f'{permis:.2f} m au plus pour le segment : conduite au clavier ?)'
+                    )
+            if panne_serveur(statut):
+                raise ServeurRoverError(
+                    f"segment abandonne par le serveur pendant la coupure (statut '{statut}') : "
+                    'voir GET /state (link, ctrl.fault)'
+                )
+            journal(f'  liaison revenue (segment : {statut})')
             rover.recaler_apres()
-            return
+            if not redemarre:
+                rover._odo_fin = odometre(etat)  # conduite au clavier d'ici au segment suivant
+            return statut
         raise ServeurRoverError(f'liaison perdue depuis {attente_liaison:.0f} s')
 
     def fin(issue, texte):
@@ -593,7 +701,7 @@ def conduire(
             vu = tour_de_tourelle() > 0 or regarder_encore()
         if not vu:
             return fin('perception_indisponible', 'ARRET : pas de perception, rover immobile')
-        ici_tour = depart
+        ici_tour, basculements = depart, 0
         while True:
             pos = rover.position()
             reste = math.dist(pos, but)
@@ -642,7 +750,7 @@ def conduire(
             if bilan['segments'] >= max_segments:
                 return fin('max_segments', f'ARRET : {max_segments} segments sans arriver')
             attendre_pret()
-            avant, n = odo.etat, len(requetes)
+            avant, n, vies = odo.etat, len(requetes), odo.redemarrages
             duree = duree_prevue(points, rover.cap, vitesse)
             statut, impact = rover.suivre(points[1:], duree)
             bilan['segments'] += 1
@@ -652,7 +760,8 @@ def conduire(
                 f'{statut}, {len(requetes) - n} requetes'
             )
             if statut == 'liaison':
-                attendre_liaison(avant)
+                statut = attendre_liaison(avant, vies, a_rouler)
+                impact = rover.point_de_choc(statut)  # choc pendant la coupure
             elif statut == 'redemarrage':
                 rover.recaler_apres()
                 attendre_pret()
@@ -664,6 +773,14 @@ def conduire(
             if impact is not None:
                 journal(f'  CHOC vers ({impact[0] - DECALAGE:+.2f}, {impact[1] - DECALAGE:+.2f})')
                 rover.signaler_choc(impact)
+            if garde_declenche(statut):
+                basculements += 1
+                if basculements >= BASCULEMENTS_MAX:
+                    return fin(
+                        'bloque',
+                        f"BLOQUE : garde-fou d'inclinaison declenche {basculements} fois (sol "
+                        'que la camera voit libre mais qui fait basculer le rover)',
+                    )
             if not regarder_encore():
                 return fin('perception_indisponible', 'ARRET : plus de perception')
     except ArretOperateur as e:

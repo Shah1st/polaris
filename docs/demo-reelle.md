@@ -31,8 +31,13 @@ Scripts dans `/home/romaindcrl/polaris-reel-run` : `mission.sh essai` (`--dry-ru
 script).
 
 - **Le lien est lent** : 1,3 à 4 s par requête (`GET /state`), et il a coupé deux fois quelques
-  minutes. Passer `--delai-http 6` (avec `mission.sh` : `EXTRA="--delai-http 6"`, la dernière
-  valeur l'emporte sur le `--delai-http 2` du script).
+  minutes. Passer `--liaison-lente` (délai HTTP 8 s, liaison perdue seulement après 15 s sans
+  réponse, pas de `GET /state` avant la durée prévue du pas, une lecture par seconde). Avec
+  `mission.sh` : `EXTRA="--liaison-lente --delai-http 8"` (la dernière valeur l'emporte sur le
+  `--delai-http 2` du script, qui sinon reste prioritaire sur celui de `--liaison-lente`).
+  `--delai-liaison S` règle à part le délai sans réponse avant « liaison perdue ». Avec
+  `--delai-http 6` seul, `--delai-liaison` reste à 2 s : chaque réponse perdue devient
+  `LIAISON ROVER PERDUE` et une zone interdite de plus.
 - **Le robot fait tourner le serveur plus récent de RBDRB** : pas de `boot_id` ni de
   `stop_count` dans `/state` pour l'instant (section 3.4) ; un STOP donné entre deux pas n'est
   donc pas vu par la mission.
@@ -300,6 +305,25 @@ obstacles : plus de tours de tourelle qu'au banc) ; les flancs du rover peuvent 
 cases pas vues en bord de champ ; un chemin qui part derrière le rover finit en `bloque`. Un
 redémarrage du serveur juste entre le `GET /state` et le `POST /path` d'un segment n'est vu
 qu'à la fin de la durée prévue (environ 9 s pour 1 m).
+
+Pendant une course :
+- **Ne pas toucher au bouton Reset (odométrie) ni au recalibrage du gyroscope de la page du
+  rover.** Le pilote ne lit pas l'état pendant la durée prévue d'un segment (environ 9 s pour
+  1 m) : un serveur qui n'arrête pas le pas avant `/reset_odom` (celui du robot le 15 nov., à
+  vérifier) poursuit jusque-là la cible de l'ancien repère depuis la nouvelle origine, dans
+  une direction jamais vue (environ 1 m au banc). Le `rover/rover_core.py` du dépôt arrête le
+  pas d'abord (`reset_odometry`, `recalibrate_gyro`) : le déployer (section 6) avant le premier
+  essai de ce pilote ou de `--liaison-lente`.
+- **Arrêter `sim/fusion_reelle.py` et fermer le flux du tableau de bord** : sur le même tunnel,
+  la fusion lit `GET /state` toutes les 2 s et le service de perception refait presque à chaque
+  tour un snapshot de 72 ko, soit plus que les quelque 7,5 requêtes par mètre du pilote.
+- Ce que le pilote fait seul : un segment fini `stalled`, `timeout` ou arrêté par le garde-fou
+  d'inclinaison (`tilt: ...`) marque un obstacle et une zone interdite devant le rover, puis il
+  passe à côté ; au 2e déclenchement du garde-fou, `bloque`. Après une coupure : un STOP, une
+  commande d'un autre client ou une conduite au clavier pendant la coupure donnent
+  `arret_operateur`, un redémarrage du serveur après l'envoi du segment `erreur_rover`, et un
+  choc pendant la coupure est marqué. Une réponse perdue au `POST /path` n'est renvoyée que si
+  un `GET /state` dit que le serveur ne l'a pas reçu.
 
 ## 4. Arrêter
 

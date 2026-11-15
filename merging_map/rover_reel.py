@@ -39,6 +39,8 @@ Choc
 - Le serveur abandonne le pas quand les roues ne tournent plus : "stalled" -> choc.
 - Des roues qui patinent contre un obstacle tournent : le serveur croit etre arrive. A
   l'arret, la camera montre que le rover a bien moins avance que ses roues -> choc aussi.
+- Un pas qui n'a jamais fini ('timeout') ou que le garde-fou d'inclinaison du serveur a
+  arrete ('tilt: ...', puis recul de 15 cm) : choc aussi, sinon le pas suivant y retourne.
 
 Liaison
 -------
@@ -152,6 +154,24 @@ def garde_recule(ctrl):
     (ctrl.guard.state 'backoff' ou 'hold', champ facultatif) : ctrl.mode est alors 'idle' mais
     le rover bouge encore."""
     return ((ctrl.get('guard') or {}).get('state')) in ('backoff', 'hold')
+
+
+# m : apres avoir arrete le pas ('tilt: ...'), le garde-fou d'inclinaison recule le rover de
+# tilt_backoff_dist (rover/rover_core.py) : la bosse est d'autant plus loin qu'un choc
+RECUL_GARDE = 0.15
+
+
+def garde_declenche(statut):
+    """True si `statut` (de ctrl.history) dit que le garde-fou d'inclinaison a arrete le pas
+    ('tilt: ...') : le sol devant fait basculer le rover."""
+    return isinstance(statut, str) and statut.startswith('tilt')
+
+
+def statut_de_choc(statut):
+    """True si le pas a fini contre quelque chose : roues bloquees ('stalled'), pas jamais
+    fini ('timeout' : roues qui patinent contre un obstacle mou), ou garde-fou d'inclinaison.
+    Sans choc marque, le pas suivant repartirait au meme endroit."""
+    return statut in ('stalled', 'timeout') or garde_declenche(statut)
 
 
 def odometre(etat):
@@ -660,12 +680,13 @@ class RaspRoverReel(RobotOdometrie):
             roues = math.hypot(xo - xo0, yo - yo0)
             vu = math.hypot(mesure[0] - xc0, mesure[1] - yc0)
             patine = roues > 0.05 and vu < self.patinage * roues
-        bloque = patine or statut == 'stalled'
+        bloque = patine or statut_de_choc(statut)
         self._recaler_a_l_arret(mesure, etat, nouvel_appui=bloque)
         return patine
 
-    def _devant(self, point, direction):
-        return point[0] + 0.15 * math.cos(direction), point[1] + 0.15 * math.sin(direction)
+    def _devant(self, point, direction, recul=0.0):
+        d = 0.15 + recul  # recul : ce que le garde-fou d'inclinaison a fait reculer le rover
+        return point[0] + d * math.cos(direction), point[1] + d * math.sin(direction)
 
     def _degagement(self, portee):
         """Distance (m) dont le rover peut avancer dans N'IMPORTE QUELLE direction sans que sa
@@ -728,7 +749,7 @@ class RaspRoverReel(RobotOdometrie):
             if statut is None or statut == 'redemarrage':
                 return None
             patine = self._arret(statut, etat)
-            if distance > 0 and (patine or statut == 'stalled'):
+            if distance > 0 and (patine or statut_de_choc(statut)):
                 bloque = (self.est, pose_odom(etat)[2])
             if self.repere.angle is not None:
                 break
@@ -810,12 +831,14 @@ class RaspRoverReel(RobotOdometrie):
         if statut == 'redemarrage':
             return None  # rien n'a bouge ; le pas suivant attend le rover et recale tout
         patine = self._arret(statut, etat)
-        if not (patine or statut == 'stalled'):
-            return None  # 'done', ou arrete sans choc ('timeout', 'stopped', 'delai'...)
+        if not (patine or statut_de_choc(statut)):
+            return None  # 'done', ou arrete sans choc ('stopped', 'delai'...)
+        # garde-fou d'inclinaison : un choc aussi, sinon le pas suivant remonte sur la bosse
+        recul = RECUL_GARDE if garde_declenche(statut) else 0.0
         dx, dy = cible[0] - self.est[0], cible[1] - self.est[1]
         if math.hypot(dx, dy) > 0.02:
-            return self._devant(self.est, math.atan2(dy, dx))
-        return self._devant(self.est, self.cap) if self.cap is not None else self.est
+            return self._devant(self.est, math.atan2(dy, dx), recul)
+        return self._devant(self.est, self.cap, recul) if self.cap is not None else self.est
 
     def attendre_retour_embarque(self, chemin):
         """Liaison perdue. Le serveur du rover finit le pas en cours puis s'arrete : il n'a
