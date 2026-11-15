@@ -22,6 +22,10 @@
 #                  under 1 ms, 15 pictures a second). Over Wi-Fi give its address, and
 #                  .../snapshot.jpg rather than .../stream (a pushed stream takes all the air
 #                  time of a slow Wi-Fi shared with the rover)
+#   PERCEPTION_D405  D405 capture server reachable from this Mac, e.g. http://127.0.0.1:8091
+#                  through `ssh -N -L 8091:127.0.0.1:8091 <user>@<rover>`: the rover's obstacles
+#                  then come from the D405's depth only ('' = rover camera + depth model)
+#   PERCEPTION_RANGE  m kept in front of the rover (default 2.0; the D405 is best under 1 m)
 #   PHONE_SHARE    share of the time the phone may spend sending pictures (default 0.25)
 #   PHONE_NAME     name shown on the drone map  (default: iPhone CamStream (<host>))
 #   D405           D405 server of the rover, e.g. http://172.20.10.2:8091 ('' = rover camera only)
@@ -44,6 +48,8 @@ D405_MOUNT="${D405_MOUNT:-}"
 CAM_HEIGHT="${CAM_HEIGHT:-0.22}"
 FUSION_PERIOD="${FUSION_PERIOD:-1.0}"
 PHONE_SHARE="${PHONE_SHARE:-0.25}"
+PERCEPTION_D405="${PERCEPTION_D405:-}"
+PERCEPTION_RANGE="${PERCEPTION_RANGE:-2.0}"
 SEGMENT="${SEGMENT:-2.0}"
 SPEED="${SPEED:-0.30}"
 DRONE_HEIGHT="${DRONE_HEIGHT:-1.8}"
@@ -127,9 +133,15 @@ start_one() {
       launch "$name" "$ROOT" "$@"
       ;;
     perception)
-      launch "$name" "$ROOT" "$PY" rover_mapper/perception_service.py \
-        --source http://127.0.0.1:8082/video_rect --cam-height "$CAM_HEIGHT" --fov 100 \
-        --range 2.0 --port 8095
+      if [ -n "$PERCEPTION_D405" ]; then
+        # obstacles from the D405's measured depth only: no camera picture, no depth model
+        launch "$name" "$ROOT" "$PY" rover_mapper/perception_service.py \
+          --d405 "$PERCEPTION_D405" --range "$PERCEPTION_RANGE" --port 8095
+      else
+        launch "$name" "$ROOT" "$PY" rover_mapper/perception_service.py \
+          --source http://127.0.0.1:8082/video_rect --cam-height "$CAM_HEIGHT" --fov 100 \
+          --range "$PERCEPTION_RANGE" --port 8095
+      fi
       ;;
     fusion)
       # --delai-http / --delai-liaison: 8 s and 15 s were for the 4G link to the cloud machine
