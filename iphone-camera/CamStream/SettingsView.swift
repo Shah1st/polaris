@@ -35,6 +35,15 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Toggle("Position (ARKit)", isOn: $model.arkit)
+                        .disabled(!model.arkitAvailable || model.position == .front)
+                } header: {
+                    Text("Position de la caméra")
+                } footer: {
+                    Text("Chaque image part avec la position et l'orientation de l'iPhone dans la pièce (en-tête X-Pose, aussi sur /pose) : une carte vue du dessus reste stable quand l'iPhone bouge. L'image est alors celle du capteur (paysage, objectif 1×), sans LiDAR.")
+                }
+
+                Section {
                     Picker("Résolution", selection: $model.resolution) {
                         ForEach(StreamResolution.allCases) { Text($0.rawValue).tag($0) }
                     }

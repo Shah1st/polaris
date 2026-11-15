@@ -46,6 +46,12 @@ struct ContentView: View {
         switch model.captureSource {
         case .camera:
             CameraPreview(session: model.camera.session, configurationID: model.configurationID)
+        case .arkit:
+            placeholder(
+                icon: "move.3d",
+                title: "Position suivie (ARKit)",
+                message: "Chaque image part avec la position de la caméra. Pas d'aperçu ici : regardez le flux sur l'ordinateur. Au début, bougez doucement l'iPhone au-dessus du sol pour qu'il le trouve."
+            )
         case .testPattern:
             placeholder(
                 icon: "square.stack.3d.down.right",

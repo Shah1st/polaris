@@ -13,6 +13,8 @@ struct StreamInfo: Codable, Sendable, Equatable {
     var lens = "none"
     /// LiDAR depth: "lidar" (captured, on /depth), "off" (switched off) or "unavailable".
     var depth = "unavailable"
+    /// Camera pose with each picture: "arkit" (X-Pose header, /pose), "off" or "unavailable".
+    var pose = "off"
 }
 
 /// Petit serveur HTTP qui diffuse les images JPEG de la caméra en MJPEG
@@ -45,6 +47,8 @@ final class MJPEGServer: @unchecked Sendable {
     private var portAttempts = 0
     private var streamClients: [ObjectIdentifier: StreamClient] = [:]
     private var latestFrame: Data?
+    /// The pose of `latestFrame` (one line of JSON), nil outside the ARKit mode.
+    private var latestPose: String?
     private var info = StreamInfo()
     private let viewerCount = OSAllocatedUnfairLock(initialState: 0)
 
@@ -91,16 +95,19 @@ final class MJPEGServer: @unchecked Sendable {
             for client in streamClients.values { client.connection.cancel() }
             streamClients.removeAll()
             latestFrame = nil
+            latestPose = nil
             updateViewerCount()
             report(.stopped)
         }
     }
 
     /// Envoie une nouvelle image à tous les spectateurs.
-    func broadcast(_ jpeg: Data) {
+    /// `pose`: the camera's pose for that picture (ARKit mode), sent as its `X-Pose` header.
+    func broadcast(_ jpeg: Data, pose: String? = nil) {
         queue.async { [self] in
             latestFrame = jpeg
-            for client in streamClients.values { client.enqueue(jpeg) }
+            latestPose = pose
+            for client in streamClients.values { client.enqueue(jpeg, pose: pose) }
         }
     }
 
@@ -243,7 +250,8 @@ final class MJPEGServer: @unchecked Sendable {
 
         case "/snapshot", "/snapshot.jpg", "/photo.jpg", "/shot.jpg":
             if let latestFrame {
-                sendResponse(on: connection, status: "200 OK", contentType: "image/jpeg", body: latestFrame, headOnly: headOnly)
+                sendResponse(on: connection, status: "200 OK", contentType: "image/jpeg", body: latestFrame,
+                             headOnly: headOnly, headers: latestPose.map { ["X-Pose": $0] } ?? [:])
             } else {
                 sendResponse(on: connection, status: "503 Service Unavailable", contentType: "text/plain; charset=utf-8",
                              body: Data("Aucune image disponible pour le moment.".utf8), headOnly: headOnly)
@@ -280,6 +288,17 @@ final class MJPEGServer: @unchecked Sendable {
                              headOnly: headOnly)
             }
 
+        case "/pose", "/pose.json":
+            // The pose of the newest picture (the same JSON as its X-Pose header).
+            if let latestPose {
+                sendResponse(on: connection, status: "200 OK", contentType: "application/json",
+                             body: Data(latestPose.utf8), headOnly: headOnly)
+            } else {
+                sendResponse(on: connection, status: "503 Service Unavailable", contentType: "text/plain; charset=utf-8",
+                             body: Data("Pas de position : activez « Position (ARKit) » dans les réglages.".utf8),
+                             headOnly: headOnly)
+            }
+
         case "/status", "/status.json":
             struct Status: Encodable {
                 let viewers: Int
@@ -289,9 +308,11 @@ final class MJPEGServer: @unchecked Sendable {
                 let camera: String
                 let lens: String
                 let depth: String
+                let pose: String
             }
             let status = Status(viewers: streamClients.count, width: info.width, height: info.height,
-                                fps: info.fps, camera: info.camera, lens: info.lens, depth: info.depth)
+                                fps: info.fps, camera: info.camera, lens: info.lens, depth: info.depth,
+                                pose: info.pose)
             let body = (try? JSONEncoder().encode(status)) ?? Data("{}".utf8)
             sendResponse(on: connection, status: "200 OK", contentType: "application/json", body: body, headOnly: headOnly)
 
@@ -340,7 +361,7 @@ final class MJPEGServer: @unchecked Sendable {
         updateViewerCount()
 
         client.sendHeader(Data(head.utf8))
-        if let latestFrame { client.enqueue(latestFrame) }
+        if let latestFrame { client.enqueue(latestFrame, pose: latestPose) }
         watchForDisconnect(connection)
     }
 
@@ -367,7 +388,7 @@ final class MJPEGServer: @unchecked Sendable {
 private final class StreamClient: @unchecked Sendable {
     let connection: NWConnection
     private var isSending = false
-    private var pendingFrame: Data?
+    private var pendingFrame: (jpeg: Data, pose: String?)?
 
     init(connection: NWConnection) {
         self.connection = connection
@@ -380,19 +401,22 @@ private final class StreamClient: @unchecked Sendable {
         })
     }
 
-    func enqueue(_ frame: Data) {
+    func enqueue(_ frame: Data, pose: String?) {
         if isSending {
-            pendingFrame = frame
+            pendingFrame = (frame, pose)
         } else {
-            send(frame)
+            send(frame, pose: pose)
         }
     }
 
-    private func send(_ frame: Data) {
+    private func send(_ frame: Data, pose: String?) {
         isSending = true
+        var head = "--\(MJPEGServer.boundary)\r\nContent-Type: image/jpeg\r\nContent-Length: \(frame.count)\r\n"
+        if let pose { head += "X-Pose: \(pose)\r\n" }
+        head += "\r\n"
         var chunk = Data()
-        chunk.reserveCapacity(frame.count + 128)
-        chunk.append(Data("--\(MJPEGServer.boundary)\r\nContent-Type: image/jpeg\r\nContent-Length: \(frame.count)\r\n\r\n".utf8))
+        chunk.reserveCapacity(frame.count + head.utf8.count + 2)
+        chunk.append(Data(head.utf8))
         chunk.append(frame)
         chunk.append(Data("\r\n".utf8))
         connection.send(content: chunk, completion: .contentProcessed { [weak self] error in
@@ -408,7 +432,7 @@ private final class StreamClient: @unchecked Sendable {
         }
         if let next = pendingFrame {
             pendingFrame = nil
-            send(next)
+            send(next.jpeg, pose: next.pose)
         }
     }
 }

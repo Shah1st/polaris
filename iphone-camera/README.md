@@ -31,6 +31,7 @@ L'app démarre la diffusion automatiquement et affiche l'adresse à ouvrir. L'iP
 | `http://IP:8080/status` | État en JSON (résolution, i/s, caméra, objectif, LiDAR, spectateurs) |
 | `http://IP:8080/depth` | Profondeur LiDAR brute (voir « LiDAR » plus bas) |
 | `http://IP:8080/depth.jpg` | Aperçu de la profondeur : proche = blanc, 5 m et plus = noir |
+| `http://IP:8080/pose` | Position de la caméra pour la dernière image, en JSON (voir « Position (ARKit) » plus bas) |
 
 Le service est aussi annoncé en Bonjour sous le nom « CamStream » (`dns-sd -B _http._tcp` sur le Mac).
 
@@ -84,6 +85,26 @@ Le grand angle voit environ deux fois plus large à la même hauteur : utile pou
 - **Échelle** : remesurer les mètres par pixel (`python -m guidance_global_map.measure_scale`) après chaque changement d'objectif, de résolution ou de hauteur ; l'ancienne valeur est fausse d'un facteur 2 environ.
 - Le changement d'objectif se fait sur l'iPhone seulement, pas par le réseau : le serveur n'a pas de mot de passe, et n'importe qui sur le Wi-Fi pourrait sinon changer l'échelle pendant une mission.
 
+## Position (ARKit)
+
+**Réglages › Position de la caméra › Position (ARKit)** : la capture passe par ARKit, qui suit la position et l'orientation de l'iPhone dans la pièce (comme un drone connaît la sienne). Chaque image part alors avec la position de la caméra au moment de la prise de vue :
+
+- dans le flux `/stream`, chaque image porte un en-tête `X-Pose` (une ligne de JSON) ;
+- `/snapshot.jpg` porte le même en-tête, et `/pose` renvoie celui de la dernière image ;
+- `/status` dit `"pose": "arkit"` (`"off"` : coupé, `"unavailable"` : iPhone sans ARKit).
+
+Le format de `X-Pose` et le code Python qui le lit sont dans `air_ground/` (`README.md`, `camstream.py`, `pose_camera.py`) : une carte vue du dessus y reste stable quand l'iPhone bouge.
+
+Dans ce mode :
+
+- l'image est celle du capteur, en **paysage**, et ne suit plus l'orientation de l'iPhone (les paramètres de la caméra envoyés avec elle restent ainsi justes) ; elle est réduite à la résolution choisie ;
+- caméra arrière, objectif 1× seulement ; pas de grand angle ni de profondeur LiDAR sur `/depth` ;
+- l'app ne montre pas d'aperçu : regarder le flux sur l'ordinateur ;
+- au démarrage, bouger doucement l'iPhone au-dessus du sol quelques secondes : `track` passe à `normal` et `floor_y` (la hauteur du sol) cesse d'être `null` ;
+- le repère repart de zéro à chaque redémarrage de la capture (changement de réglage, retour dans l'app) : `sid` change.
+
+Pas encore essayé sur un vrai iPhone : le code compile sur le Mac de GitHub, rien de plus.
+
 ## LiDAR
 
 Sur un iPhone Pro (depuis l'iPhone 12 Pro), **Réglages › LiDAR › Profondeur LiDAR** capture la distance de chaque point en plus de l'image. L'app utilise alors la caméra LiDAR d'iOS : l'objectif principal 1× et le scanner LiDAR ensemble ; le grand angle n'est pas disponible dans ce mode. Portée d'environ 5 m. Le réglage est mémorisé ; `/status` dit `"depth": "lidar"` quand la profondeur est capturée (`"off"` : coupée, `"unavailable"` : pas de LiDAR).
@@ -116,6 +137,7 @@ Le simulateur iOS n'a pas de caméra : l'app y diffuse une **mire de test animé
 | Fichier | Rôle |
 |---|---|
 | `CameraManager.swift` | Capture AVFoundation, orientation, encodage JPEG (Core Image), cadence |
+| `ARPoseCapture.swift` | Capture par ARKit : image + position de la caméra (`X-Pose`), sol détecté |
 | `MJPEGServer.swift` | Serveur HTTP (Network.framework), flux MJPEG, Bonjour, comptage des spectateurs |
 | `StreamModel.swift` | État de l'app, réglages mémorisés, liaison caméra ↔ serveur |
 | `ContentView.swift` / `SettingsView.swift` | Interface SwiftUI |

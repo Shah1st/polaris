@@ -101,6 +101,8 @@ enum CaptureSource: Equatable, Sendable {
     /// `lens`: the lens actually in use (1× when the ultra wide one was asked for but is missing).
     /// `depth`: the LiDAR depth is captured with the video.
     case camera(name: String, lens: CameraLens, depth: Bool)
+    /// The back camera through ARKit, each picture with the camera's pose (`ARPoseCapture`).
+    case arkit
     /// Aucune caméra (simulateur) : une mire animée est diffusée à la place.
     case testPattern
     case failed(String)
@@ -212,17 +214,19 @@ final class CameraManager: NSObject, @unchecked Sendable {
             case .testPattern:
                 if session.isRunning { session.stopRunning() }
                 startTestPattern(resolution: resolution)
-            case .failed:
+            case .failed, .arkit:
                 break
             }
             completion(source)
         }
     }
 
-    func stop() {
+    /// `completion` runs once the camera is released (ARKit can then take it).
+    func stop(completion: (@Sendable () -> Void)? = nil) {
         sessionQueue.async { [self] in
             if session.isRunning { session.stopRunning() }
             stopTestPattern()
+            completion?()
         }
     }
 

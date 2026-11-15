@@ -6,7 +6,7 @@ name: CamStream iPhone app (.ipa)
 
 on:
   push:
-    branches: [iphone-camera, iphone-camera-ultrawide]
+    branches: [iphone-camera, iphone-camera-ultrawide, experiment]
     paths: ['iphone-camera/**', '.github/workflows/camstream-ipa.yml']
   workflow_dispatch:
 

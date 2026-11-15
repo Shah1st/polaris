@@ -48,6 +48,15 @@ final class StreamModel {
         }
     }
 
+    /// Capture through ARKit: each picture leaves with the camera's pose (back camera, 1×).
+    var arkit: Bool {
+        didSet {
+            guard arkit != oldValue else { return }
+            defaults.set(arkit, forKey: Keys.arkit)
+            restartCaptureIfRunning()
+        }
+    }
+
     var resolution: StreamResolution {
         didSet {
             guard resolution != oldValue else { return }
@@ -77,8 +86,11 @@ final class StreamModel {
     let ultraWideAvailable = CameraManager.hasUltraWideCamera
     /// The iPhone has a LiDAR scanner (Pro models from the iPhone 12 Pro).
     let lidarAvailable = CameraManager.hasLiDAR
+    /// ARKit can track this iPhone's position.
+    let arkitAvailable = ARPoseCapture.isSupported
 
     let camera = CameraManager()
+    @ObservationIgnored private let arCapture = ARPoseCapture()
     @ObservationIgnored private let server = MJPEGServer()
     @ObservationIgnored private let pathMonitor = NWPathMonitor()
     @ObservationIgnored private let defaults = UserDefaults.standard
@@ -87,6 +99,7 @@ final class StreamModel {
         static let position = "position"
         static let lens = "lens"
         static let lidar = "lidar"
+        static let arkit = "arkit"
         static let resolution = "resolution"
         static let fps = "fps"
         static let quality = "quality"
@@ -96,6 +109,7 @@ final class StreamModel {
         position = defaults.string(forKey: Keys.position) == "front" ? .front : .back
         lens = CameraLens(rawValue: defaults.string(forKey: Keys.lens) ?? "") ?? .wide
         lidar = defaults.bool(forKey: Keys.lidar)
+        arkit = defaults.bool(forKey: Keys.arkit)
         resolution = StreamResolution(rawValue: defaults.string(forKey: Keys.resolution) ?? "") ?? .hd720
         let savedFPS = defaults.integer(forKey: Keys.fps)
         fps = Self.fpsOptions.contains(savedFPS) ? savedFPS : 30
@@ -107,6 +121,23 @@ final class StreamModel {
         camera.onFrame = { jpeg in server.broadcast(jpeg) }
         server.depthProvider = { camera.latestDepth() }
         server.depthPreview = { camera.depthPreviewJPEG() }
+        let arCapture = self.arCapture
+        arCapture.hasViewers = { server.hasViewers }
+        arCapture.onFrame = { jpeg, pose in server.broadcast(jpeg, pose: pose) }
+        arCapture.onFrameSizeChange = { [weak self] size in
+            guard let self else { return }
+            Self.onMain {
+                self.frameSize = size
+                self.pushStreamInfo()
+            }
+        }
+        arCapture.onFailure = { [weak self] message in
+            guard let self else { return }
+            Self.onMain {
+                guard self.isRunning, self.arkitActive else { return }
+                self.captureSource = .failed(message)
+            }
+        }
         camera.onFrameSizeChange = { [weak self] size in
             guard let self else { return }
             Self.onMain {
@@ -145,7 +176,7 @@ final class StreamModel {
     var isLive: Bool {
         guard isRunning, case .running = serverState else { return false }
         switch captureSource {
-        case .camera, .testPattern: return true
+        case .camera, .arkit, .testPattern: return true
         default: return false
         }
     }
@@ -169,15 +200,21 @@ final class StreamModel {
         return false
     }
 
+    /// The capture goes (or will go) through ARKit: asked for, possible, and on the back camera.
+    var arkitActive: Bool {
+        arkit && arkitAvailable && position == .back
+    }
+
     /// The lens button and picker only make sense on the back camera of an iPhone that has
     /// both, and not with the LiDAR on (it only works with the 1× lens).
     var canChooseLens: Bool {
-        ultraWideAvailable && position == .back && !lidar && captureSource != .testPattern
+        ultraWideAvailable && position == .back && !lidar && !arkitActive
+            && captureSource != .testPattern
     }
 
     /// The LiDAR switch: back camera of an iPhone that has one.
     var canUseLiDAR: Bool {
-        lidarAvailable && position == .back && captureSource != .testPattern
+        lidarAvailable && position == .back && !arkitActive && captureSource != .testPattern
     }
 
     var statusText: String {
@@ -185,6 +222,7 @@ final class StreamModel {
         if case .failed(let message) = captureSource { return message }
         if case .failed(let message) = serverState { return message }
         if isLive {
+            if captureSource == .arkit { return "En direct · ARKit" }
             if captureSource == .testPattern { return "En direct · mire" }
             if depthActive { return "En direct · LiDAR" }
             return activeLens == .ultraWide ? "En direct · grand angle" : "En direct"
@@ -216,6 +254,7 @@ final class StreamModel {
         guard isRunning else { return }
         isRunning = false
         camera.stop()
+        arCapture.stop()
         server.stop()
         captureSource = nil
         viewerCount = 0
@@ -248,14 +287,33 @@ final class StreamModel {
     // MARK: Interne
 
     private func startCapture() {
-        camera.start(position: position, lens: lens, lidar: lidar,
-                     resolution: resolution) { [weak self] source in
-            guard let self else { return }
-            Self.onMain {
-                guard self.isRunning else { return }
-                self.captureSource = source
-                self.configurationID += 1
-                self.pushStreamInfo() // the lens actually in use, for /status
+        let camera = self.camera
+        let arCapture = self.arCapture
+        let resolution = self.resolution
+
+        if arkitActive {
+            // ARKit owns the camera: the plain capture lets go of it first.
+            camera.stop { arCapture.start(resolution: resolution) }
+            captureSource = .arkit
+            configurationID += 1
+            pushStreamInfo()
+            return
+        }
+
+        let position = self.position
+        let lens = self.lens
+        let lidar = self.lidar
+        // The other way round: ARKit lets go of the camera first.
+        arCapture.stop { [weak self] in
+            camera.start(position: position, lens: lens, lidar: lidar,
+                         resolution: resolution) { [weak self] source in
+                guard let self else { return }
+                Self.onMain {
+                    guard self.isRunning, !self.arkitActive else { return }
+                    self.captureSource = source
+                    self.configurationID += 1
+                    self.pushStreamInfo() // the lens actually in use, for /status
+                }
             }
         }
     }
@@ -271,6 +329,7 @@ final class StreamModel {
 
     private func pushEncoderSettings() {
         camera.updateEncoder(fps: fps, quality: quality)
+        arCapture.updateEncoder(fps: fps, quality: quality)
     }
 
     private func pushStreamInfo() {
@@ -279,8 +338,9 @@ final class StreamModel {
             height: Int(frameSize.height),
             fps: fps,
             camera: position == .front ? "front" : "back",
-            lens: activeLens?.rawValue ?? "none",
-            depth: depthActive ? "lidar" : (lidarAvailable ? "off" : "unavailable")
+            lens: captureSource == .arkit ? CameraLens.wide.rawValue : (activeLens?.rawValue ?? "none"),
+            depth: depthActive ? "lidar" : (lidarAvailable ? "off" : "unavailable"),
+            pose: captureSource == .arkit ? "arkit" : (arkitAvailable ? "off" : "unavailable")
         ))
     }
 
