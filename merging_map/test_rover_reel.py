@@ -411,3 +411,46 @@ def test_http_client_tells_errors_from_lost_links() -> None:
         serveur.shutdown()
         serveur.server_close()
     assert requete('GET', '/state') is None  # nobody answers: the link is lost
+
+
+def carte_avec_obstacle(x0, y0, x1, y1, **reglages):
+    """A map of free floor, 3.2 m wide, with one obstacle rectangle (metres)."""
+    carte = CarteFusion(**reglages)
+    sol = np.zeros((64, 64), np.int8)
+    sol[round(y0 / 0.05) : round(y1 / 0.05), round(x0 / 0.05) : round(x1 / 0.05)] = 1
+    for msg in decouper(sol, 0.0, 0.0, 4, carte, 'drone'):
+        carte.recevoir(msg)
+    return carte
+
+
+def test_the_heading_step_is_shortened_by_a_known_obstacle() -> None:
+    """The heading is not known, so the straight line may go any way: it is limited to what
+    the map shows free all around the rover (here an obstacle 25 cm away, radius 12 cm)."""
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    faux.cap_visible = False
+    r = robot(faux, carte_avec_obstacle(1.25, 0.8, 1.6, 1.2, rayon_robot=0.12))
+    r.placer((1.0, 1.0))
+    r.deplacer((0.6, 1.0))
+    assert [c['distance'] for c in chemins(faux, '/move')] == [0.13]
+    assert r.cap_fiable
+
+
+def test_the_heading_step_is_full_when_the_floor_is_free_around() -> None:
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    faux.cap_visible = False
+    r = robot(faux, carte_avec_obstacle(1.6, 0.8, 1.8, 1.2))
+    r.placer((1.0, 1.0))
+    r.deplacer((0.6, 1.0))
+    assert [c['distance'] for c in chemins(faux, '/move')] == [0.15]
+
+
+def test_the_heading_step_is_the_smallest_measurable_one_next_to_an_obstacle() -> None:
+    """Too close to an obstacle to have 10 cm free all around: the rover makes the shortest
+    step that still gives a heading (12 cm), and bump detection is the only protection."""
+    faux = FauxServeur(1.0, 1.0, math.pi)  # facing away from the obstacle
+    faux.cap_visible = False
+    r = robot(faux, carte_avec_obstacle(1.2, 0.8, 1.6, 1.2))
+    r.placer((1.0, 1.0))
+    r.deplacer((0.6, 1.0))
+    assert [c['distance'] for c in chemins(faux, '/move')] == [0.12]
+    assert r.cap_fiable

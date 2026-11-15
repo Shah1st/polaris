@@ -14,8 +14,8 @@ Partage du travail
 - Le serveur du rover : COMMENT y aller. Il suit le pas sur ses roues et son gyroscope, et
   l'abandonne si les roues ne tournent plus (statut "stalled").
 
-Il faut le serveur de la branche rover-teleop : POST /path y est arrive avec le commit
-5a7277d et n'est pas encore dans main (le serveur de main repond 404, et on le dit).
+Il faut un serveur qui connait POST /path (rover/rover_server.py de main, depuis le commit
+5a7277d). Un serveur plus ancien repond 404, et on le dit.
 
 Deux reperes
 ------------
@@ -29,7 +29,9 @@ l'odometrie, si bien qu'une camera lente ne cree plus de faux chocs.
 
 Cap : si la camera donne le cap du rover, la rotation s'en deduit tout de suite. Sinon elle
 se mesure sur un deplacement vu a la fois par la camera et par l'odometrie (au moins
-base_cap m). Au premier pas, le rover avance donc d'abord tout droit de pas_cap m.
+base_cap m). Au premier pas, le rover avance donc d'abord tout droit, de pas_cap m au plus.
+Comme on ne sait pas encore vers ou il part, ce pas est limite a ce qui est libre tout autour
+de lui sur la carte.
 
 Choc
 ----
@@ -62,6 +64,7 @@ import time
 import urllib.error
 import urllib.request
 
+from fusion_carte import OBSTACLE
 from robot import RobotOdometrie
 
 
@@ -361,12 +364,39 @@ class RaspRoverReel(RobotOdometrie):
     def _devant(self, point, direction):
         return point[0] + 0.15 * math.cos(direction), point[1] + 0.15 * math.sin(direction)
 
+    def _degagement(self, portee):
+        """Distance (m) dont le rover peut avancer dans N'IMPORTE QUELLE direction sans que sa
+        carrosserie (rayon_effectif de la carte) atteigne un obstacle connu de la carte ;
+        `portee` s'il n'y en a aucun a cette distance. Les cases pas vues ne comptent pas."""
+        x, y = self.est
+        r = portee + self.carte.rayon_effectif
+        g = self.carte.grille(x - r, y - r, x + r, y + r)
+        ii, jj = (g.val == OBSTACLE).nonzero()
+        if not len(ii):
+            return portee
+        # distance du rover au carre de chaque case obstacle
+        x0, y0 = (jj + g.j0) * g.res, (ii + g.i0) * g.res
+        dx = (x0 - x).clip(min=0) + (x - x0 - g.res).clip(min=0)
+        dy = (y0 - y).clip(min=0) + (y - y0 - g.res).clip(min=0)
+        libre = float(((dx * dx + dy * dy) ** 0.5).min()) - self.carte.rayon_effectif
+        return max(0.0, min(portee, libre))
+
+    def _pas_pour_le_cap(self):
+        """Longueur de la ligne droite qui sert a mesurer le cap. Le cap n'etant pas connu, on
+        ne sait pas vers ou le rover part : le pas est donc limite a ce qui est libre tout
+        autour de lui sur la carte. Trop pres d'un obstacle pour ca, il fait le plus petit pas
+        qui se mesure (base_cap + 2 cm) et seule la detection de choc le protege."""
+        minimum = self.base_cap + 0.02
+        return max(minimum, min(self.pas_cap, self._degagement(self.pas_cap)))
+
     def _mesurer_le_cap(self):
-        """Cap inconnu (rover sans marqueur) : le rover avance tout droit de pas_cap m, et la
-        camera et l'odometrie voient le meme deplacement. S'il est bloque devant, il essaie en
-        arriere. Renvoie le point d'impact s'il etait bloque en avancant, sinon None."""
+        """Cap inconnu (rover sans marqueur) : le rover avance tout droit (au plus pas_cap m,
+        voir _pas_pour_le_cap), et la camera et l'odometrie voient le meme deplacement. S'il
+        est bloque devant, il essaie en arriere. Renvoie le point d'impact s'il etait bloque en
+        avancant, sinon None."""
         bloque = None
-        for distance in (self.pas_cap, -self.pas_cap):
+        pas = round(self._pas_pour_le_cap(), 3)
+        for distance in (pas, -pas):
             statut, etat = self._faire_un_pas('/move', {'distance': distance}, abs(distance))
             if statut is None:
                 return None
