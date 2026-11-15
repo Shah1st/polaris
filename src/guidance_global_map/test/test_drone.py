@@ -491,14 +491,46 @@ def test_scale_is_read_off_the_marker_whatever_the_height_says() -> None:
     assert result.rover_position == pytest.approx((0.80, 0.90), abs=0.03)
 
 
-def test_marker_above_the_floor_is_brought_down_to_the_floor() -> None:
+def test_marker_above_the_floor_is_brought_down_to_the_floor_without_the_height() -> None:
     image = render_top_down(scene_with_marked_rover())
-    flat = OverheadSettings(camera_height=2.0, rover_marker_id=10, marker_size=0.10)
+    size = (image.shape[1], image.shape[0])
+    flat = OverheadSettings(rover_marker_id=10, marker_size=0.10)
     raised = dataclasses.replace(flat, marker_height=0.20)
 
+    on_floor = pipeline.marker_scale(image, flat)
+    # 20 cm further from the camera: 20 cm times what one pixel covers per metre
     assert pipeline.marker_scale(image, raised) == pytest.approx(
-        pipeline.marker_scale(image, flat) * 2.0 / 1.8
+        on_floor + 0.20 * flat.per_metre(size)
     )
+    # no camera height in it at all
+    for height in (0.5, 1.8, 6.0):
+        other = dataclasses.replace(raised, camera_height=height)
+        assert pipeline.marker_scale(image, other) == pipeline.marker_scale(image, raised)
+
+
+def test_the_height_follows_from_the_scale_and_the_lens() -> None:
+    photo = OverheadSettings()  # iPhone main lens, 4032 x 3024
+
+    assert photo.per_metre() == pytest.approx(0.000330, rel=0.01)
+    assert photo.height_for(photo.scale()) == pytest.approx(photo.camera_height)
+    assert photo.height_for(0.000627) == pytest.approx(1.9, abs=0.01)
+    ultrawide = dataclasses.replace(photo, focal_length_35mm=13.0)
+    assert ultrawide.height_for(0.001255) == pytest.approx(1.9, abs=0.01)
+    # a measured scale does not change what the lens says
+    measured = dataclasses.replace(photo, metres_per_pixel=0.002)
+    assert measured.per_metre() == photo.per_metre()
+
+
+def test_the_camera_height_is_found_from_the_scale_in_use() -> None:
+    image = render_top_down(scene_with_marked_rover())
+    drone = OverheadDrone(
+        FakeCamera(image), OverheadSettings(camera_height=5.0), clock=lambda: 0.0
+    )
+
+    assert drone.estimated_height() == pytest.approx(5.0)
+    drone.rescale(0.36)  # the rover's move said the scale was 0.36 times that
+
+    assert drone.estimated_height() == pytest.approx(1.8)
 
 
 def test_no_marker_scale_without_a_size_an_id_or_a_marker_in_view() -> None:

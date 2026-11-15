@@ -1,4 +1,4 @@
-"""HTTP API of rover_server.py, in process, against the simulated ESP32 (127.0.0.1:8120-8121)."""
+"""HTTP API of rover_server.py, in process, against the simulated ESP32 (127.0.0.1, free ports)."""
 
 from __future__ import annotations
 
@@ -23,9 +23,6 @@ from fake_esp32 import FakeEsp32, FakeSerial  # noqa: E402
 from rover_core import Config, Rover  # noqa: E402
 from rover_server import App, Camera, make_handler  # noqa: E402
 
-PORT = 8120
-SIGTERM_PORT = 8121
-
 
 def strict_json(data: bytes):
     def refuse(name):
@@ -49,14 +46,15 @@ class Bench:
         )
         self.app = App(self.rover.cfg, self.cfg_path, args, None)
         self.app.rover, self.app.camera, self.app.mode = self.rover, self.camera, 'sim'
-        self.server = rover_server.ThreadingHTTPServer(('127.0.0.1', PORT), make_handler(self.app))
+        self.server = rover_server.ThreadingHTTPServer(('127.0.0.1', 0), make_handler(self.app))
+        self.port = self.server.server_address[1]  # chosen by the system: runs can overlap
         self.server.daemon_threads = True
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.rover.start()
         assert wait_for(lambda: self.rover.odom.bias_ready, 8.0)
 
     def request(self, method: str, path: str, body: bytes | str | None = None):
-        conn = http.client.HTTPConnection('127.0.0.1', PORT, timeout=10)
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
         if isinstance(body, str):
             body = body.encode()
         headers = {'Content-Type': 'application/json'} if body is not None else {}
@@ -262,7 +260,7 @@ def test_sigterm_stops_the_rover_like_ctrl_c(tmp_path) -> None:
             '--host',
             '127.0.0.1',
             '--port',
-            str(SIGTERM_PORT),
+            '0',  # any free port: only the 'Open http' line is read
             '--config',
             str(tmp_path / 'cfg.json'),
         ],

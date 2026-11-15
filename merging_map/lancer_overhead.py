@@ -32,6 +32,10 @@ gauche de l'image, x vers la droite, y vers le haut, en metres. Le depart, la vi
 tuiles de la camera du rover doivent y etre exprimes. Il reste valable tant que la camera ne
 bouge pas.
 
+--liaison-lente : liaison au rover a 1,5-4 s par requete (tunnel) ; une reponse lente n'est
+pas une liaison perdue (delai HTTP 8 s, liaison perdue apres 15 s sans reponse, voir
+LIAISON_LENTE). --delai-http et --delai-liaison restent prioritaires.
+
 --suivi FICHIER ecrit apres chaque decision et chaque pas un document JSON (etat de la
 mission, rover, chemin, trajectoire, journal, grille) pour une page de suivi en direct.
 """
@@ -41,6 +45,7 @@ import collections
 import json
 import math
 import os
+import signal
 import sys
 import tempfile
 import time
@@ -78,6 +83,13 @@ TOLERANCE_PETITE_ZONE = 0.15
 PAS_AFFICHES = 3  # --dry-run : pas affiches apres la premiere decision
 PAS_ETALONNAGE = 0.15  # m : ligne droite qui sert a verifier l'echelle de la camera
 ECART_ECHELLE = 0.10  # ecart tolere entre l'echelle donnee et celle que montre le rover
+ROVER_MUET = (
+    'Le rover ne repond pas a GET /state : verifier --rover (adresse, port 8080), que '
+    "rover_server.py tourne et que le reseau passe. Rien n'a ete envoye."
+)
+# --liaison-lente : liaison ordinateur -> rover a 1,5-4 s par requete (tunnel SSH inverse,
+# 15 nov.) : une reponse lente n'est pas une liaison perdue, et chaque requete compte
+LIAISON_LENTE = {'delai_http': 8.0, 'delai_liaison': 15.0, 'attente_pas': True, 'periode': 1.0}
 
 
 def dans_la_zone(point, zone, marge=0.0):
@@ -122,6 +134,26 @@ def arreter_le_rover(requete, essais=3, journal=print, dormir=time.sleep):
             dormir(0.3)
     journal('  ATTENTION : /stop sans reponse, le rover finit peut-etre son pas tout seul')
     return False
+
+
+def arreter_sans_interruption(requete, journal=print):
+    """Le /stop final : un second Ctrl-C (ou SIGTERM, SIGHUP) pendant qu'il part ne doit pas
+    l'annuler. Ces signaux sont ignores le temps des essais (au plus 3 delais HTTP), puis
+    remis. Hors du fil principal, on ne peut pas les toucher : simple arreter_le_rover."""
+    anciens = {}
+    for nom in ('SIGINT', 'SIGTERM', 'SIGHUP'):
+        numero = getattr(signal, nom, None)  # SIGHUP n'existe pas sous Windows
+        if numero is None:
+            continue
+        try:
+            anciens[numero] = signal.signal(numero, signal.SIG_IGN)
+        except ValueError:
+            break
+    try:
+        return arreter_le_rover(requete, journal=journal)
+    finally:
+        for numero, ancien in anciens.items():
+            signal.signal(numero, ancien)
 
 
 def sans_post(requete, journal=print):
@@ -256,6 +288,9 @@ def etalonner_echelle(
         journal(
             f'Echelle confirmee par le deplacement du rover ({(correction - 1) * 100:+.0f} %).'
         )
+    hauteur = getattr(camera, 'estimated_height', lambda: None)()
+    if hauteur is not None:
+        journal(f"  hauteur de la camera d'apres cette echelle et l'objectif : {hauteur:.2f} m")
     taille = getattr(camera.settings, 'rover_size', None)
     if taille and not size_matches(rover_vu, correction if adoptee else 1.0, taille):
         c = correction if adoptee else 1.0
@@ -297,6 +332,7 @@ class Suivi:
         self.lignes = collections.deque(maxlen=30)
         self.decision, self.chemin, self.traj = None, [], []
         self.etat = 'en_cours'
+        self.erreur_dite = False
 
     def journal(self, texte):
         self.lignes.append(str(texte))
@@ -366,15 +402,21 @@ class Suivi:
             return
         dossier = os.path.dirname(os.path.abspath(self.fichier))
         # ecrire a cote puis renommer : la page ne lit jamais un fichier a moitie ecrit
-        fd, tmp = tempfile.mkstemp(dir=dossier, prefix='.suivi-', suffix='.json')
+        tmp = None
         try:
+            fd, tmp = tempfile.mkstemp(dir=dossier, prefix='.suivi-', suffix='.json')
             with os.fdopen(fd, 'w') as f:
                 json.dump(self.document(), f)
             os.replace(tmp, self.fichier)
-        except BaseException:
-            if os.path.exists(tmp):
+        except BaseException as e:
+            if tmp is not None and os.path.exists(tmp):
                 os.unlink(tmp)
-            raise
+            if not isinstance(e, OSError):
+                raise
+            # le suivi n'est qu'un affichage : la mission continue sans lui
+            if not self.erreur_dite:
+                self.erreur_dite = True
+                self.journal_sortie(f'  suivi non ecrit ({self.fichier}) : {e} ; on continue')
 
 
 def lancer(
@@ -405,10 +447,7 @@ def lancer(
     POST /stop est envoye en sortie dans tous les cas (sauf dry_run), meme sur Ctrl-C."""
     etat_rover = requete('GET', '/state')
     if etat_rover is None and not dry_run:
-        raise RuntimeError(
-            'Le rover ne repond pas a GET /state : verifier --rover (adresse, port 8080), que '
-            "rover_server.py tourne et que le reseau passe. Rien n'a ete envoye."
-        )
+        raise RuntimeError(ROVER_MUET)
     if etat_rover is not None:
         odom = etat_rover.get('odom') or {}
         journal(
@@ -464,6 +503,7 @@ def lancer(
     if dry_run:
         return _premiere_decision(carte, rover, depart, victime, zone, tolerance, settings, suivi_)
     suivi_.brancher()
+    erreur = None
     try:
         instantanes = mission(
             rover,
@@ -481,6 +521,7 @@ def lancer(
         suivi_.ecrire('arret_operateur')
         return {'etat': 'arret_operateur', 'raison': str(e), 'fin': {'traj': suivi_.traj}}
     except BaseException as e:
+        erreur = e
         try:  # le suivi ne doit pas masquer la vraie cause
             suivi_.journal(f'MISSION INTERROMPUE : {type(e).__name__} {e}')
             suivi_.ecrire('abandon' if isinstance(e, KeyboardInterrupt) else 'erreur')
@@ -488,7 +529,9 @@ def lancer(
             pass
         raise
     finally:
-        arreter_le_rover(requete, journal=journal)
+        recu = arreter_sans_interruption(requete, journal=journal)
+        if erreur is not None:
+            erreur.stop_recu = recu  # pour le message de main()
     # l'issue de la mission (cerveau.ETAT_SUIVI) : arrive, abandon ou erreur du rover
     etat = ETAT_SUIVI.get(instantanes.get('issue'), 'abandon')
     suivi_.ecrire(etat)
@@ -574,6 +617,10 @@ def rafraichir_apres(camera, latence, dormir):
     return rafraichir
 
 
+def _interrompre(numero, _cadre):
+    raise KeyboardInterrupt(f'signal {numero}')
+
+
 def analyser(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     source = p.add_mutually_exclusive_group(required=True)
@@ -612,8 +659,9 @@ def analyser(argv=None):
         '--hauteur',
         type=float,
         default=1.8,
-        help="hauteur de la camera (m) ; approximative suffit : l'echelle est ensuite "
-        'mesuree sur le marqueur (--taille-marqueur) ou sur le deplacement du rover',
+        help="hauteur de la camera (m). Inutile de la connaitre : c'est un point de depart, "
+        "l'echelle est mesuree sur le marqueur (--taille-marqueur) ou sur le deplacement "
+        'du rover, et la hauteur trouvee est affichee',
     )
     p.add_argument(
         '--taille-marqueur',
@@ -649,9 +697,25 @@ def analyser(argv=None):
         f'depart ({PAS_ETALONNAGE:g} m en avant puis en arriere)',
     )
     p.add_argument(
-        '--delai-http', type=float, default=1.0, help="delai d'une requete au rover (s)"
+        '--delai-http', type=float, help="delai d'une requete au rover (s) ; 1 (8 si lente)"
+    )
+    p.add_argument(
+        '--delai-liaison',
+        type=float,
+        help='s sans aucune reponse du rover avant de declarer la liaison perdue (2 ; 15 avec '
+        '--liaison-lente)',
+    )
+    p.add_argument(
+        '--liaison-lente',
+        action='store_true',
+        help='liaison a 1,5-4 s par requete (tunnel) : delai HTTP 8 s, liaison perdue apres '
+        "15 s, lecture de l'etat 1 fois/s et seulement apres la duree attendue du pas",
     )
     args = p.parse_args(argv)
+    if args.delai_http is None:
+        args.delai_http = LIAISON_LENTE['delai_http'] if args.liaison_lente else 1.0
+    if args.suivi is not None and not os.path.isdir(os.path.dirname(os.path.abspath(args.suivi))):
+        p.error(f"--suivi {args.suivi} : le dossier n'existe pas")
     if args.image is not None and not args.dry_run:
         p.error('--image (photo fixe) seulement avec --dry-run : il faut --camera pour rouler')
     if args.rover is None and not args.dry_run:
@@ -695,6 +759,13 @@ def main(argv=None):
             f'{e}\nIl faut guidance_global_map sur le PYTHONPATH (src/guidance_calib, '
             'src/guidance_global_map, src/guidance_rover_pose) et opencv-contrib-python.'
         )
+    if args.rover:
+        requete = client_http(args.rover, delai=args.delai_http)
+        # avant d'attendre la premiere image de la camera (jusqu'a 15 s)
+        if not args.dry_run and requete('GET', '/state') is None:
+            sys.exit(f'ERREUR : {ROVER_MUET}')
+    else:
+        requete = lambda methode, chemin, corps=None: None  # noqa: E731 - dry-run sans rover
     if args.camera:
         lecteur = _lecteur_camera(args.camera, args.latence)
         if not _attendre_image(lecteur):
@@ -703,14 +774,19 @@ def main(argv=None):
     else:
         lecteur = image_file_reader(args.image)
     percevoir = _percevoir(args.perception) if args.perception else None
-    if args.rover:
-        requete = client_http(args.rover, delai=args.delai_http)
-    else:
-        requete = lambda methode, chemin, corps=None: None  # noqa: E731 - dry-run sans rover
     if args.dry_run:
         requete = sans_post(requete)
     options = {} if args.vitesse is None else {'vitesse': args.vitesse}
+    if args.liaison_lente:
+        options.update({k: v for k, v in LIAISON_LENTE.items() if k != 'delai_http'})
+    if args.delai_liaison is not None:
+        options['delai_liaison'] = args.delai_liaison
     camera = OverheadDrone(lecteur, OverheadSettings(**reglages_camera(args)))
+    # SIGTERM (systemd, kill) et SIGHUP (session SSH coupee) : comme Ctrl-C, donc /stop
+    anciens = {}
+    for nom in ('SIGTERM', 'SIGHUP'):
+        if hasattr(signal, nom):
+            anciens[nom] = signal.signal(getattr(signal, nom), _interrompre)
     try:
         resultat = lancer(
             camera,
@@ -724,11 +800,21 @@ def main(argv=None):
             dry_run=args.dry_run,
             etalonner=not args.sans_etalonnage,
         )
-    except KeyboardInterrupt:
-        sys.exit('Interrompu (Ctrl-C) : /stop envoye au rover.')
+    except KeyboardInterrupt as e:
+        recu = getattr(e, 'stop_recu', None)
+        if recu:
+            sys.exit('Interrompu : /stop recu par le rover.')
+        if recu is False:
+            sys.exit(
+                'Interrompu : ATTENTION, /stop SANS reponse du rover : il finit peut-etre son '
+                "pas tout seul, verifier qu'il est arrete."
+            )
+        sys.exit('Interrompu avant le depart : aucun pas envoye au rover.')
     except (ServeurRoverError, RuntimeError, ValueError) as e:
         sys.exit(f'ERREUR : {e}')
     finally:
+        for nom, ancien in anciens.items():
+            signal.signal(getattr(signal, nom), ancien)
         fermer = getattr(lecteur, 'close', None)
         if fermer is not None:
             fermer()

@@ -200,8 +200,8 @@ class CameraReader:
                 image = decode_jpeg(reply.read())
             if image is None:
                 raise OSError(f'not an image ({kind or "no Content-Type"})')
-            # A snapshot was taken after the request left: its time is when it was asked for.
-            self._store(image, None, asked)
+            # An app answers with its last captured frame: up to `latency` before the request.
+            self._store(image, None, asked - self.latency)
             self._closed.wait(max(0.0, SNAPSHOT_MIN_PERIOD - (self._clock() - asked)))
 
 

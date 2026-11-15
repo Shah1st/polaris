@@ -75,13 +75,18 @@ class Capture:
     """Le fil qui possède le pipeline, et la dernière capture.
 
     En cas d'erreur (caméra débranchée, plus d'image) : arrêt du pipeline, erreur notée,
-    nouvel essai toutes les `retry_s` s. Le côté HTTP ne fait que lire l'état sous verrou."""
+    nouvel essai après `retry_s` s, puis une attente doublée à chaque nouvel échec sans image
+    (2, 4, 8, 15 s au plus) : chaque essai énumère l'USB, 23 % d'un cœur du robot à un essai
+    toutes les 2 s sans caméra branchée. Retour à `retry_s` dès qu'une image arrive. Le côté
+    HTTP ne fait que lire l'état sous verrou."""
 
     def __init__(self, width: int = 640, height: int = 480, fps: int = 15, serial: str | None = None,
-                 retry_s: float = 2.0, timeout_ms: int = 2000, log=print):
+                 retry_s: float = 2.0, timeout_ms: int = 2000, log=print, retry_max_s: float = 15.0):
         self.modes = mode_list(width, height, fps)
         self.serial = serial
         self.retry_s, self.timeout_ms = retry_s, timeout_ms
+        self.retry_max_s = max(retry_max_s, retry_s)
+        self.next_retry_s = retry_s        # attente avant le prochain essai, doublée à chaque échec
         self.log = log
         self._cond = threading.Condition()
         self._latest: dict | None = None   # {'seq', 't', 'color', 'depth', 'info'} (t : monotonic)
@@ -131,6 +136,7 @@ class Capture:
     def _run(self) -> None:
         while not self._stop.is_set():
             pipe = None
+            seq0 = self.seq
             try:
                 import pyrealsense2 as rs  # importé ici : --help et les tests marchent sans lui
 
@@ -149,7 +155,10 @@ class Capture:
                         pipe.stop()
                     except Exception:
                         pass
-            self._stop.wait(self.retry_s)
+            # Des images sont arrivées pendant cet essai : on la recherche vite ; sinon on espace.
+            wait = self.retry_s if self.seq != seq0 else self.next_retry_s
+            self.next_retry_s = min(2 * wait, self.retry_max_s)
+            self._stop.wait(wait)
 
     def _open(self, rs):
         """Démarre le pipeline sur le premier mode accepté ; (pipeline, dict de /info)."""
@@ -236,6 +245,7 @@ class Capture:
                 self.seq += 1
                 # Les infos du pipeline qui a pris l'image : après une reconnexion le mode peut changer.
                 self._latest = {'seq': self.seq, 't': t, 'color': color, 'depth': depth, 'info': info}
+                self.next_retry_s = self.retry_s
                 self.cpu_capture_s += time.thread_time() - c0
                 self._cond.notify_all()
 
@@ -331,6 +341,7 @@ def make_handler(cap: Capture, enc: Encoder, max_age: float):
                 'device': bool(cap.device), 'age_s': age, 'frames': cap.seq, 'errors': cap.errors,
                 'last_error': cap.last_error, 'mode': None if info is None else info['mode'],
                 'usb': None if info is None else info['usb'],
+                'retry_s': cap.next_retry_s,  # attente du prochain essai si la caméra manque
                 # Temps CPU moyen par requête (ms) et par image capturée : à surveiller sur le robot.
                 'cpu_ms_per_request': cpu_ms,
                 'cpu_ms_per_capture': round(1000 * cap.cpu_capture_s / cap.seq, 3) if cap.seq else None,

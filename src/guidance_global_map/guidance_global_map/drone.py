@@ -349,6 +349,15 @@ class OverheadDrone:
             return self._marker_scale
         return self.settings.scale(self._image_size)
 
+    def estimated_height(self) -> float | None:
+        """The camera height that the scale in use means for this lens. After the scale was
+        measured on the rover (its marker or its move), this is the height found, whatever
+        height was given. None before the first image."""
+        scale = self.current_scale()
+        if scale is None:
+            return None
+        return self.settings.height_for(scale, self._image_size)
+
     def _settings_for(self, image: np.ndarray) -> OverheadSettings:
         """The settings to map this image with. With `marker_size` and no measured scale, the
         scale read off the rover's marker is used, and kept for the frames where the marker
@@ -374,6 +383,10 @@ class OverheadDrone:
         result = self.refresh(force)
         if result is None or self._held:
             return None
+        return self.seen_in(result)
+
+    def seen_in(self, result: OverheadResult) -> list[Seen]:
+        """The objects of one result (see `objects`), without taking a new image."""
         resolution = self.settings.resolution
         rover = []
         if self.settings.rover_marker_id is not None and result.rover_position is not None:

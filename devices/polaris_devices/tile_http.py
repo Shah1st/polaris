@@ -2,7 +2,7 @@
 
 A new device needs no Python code in this repository: it serves
 
-    GET /map  ->  200 {"t": <unix s, optional>, "res": 0.05, "x0": 1.20, "y0": 0.40,
+    GET /map  ->  200 {"t": <optional, ignored>, "res": 0.05, "x0": 1.20, "y0": 0.40,
                        "cells": [[-1, 0, 1, ...], ...]}
               or  503 when it has nothing fresh (the device counts as unavailable)
 
@@ -10,6 +10,10 @@ A new device needs no Python code in this repository: it serves
 south), 1 obstacle, 0 free and seen, -1 not seen. `res` is 0.05 m (or 0.1, 0.2, 0.4, 0.8:
 0.05 times a power of two); x0, y0 are multiples of res. A device that already cuts tiles may
 answer {"t": ..., "tiles": [{"z", "x", "y", "data"}, ...]} instead.
+
+Tiles are stamped when they are received (time.monotonic(), the clock of every other adapter and
+of the rover), not with the device's "t": a Unix "t" next to monotonic stamps would make an old
+tile always win over a fresh one of the same role.
 
 Optional, when the device can locate other devices (settings {"locates": true}):
 
@@ -48,10 +52,10 @@ def level_of(res: float, carte) -> int:
 
 
 def messages_from_answer(answer: dict, carte) -> list[dict]:
-    """Tile messages (source not set) from a /map answer."""
+    """Tile messages (source not set) from a /map answer, stamped when received."""
     from fusion_carte import decouper
 
-    t = float(answer.get('t') or time.time())
+    t = time.monotonic()  # one clock in the fusion: the device's "t" is ignored
     if 'tiles' in answer:
         return [
             {'t': t, 'z': int(m['z']), 'x': int(m['x']), 'y': int(m['y']), 'data': m['data']}

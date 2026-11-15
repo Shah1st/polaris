@@ -12,7 +12,7 @@
 
 ```bash
 python devices/examples/run_fleet_sim.py --drive     # 2 drones + 2 rovers, no hardware
-python -m pytest devices -q -p no:cacheprovider      # 26 tests + 1 waiting for interface 7
+python -m pytest devices -q -p no:cacheprovider      # 27 tests
 ```
 
 ## The three roles (`polaris_devices/roles.py`: the docstrings are the specification)
@@ -33,9 +33,11 @@ really see is `-1`, never `0`**: a `0` erases the obstacles other devices saw.
 {"map": {"niveau_plan": 4, "rayon_robot": 0.155},
  "devices": [
    {"id": "overhead", "role": "drone", "kind": "overhead-camera", "source": "0",
-    "settings": {"tracks": "rasprover", "overhead": {"rover_marker_id": 7}}},
+    "settings": {"tracks": "rasprover",
+                 "overhead": {"metres_per_pixel": 0.0030, "marker_height": 0.0,
+                              "rover_marker_id": 10}}},
    {"id": "rasprover-eye", "role": "rover", "kind": "rover-perception",
-    "address": "http://127.0.0.1:8000"},
+    "address": "http://127.0.0.1:8095"},
    {"id": "rasprover", "role": "rover", "kind": "rasprover", "address": "http://ROVER-IP:8080",
     "settings": {"locator": "overhead", "perception": "rasprover-eye"}}]}
 ```
@@ -60,7 +62,7 @@ plans for every rover.
 
 | kind | role | plays | settings |
 |---|---|---|---|
-| `overhead-camera` | drone | map, locator | `source` (camera index, URL or image file), `tracks` (rover id), `overhead` (`OverheadSettings`), `max_age`, `period` |
+| `overhead-camera` | drone | map, locator | `source` (camera index, URL or image file), `tracks` (rover id), `overhead` (`OverheadSettings`; a live camera is refused without a measured `metres_per_pixel`, as `lancer_overhead.py --camera`), `max_age`, `period` |
 | `rasprover` | rover | mobile | `address` (rover_server.py), `locator`, `perception`, `timeout`, `options` (`RaspRoverReel` arguments) |
 | `rover-perception` | rover | sensor of a rover | `address` (perception service), `timeout` |
 | `sim-drone` | drone | map, locator | `world` (`monde_1`...), `area` [x0, y0, x1, y1], `level`; or `address` of the MuJoCo sim (`sim/run_world.py`) and `tracks` |
@@ -80,7 +82,11 @@ GET /pose -> 200 {"rasprover": [x, y, heading_rad_or_null]}   (optional, "locate
 `cells[i][j]` is the cell at x = x0 + j·res, y = y0 + i·res (row 0 = south), in the map frame.
 `res` is 0.05 m times a power of two (0.05, 0.1, 0.2, 0.4, 0.8); x0, y0 are multiples of
 `res`. A device that already cuts tiles may answer `{"t": ..., "tiles": [{"z", "x", "y",
-"data"}]}`. A complete device in 40 lines: `examples/tile_device.py`. Declare it:
+"data"}]}`. `t` is optional and ignored: the fleet stamps every tile with the time it is
+received (`time.monotonic()` on the fusion's machine, the clock of every other adapter and of
+the rover), so a device's clock or a Unix time cannot make an old tile win over a fresh one.
+Your own adapter (way 2) must stamp its tiles with `time.monotonic()` too. A complete device
+in 40 lines: `examples/tile_device.py`. Declare it:
 `{"id": "wall-cam", "role": "drone", "kind": "tile-http", "address": "http://127.0.0.1:8178"}`.
 
 **Way 2: write an adapter class.** Implement the role's methods (`roles.py`), then register a
@@ -93,7 +99,7 @@ class Lidar:                                   # a MapSource
     def __init__(self, port): ...
     def available(self): return self.connected
     def tiles(self):                           # messages; 'source' is set by the fleet
-        return decouper(self.grid, self.x0, self.y0, 4, carte, '', t=time.time())
+        return decouper(self.grid, self.x0, self.y0, 4, carte, '', t=time.monotonic())
 
 register('lidar', lambda spec, fleet: Lidar(spec.address))
 ```
@@ -112,15 +118,15 @@ overhead camera on a still image; the RaspRover adapter built without contacting
 Not yet:
 * **Never run on the real robot or the live camera.** The tested way to run a real mission is
   still `merging_map/lancer_overhead.py`; `fleet_arena.json` is the same wiring, untried.
-* **Device ids in the fusion** (`drone:<id>`) need the fusion change of interface 7. Until it is
-  merged the fleet detects it and publishes plain `drone` / `rover` (a test marked `xfail`
-  turns green after the merge). Until then all drones share one `drone` layer (where two
-  drones see the same tile, the newest known cell wins) and all rovers one `rover` layer.
+* Devices of one role are layered by time: where two drones (or two rovers) know the same
+  tile, the most recently received one wins (sources `drone:<id>` / `rover:<id>`; with an
+  older fusion that refuses ids, the fleet falls back to plain `drone` / `rover`).
 * **One rover per mission.** The brain drives one rover at a time; rovers do not see each other
   as obstacles. A fleet moving together needs cell reservation along each path, priorities at
   crossings, and each rover's position published as a moving obstacle for the others.
 * One overhead camera locates one rover (`tracks`); two rovers need two markers.
-* `rover-perception` needs `merging_map/perception_rover.py` (another part, in progress).
-  Without it the RaspRover is still plugged and drives on the drone's map alone (as
-  `lancer_overhead.py` without `--perception`), with a message saying so.
+* `rover-perception` uses `merging_map/perception_rover.py` and a running
+  `rover_mapper/perception_service.py` (port 8095 by default). Without a perception the
+  RaspRover is still plugged and drives on the drone's map alone (as `lancer_overhead.py`
+  without `--perception`), with a message saying so.
 * `sim-rover` is merging_map's simulated rover; the MuJoCo rover is only seen, not driven.

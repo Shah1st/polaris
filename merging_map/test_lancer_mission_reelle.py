@@ -4,6 +4,8 @@ follow-up file, and its command line wires camera, scale, perception and HTTP de
 
 import json
 import math
+import os
+import signal
 import sys
 import types
 from pathlib import Path
@@ -266,7 +268,7 @@ def test_command_line_refuses_a_still_photo_to_drive_the_rover(faux_modules) -> 
     assert faux_modules['lancer']['dry_run'] is True
 
 
-def test_command_line_wires_camera_scale_and_options(faux_modules, monkeypatch) -> None:
+def test_command_line_wires_camera_scale_and_options(faux_modules, monkeypatch, tmp_path) -> None:
     perception = types.ModuleType('perception_rover')
     perception.percevoir_http = lambda url: ('percevoir', url)
     monkeypatch.setitem(sys.modules, 'perception_rover', perception)
@@ -293,7 +295,7 @@ def test_command_line_wires_camera_scale_and_options(faux_modules, monkeypatch) 
             '--perception',
             'http://127.0.0.1:8103',
             '--suivi',
-            '/x/suivi.json',
+            str(tmp_path / 'suivi.json'),
             '--tolerance',
             '0.2',
             '--vitesse',
@@ -316,7 +318,7 @@ def test_command_line_wires_camera_scale_and_options(faux_modules, monkeypatch) 
     assert faux_modules['client'] == ('http://127.0.0.1:8102', 2.5)
     appel = faux_modules['lancer']
     assert appel['percevoir'] == ('percevoir', 'http://127.0.0.1:8103')
-    assert appel['suivi'] == '/x/suivi.json' and appel['tolerance'] == 0.2
+    assert appel['suivi'] == str(tmp_path / 'suivi.json') and appel['tolerance'] == 0.2
     assert appel['options_rover'] == {'vitesse': 0.15} and appel['dry_run'] is False
     assert appel['victime'] == (1.2, 0.9) and appel['depart'] is None
 
@@ -433,3 +435,132 @@ def test_command_line_prints_the_issue_and_its_reason(faux_modules, monkeypatch,
     sortie = capsys.readouterr().out
     assert 'Fin de mission (erreur) : 0.50 m parcourus.' in sortie
     assert 'Issue : erreur_robot ; raison : statut no ESP32 feedback' in sortie
+
+
+# ---- review round of 15 Nov: final /stop, signals, follow-up file, slow link ----------------
+
+
+def test_a_second_ctrl_c_does_not_cancel_the_final_stop() -> None:
+    """The operator presses Ctrl-C again while the final /stop goes out: it was interrupted
+    and main() still said '/stop envoye'."""
+    faux = FauxServeur(0.4, 0.4, 0.0)
+    dormir = faux.dormir
+
+    def dormir_puis_ctrl_c(dt):
+        dormir(dt)
+        if any(ch == '/path' for _, ch in posts(faux)) and faux.mode == 'path':
+            raise KeyboardInterrupt
+
+    faux.dormir = dormir_puis_ctrl_c
+    requete = faux.requete
+
+    def requete_et_second_ctrl_c(methode, chemin, corps=None):
+        if chemin == '/stop':
+            os.kill(os.getpid(), signal.SIGINT)  # the second Ctrl-C, as the /stop leaves
+        return requete(methode, chemin, corps)
+
+    with pytest.raises(KeyboardInterrupt) as e:
+        lancer(
+            FausseCamera(faux),
+            requete_et_second_ctrl_c,
+            (2.0, 2.0),
+            options_rover=options(faux),
+            journal=lambda _: None,
+        )
+    assert posts(faux)[-1][1] == '/stop' and faux.history[0]['status'] == 'stopped'
+    assert e.value.stop_recu is True
+    assert signal.getsignal(signal.SIGINT) is signal.default_int_handler  # restored
+
+
+@pytest.mark.parametrize(
+    ('stop_recu', 'attendu'),
+    [(True, '/stop recu'), (False, 'SANS reponse'), (None, 'aucun pas envoye')],
+)
+def test_command_line_says_whether_the_stop_was_received(faux_modules, monkeypatch,
+                                                         stop_recu, attendu) -> None:  # fmt: skip
+    def faux_lancer(*args, **kw):
+        e = KeyboardInterrupt()
+        if stop_recu is not None:
+            e.stop_recu = stop_recu
+        raise e
+
+    monkeypatch.setattr(lancer_overhead, 'lancer', faux_lancer)
+    with pytest.raises(SystemExit, match=attendu):
+        main(['--camera', '0', '--rover', 'http://r', '--victime', '1', '1',
+              '--metres-par-pixel', '0.002'])  # fmt: skip
+
+
+def test_sigterm_and_sighup_stop_the_mission_like_ctrl_c(faux_modules, monkeypatch) -> None:
+    """The SSH session to the VM drops (SIGHUP) or systemd stops it (SIGTERM): the process died
+    without its finally, so without /stop. Now they raise KeyboardInterrupt, then restored."""
+    vus = {}
+
+    def faux_lancer(*args, **kw):
+        for nom in ('SIGTERM', 'SIGHUP'):
+            vus[nom] = signal.getsignal(getattr(signal, nom))
+        vus['SIGTERM'](signal.SIGTERM, None)
+
+    monkeypatch.setattr(lancer_overhead, 'lancer', faux_lancer)
+    avant = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGHUP)
+    with pytest.raises(SystemExit, match='Interrompu'):
+        main(['--camera', '0', '--rover', 'http://r', '--victime', '1', '1',
+              '--metres-par-pixel', '0.002'])  # fmt: skip
+    assert callable(vus['SIGHUP'])
+    assert (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGHUP)) == avant
+
+
+def test_follow_up_file_errors_do_not_end_the_mission(tmp_path) -> None:
+    """The follow-up file is only a display: a write error is said once, the mission goes on."""
+    faux = FauxServeur(0.4, 0.4, 0.0)
+    lignes = []
+    resultat = lancer(
+        FausseCamera(faux),
+        faux.requete,
+        (2.0, 2.0),
+        options_rover=options(faux),
+        journal=lignes.append,
+        suivi=str(tmp_path / 'absent' / 'mission.json'),
+    )
+    assert resultat['etat'] == 'arrive'
+    assert sum('suivi non ecrit' in ligne for ligne in lignes) == 1
+
+
+def test_command_line_refuses_a_follow_up_file_in_a_missing_folder(faux_modules, tmp_path):
+    absent = str(tmp_path / 'absent' / 'm.json')
+    with pytest.raises(SystemExit):
+        main(['--camera', '0', '--rover', 'http://r', '--victime', '1', '1',
+              '--metres-par-pixel', '0.002', '--suivi', absent])  # fmt: skip
+    assert 'lancer' not in faux_modules
+
+
+def test_command_line_slow_link_options(faux_modules) -> None:
+    base = ['--camera', '0', '--rover', 'http://r', '--victime', '1', '1',
+            '--metres-par-pixel', '0.002']  # fmt: skip
+    main([*base, '--liaison-lente'])
+    assert faux_modules['client'] == ('http://r', 8.0)
+    assert faux_modules['lancer']['options_rover'] == {
+        'delai_liaison': 15.0,
+        'attente_pas': True,
+        'periode': 1.0,
+    }
+    main([*base, '--liaison-lente', '--delai-http', '5', '--delai-liaison', '20'])
+    assert faux_modules['client'] == ('http://r', 5.0)
+    assert faux_modules['lancer']['options_rover']['delai_liaison'] == 20.0
+    main([*base, '--delai-liaison', '6'])
+    assert faux_modules['client'] == ('http://r', 1.0)  # defaults unchanged
+    assert faux_modules['lancer']['options_rover'] == {'delai_liaison': 6.0}
+    main(base)
+    assert faux_modules['lancer']['options_rover'] == {}
+
+
+def test_command_line_checks_the_rover_before_the_camera(faux_modules, monkeypatch) -> None:
+    """A rover that does not answer is said at once, before the 15 s wait for a first frame."""
+    monkeypatch.setattr(
+        lancer_overhead, 'client_http', lambda url, delai=1.0: lambda m, c, corps=None: None
+    )
+    with pytest.raises(SystemExit, match='ne repond pas a GET /state') as fin:
+        main(['--camera', '0', '--rover', 'http://r', '--victime', '1', '1',
+              '--metres-par-pixel', '0.002'])  # fmt: skip
+    assert str(fin.value.code).startswith('ERREUR') and "Rien n'a ete envoye" in fin.value.code
+    assert 'source' not in faux_modules  # the camera was not even opened
+    assert 'lancer' not in faux_modules

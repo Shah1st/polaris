@@ -57,3 +57,19 @@ def size_matches(seen: Seen, correction: float, rover_size, tolerance: float = 0
         abs(seen.short * correction - short) <= tolerance * short
         and abs(seen.long * correction - long) <= tolerance * long
     )
+
+
+def frame_from_move(seen_from, seen_to, driven_from, driven_to) -> tuple[float, float]:
+    """What one move of the rover says about the camera: (rotation, scale correction).
+
+    The rover went from `seen_from` to `seen_to` in the camera's frame and from `driven_from`
+    to `driven_to` in the frame of its odometry (all (x, y), metres). The same displacement
+    seen in both frames gives the angle to turn the camera's frame by to line it up with the
+    odometry's (radians, in (-pi, pi]), and the factor to multiply the camera's scale by. It
+    works whichever way the rover faces, forwards or backwards: only the displacement counts.
+    """
+    seen = (seen_to[0] - seen_from[0], seen_to[1] - seen_from[1])
+    driven = (driven_to[0] - driven_from[0], driven_to[1] - driven_from[1])
+    correction = scale_correction(math.hypot(*seen), math.hypot(*driven))
+    rotation = math.atan2(driven[1], driven[0]) - math.atan2(seen[1], seen[0])
+    return math.atan2(math.sin(rotation), math.cos(rotation)), correction

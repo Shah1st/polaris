@@ -71,10 +71,11 @@ cartes" tab, or a reader of `/drone_feed`), and re-served:
 **Maps.** The three maps are the pictures of the live fusion that `server.py` already relays
 under `/fusion/` (`--fusion`, default `http://127.0.0.1:8094`): `rover.png`, `drone.png`,
 `fused.png` and `status.json`, the same ones as `/sim`. Nothing is computed in the dashboard.
-Today only `sim/fusion_live.py` serves them, from the forest simulation: with the real rover,
-the panels show that simulation (the page writes the source of each map, from `status.json`)
-until a process serves the same four files from the real iPhone and rover perception. The fused
-map of the real mission is on `/mission` (`--suivi`).
+`sim/fusion_live.py` serves them from the forest simulation; for the real rover,
+`sim/fusion_reelle.py` serves the same four files on :8096 (start the
+dashboard with `--fusion http://127.0.0.1:8096`; the page writes the source of each map, from
+`status.json`). It reads `GET /state` every 2 s and the perception service: stop it during a
+run over the slow tunnel. The fused map of the real mission is on `/mission` (`--suivi`).
 
 ## The mission page (for the jury)
 

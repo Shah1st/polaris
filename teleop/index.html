@@ -86,14 +86,14 @@
 <div class="app">
   <div class="side" id="side" tabindex="0">
     <h1>Real rover — teleop <span class="tag" id="link">offline</span></h1>
-    <div class="route" id="routeBig">VIA THE VM</div>
+    <div class="route" id="routeBig">VIA THIS COMPUTER (teleop server)</div>
     <div class="video"><canvas id="cam" width="640" height="480"></canvas><img id="camDirect" alt="" hidden>
       <span id="vinfo"></span></div>
     <label>Link <span id="route">–</span>
       <select id="route_sel">
         <option value="auto" selected>automatic</option>
         <option value="direct">direct (robot Wi-Fi)</option>
-        <option value="vm">via the VM</option>
+        <option value="vm">via this computer</option>
       </select></label>
     <label>Image
       <select id="preset">
@@ -151,6 +151,8 @@
         <button id="goalGo" type="button" class="go">Go to the point</button>
         <button id="goalStop" type="button" class="halt">Stop the mission</button>
         <button id="goalClear" type="button">Clear the point</button>
+        <label id="localMapBox" title="On: the rover's own camera builds the local map (rover map), outside a mission and at each stop. Off: it is not used and the rover map is emptied; the planner works from the drone map alone."><input type="checkbox" id="localMap"> Local map (rover camera)</label>
+        <label id="noMarkerBox" title="On: the rover's marker is ignored in the drone's picture. Drive the rover at least 12 cm and stop, twice, in view of the drone camera: its move places the drone map. Off: the marker places it from one picture."><input type="checkbox" id="noMarker"> No marker on the rover</label>
         <span id="mapResetMsg">Click the drone map or the fused map to set the rover's destination</span></div>
       <figure class="mapfig">
         <figcaption><b>1. Rover map</b><span id="aRover">–</span></figcaption>
@@ -335,6 +337,14 @@ function showSources(s) {
 function showStatus(s) {
   const el = $('fstatus');
   showSources(s);
+  // The "No marker" box follows the fusion, unless it was just clicked; a fusion that does
+  // not have the switch (the simulation) hides it.
+  const lm = s ? s.carte_locale : undefined;
+  $('localMapBox').hidden = lm === undefined;
+  if (lm !== undefined && performance.now() - localMapClick > 3000) $('localMap').checked = lm;
+  const sm = s && s.drone ? s.drone.sans_marqueur : undefined;
+  $('noMarkerBox').hidden = sm === undefined;
+  if (sm !== undefined && performance.now() - noMarkerClick > 3000) $('noMarker').checked = sm;
   if (!s) {
     el.innerHTML = '<b>Maps</b>: no answer from the fusion (/fusion/status.json). '
       + 'Is it running? (sim/fusion_live.py, port 8094 by default, server.py --fusion)';
@@ -399,6 +409,31 @@ $('goalStop').addEventListener('click', async () => {
 $('goalClear').addEventListener('click', async () => {
   try { const { ok } = await fusionPost('objectif', {}); mapMsg(ok ? 'point cleared' : 'refused'); }
   catch (err) { mapMsg('fusion unreachable'); }
+});
+// The rover's local map, built from its own camera or not (fusion_reelle.py /carte_locale).
+let localMapClick = -1e9;
+$('localMap').addEventListener('change', async (ev) => {
+  const on = ev.target.checked;
+  localMapClick = performance.now();
+  try {
+    const { ok, status } = await fusionPost('carte_locale', { carte_locale: on });
+    if (!ok) { ev.target.checked = !on; mapMsg('refused (HTTP ' + status + ')'); return; }
+    mapMsg(on ? 'Local map on: the rover camera is fused while the rover stands still'
+              : 'Local map off: rover map emptied, planning on the drone map only');
+    for (const p of panels) p.got = 0;
+  } catch (err) { ev.target.checked = !on; mapMsg('fusion unreachable'); }
+});
+// The rover's marker, trusted or not, in the drone's picture (fusion_reelle.py /marqueur).
+let noMarkerClick = -1e9;
+$('noMarker').addEventListener('change', async (ev) => {
+  const on = ev.target.checked;
+  noMarkerClick = performance.now();
+  try {
+    const { ok, status } = await fusionPost('marqueur', { sans_marqueur: on });
+    if (!ok) { ev.target.checked = !on; mapMsg('refused (HTTP ' + status + ')'); return; }
+    mapMsg(on ? 'No marker: drive the rover 12 cm and stop, twice, to place the drone map'
+              : 'Marker trusted: the drone map is placed when the marker is seen');
+  } catch (err) { ev.target.checked = !on; mapMsg('fusion unreachable'); }
 });
 // Empty the maps of the live fusion: a new map starts from where the rover stands now.
 $('mapReset').addEventListener('click', async () => {
@@ -484,10 +519,10 @@ function showRoute() {
   const mode = $('route_sel').value;
   let txt, c;
   if (direct) [txt, c] = robotSeen ? ['DIRECT LINK', 'ok'] : ['DIRECT — ROBOT UNREACHABLE', 'bad'];
-  else if (mode === 'direct') [txt, c] = ['NO DIRECT ADDRESS (--robot-lan) — VIA THE VM', 'bad'];
-  else [txt, c] = ['VIA THE VM', 'warn'];
+  else if (mode === 'direct') [txt, c] = ['NO DIRECT ADDRESS (--robot-lan) — VIA THIS COMPUTER (teleop server)', 'bad'];
+  else [txt, c] = ['VIA THIS COMPUTER (teleop server)', 'warn'];
   $('routeBig').textContent = txt; $('routeBig').className = 'route ' + c;
-  $('route').textContent = direct ? 'direct' : 'via the VM';
+  $('route').textContent = direct ? 'direct' : 'via this computer';
   $('route').className = c;
 }
 async function probe() {

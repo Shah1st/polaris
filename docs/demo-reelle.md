@@ -1,25 +1,53 @@
 # Démo réelle : marche à suivre (15 nov. 2026)
 
-Pour l'équipe sur place cet après-midi. **Rien de ce qui suit n'a encore tourné sur le vrai
-robot ni sur une vraie caméra** : les commandes ont été vérifiées sur la VM (`--help`, essais à
-blanc sur une photo, faux rover), pas sur le matériel. Ce qui n'a pas été vérifié est marqué
-*non vérifié*. Gardez toujours quelqu'un la main sur le Ctrl-C (voir « Arrêter »).
+Pour l'équipe sur place cet après-midi. **`lancer_overhead.py` (mission avec la caméra du
+dessus) n'a encore tourné ni sur le vrai robot ni sur une vraie caméra** : les commandes ont été
+vérifiées sur la VM (`--help`, essais à blanc sur une photo, faux rover), pas sur le matériel.
+Ce qui n'a pas été vérifié est marqué *non vérifié*. Ce qui a déjà roulé en vrai : section 1 bis.
+Gardez toujours quelqu'un la main sur le Ctrl-C (voir « Arrêter »).
 
 ## 1. Qui tourne où
 
 | Programme | Où | Pourquoi |
 |---|---|---|
 | Caméra du dessus (téléphone avec une appli caméra IP, ou caméra USB) | dans la salle, fixée au-dessus de l'arène, objectif vers le bas | c'est le « drone » |
-| `merging_map/lancer_overhead.py` (la mission) | **un portable sur le Wi-Fi de la salle**, le même réseau que le téléphone et le rover | il doit lire le flux du téléphone et parler au rover ; la VM Google Cloud ne peut pas ouvrir le téléphone sur le Wi-Fi de la salle |
+| `merging_map/lancer_overhead.py` (la mission) | **un portable sur le Wi-Fi de la salle**, le même réseau que le téléphone et le rover, ou la VM par les tunnels du robot (section 1 bis) | il doit lire le flux du téléphone et parler au rover ; la VM ne voit le téléphone que par le tunnel 18092 |
 | `rover/rover_server.py` | sur le rover (RDK X5), service `polaris-rover-api` | seul programme qui parle à l'ESP32 |
 | `teleop/server.py --suivi` (page du jury, `/mission`) | le **même portable** que la mission | il lit le fichier `--suivi` écrit par la mission, en local |
 | `rover_mapper/perception_service.py` (option) | la VM (il faut le GPU) | voir l'étape 9 ; pas pour la première démo |
 
-Faire tourner la mission sur la VM demanderait un tunnel pour la caméra, par exemple depuis le
-portable `ssh -R 8170:<IP du téléphone>:8080 <vous>@<VM>` (le flux devient
-`http://127.0.0.1:8170/video` sur la VM), et le rover joint par son propre tunnel
-(`http://127.0.0.1:18080` sur la VM, hors ligne ce matin). Avec 160-700 ms d'aller-retour vers
-le robot et 0,5 s de retard vidéo, c'est plus lent et moins sûr : *non vérifié*, à éviter.
+## 1 bis. La mission sur la VM (ce qui a tourné le 15 nov.)
+
+La mission peut aussi tourner **sur la VM**. Le robot y garde deux tunnels SSH sortants :
+
+| Sur la VM | Quoi |
+|---|---|
+| `127.0.0.1:18080` | l'API du rover (le serveur de RBDRB, voir ci-dessous) |
+| `127.0.0.1:18091` | le serveur de capture de la caméra de profondeur D405 |
+| `127.0.0.1:18092` | réservé à la caméra du téléphone ; ouvert par `/home/romaindcrl/polaris-reel-run/robot_extra_tunnel.sh <IP du téléphone> <port>` |
+
+Scripts dans `/home/romaindcrl/polaris-reel-run` : `mission.sh essai` (`--dry-run`) puis
+`mission.sh vrai` (variables `MPP`, `VICTIME`, `MARQUEUR`, `CAMERA`, `EXTRA` : voir l'en-tête du
+script).
+
+- **Le lien est lent** : 1,3 à 4 s par requête (`GET /state`), et il a coupé deux fois quelques
+  minutes. Passer `--liaison-lente` (délai HTTP 8 s, liaison perdue seulement après 15 s sans
+  réponse, pas de `GET /state` avant la durée prévue du pas, une lecture par seconde). Avec
+  `mission.sh` : `EXTRA="--liaison-lente --delai-http 8"` (la dernière valeur l'emporte sur le
+  `--delai-http 2` du script, qui sinon reste prioritaire sur celui de `--liaison-lente`).
+  `--delai-liaison S` règle à part le délai sans réponse avant « liaison perdue ». Avec
+  `--delai-http 6` seul, `--delai-liaison` reste à 2 s : chaque réponse perdue devient
+  `LIAISON ROVER PERDUE` et une zone interdite de plus.
+- **Le robot fait tourner le serveur plus récent de RBDRB** : pas de `boot_id` ni de
+  `stop_count` dans `/state` pour l'instant (section 3.4) ; un STOP donné entre deux pas n'est
+  donc pas vu par la mission.
+- **Premier trajet autonome réel** (`polaris-reel-run/avance_esquive.py`) : caméra du rover
+  seule (service de perception sur la VM), odométrie comme position, sans caméra du dessus ;
+  environ 3,5 m en 20 pas en contournant des cartons, arrêté par l'opérateur. Il a fallu
+  `delai_liaison=10`, `periode=0.5`, 6 s de délai client, et donner à la perception le vrai
+  panoramique de la tourelle (-4,5°).
+- Le `lancer_overhead.py` complet (caméra du dessus + rover) n'a pas encore tourné : *non
+  vérifié*.
 
 ## 2. Installer sur le portable (pas de ROS)
 
@@ -122,8 +150,9 @@ curl -s http://<IP du rover>:8080/state
 | `stop_count` | nombre de STOP reçus (`POST /stop`, `/cmd {"T":0}`) depuis le démarrage du serveur ; la mission s'en sert pour voir un STOP entre deux pas. **Absent** = ancien serveur : ce STOP n'est pas vu (section 4) |
 | `loop_errors`, `link.handler_errors` | erreurs de la boucle de commande ; doivent rester à 0 |
 
-(Champs vérifiés sur `rover_server.py --sim` du dépôt ; la version du robot n'a jamais été
-comparée.)
+(Champs vérifiés sur `rover_server.py --sim` du dépôt. Le 15 nov., le robot fait tourner le
+serveur plus récent de RBDRB : `boot_id` et `stop_count` y sont **absents** ; la mission fait
+sans, et voit un redémarrage à la baisse de `odom.odometer` ou `link.rx_count`.)
 
 ### 3.5 Essai à blanc (`--dry-run`) : aucun POST ne part
 
@@ -222,6 +251,83 @@ ssh -N -L 8095:127.0.0.1:8095 <vous>@<VM>
 Mesurez d'abord la hauteur réelle de la caméra du rover (`--cam-height`) et regardez
 `/debug.jpg` avec une boîte à 0,5 m puis 1 m (rouge = obstacle, vert = sol). Une réponse de plus
 de 2 s est ignorée : le rover roule alors sur la seule carte du dessus, sans erreur.
+
+### 3.10 Rover seul : avancer en esquivant, d'une traite
+
+`merging_map/avancer_esquive.py` remplace `polaris-reel-run/avance_esquive.py` (section 1 bis) :
+le rover avance de `--distance` m droit devant en contournant ce que voit **sa** caméra, sans
+caméra du dessus (l'odométrie sert de position). Fait pour le tunnel lent : un seul
+`POST /path` de quelques points par segment (1 m au plus, seulement sur des cases vues libres),
+pas de `GET /state` avant la durée prévue du segment, une image après chaque arrêt, un tour de
+tourelle (-40°, +40°, 0) seulement au départ ou quand le chemin est fermé ou entre dans des
+cases pas vues. Sur la VM, tunnel du robot en marche :
+
+```bash
+# le service de perception lit lui-même le snapshot brut du robot et le redresse (--calib)
+/home/romaindcrl/rovermap/.venv/bin/python rover_mapper/perception_service.py \
+    --source http://127.0.0.1:18080/snapshot.jpg --calib teleop/calib/plumbline.json \
+    --rect-fov 100 --fov 100 --cam-height 0.22 --range 1.5 --port 8095
+# d'abord à blanc : perception et premier segment, AUCUN POST
+python merging_map/avancer_esquive.py --rover http://127.0.0.1:18080 \
+    --perception http://127.0.0.1:8095 --distance 3 --essai
+# pour de vrai, la main sur Ctrl-C, page /mission avec --suivi
+python merging_map/avancer_esquive.py --rover http://127.0.0.1:18080 \
+    --perception http://127.0.0.1:8095 --distance 3 --suivi /tmp/suivi.json
+```
+
+Variante `--instantane http://127.0.0.1:18080/snapshot.jpg` : le pilote télécharge lui-même
+l'image du rover (une requête par regard, `--delai-http`) et l'envoie au service par
+`POST /obstacles` ; le service ne contacte alors pas le robot (il garde `--calib`).
+Réglages par défaut pour le tunnel : `--delai-http 8`, `--delai-liaison 15` (une réponse lente
+n'est pas une coupure), `--periode 1`, `--delai-perception 12` (le service attend jusqu'à
+10 s le snapshot), `--attente-liaison 180` (coupure : on attend le rover sans rien renvoyer),
+`--vitesse 0.12`, `--segment 1`, `--demi-largeur 1.5`. Fin : `arrive`, `bloque`,
+`perception_indisponible`, `arret_operateur`, `erreur_rover` ou `max_segments`, puis le trajet
+et un bilan (m roulés, segments, requêtes au rover, images, s/m). Toute fin, Ctrl-C (même deux
+fois), SIGTERM et SIGHUP envoient `/stop`.
+
+Mesuré sur bancs (VM, 15 nov.), pas sur le robot :
+- faux serveur rendu lent (1,5 s par requête, une réponse sur 10 perdue avec 8 s d'attente,
+  1,5 s par image), 5 m avec une boîte sur la ligne : arrivé en 6 segments et un tour de
+  tourelle, 28 requêtes au rover (5,6 par m, 3 ou 4 par segment) plus 9 images, soit 7,5
+  requêtes par m en tout, 118 s, **24 s/m**. L'ancienne boucle par pas sur le même faux :
+  170 requêtes (35 par m, sans les images), 453 s, 92 s/m. Le vrai essai du 15 nov. : environ
+  37 s par pas de 22 cm, soit environ 168 s/m ;
+- vrai `rover_server.py` avec un ESP32 simulé, 2,2 m à 0,25 m/s, boîte à 1 m : arrivé en
+  3 segments, 19 requêtes au rover et 6 images, 16 s (7,5 s/m), jamais à moins de 0,20 m
+  de la boîte (rayon 0,155 m) ;
+- arrêts testés : STOP pendant un segment, conduite au clavier entre deux segments (odomètre),
+  redémarrage du serveur entre deux segments (rattrapé) ou pendant un segment
+  (`erreur_rover`, rover arrêté), coupure de 2 min, perception absente (le rover ne bouge pas),
+  mur sur tout le couloir (`bloque`).
+
+*Non vérifié sur le robot* : rien de ce pilote n'a roulé en vrai. À regarder au premier essai :
+la durée prévue d'un segment (longueur / vitesse, pivots à 1 rad/s, + 0,5 s) contre la vraie ;
+`gimbal.moving` pendant le tour de tourelle (sur le serveur de RBDRB, il ne suit que la conduite
+au clavier) ; la perception DA3 depuis le vrai point de vue du rover (elle masque derrière les
+obstacles : plus de tours de tourelle qu'au banc) ; les flancs du rover peuvent passer sur des
+cases pas vues en bord de champ ; un chemin qui part derrière le rover finit en `bloque`. Un
+redémarrage du serveur juste entre le `GET /state` et le `POST /path` d'un segment n'est vu
+qu'à la fin de la durée prévue (environ 9 s pour 1 m).
+
+Pendant une course :
+- **Ne pas toucher au bouton Reset (odométrie) ni au recalibrage du gyroscope de la page du
+  rover.** Le pilote ne lit pas l'état pendant la durée prévue d'un segment (environ 9 s pour
+  1 m) : un serveur qui n'arrête pas le pas avant `/reset_odom` (celui du robot le 15 nov., à
+  vérifier) poursuit jusque-là la cible de l'ancien repère depuis la nouvelle origine, dans
+  une direction jamais vue (environ 1 m au banc). Le `rover/rover_core.py` du dépôt arrête le
+  pas d'abord (`reset_odometry`, `recalibrate_gyro`) : le déployer (section 6) avant le premier
+  essai de ce pilote ou de `--liaison-lente`.
+- **Arrêter `sim/fusion_reelle.py` et fermer le flux du tableau de bord** : sur le même tunnel,
+  la fusion lit `GET /state` toutes les 2 s et le service de perception refait presque à chaque
+  tour un snapshot de 72 ko, soit plus que les quelque 7,5 requêtes par mètre du pilote.
+- Ce que le pilote fait seul : un segment fini `stalled`, `timeout` ou arrêté par le garde-fou
+  d'inclinaison (`tilt: ...`) marque un obstacle et une zone interdite devant le rover, puis il
+  passe à côté ; au 2e déclenchement du garde-fou, `bloque`. Après une coupure : un STOP, une
+  commande d'un autre client ou une conduite au clavier pendant la coupure donnent
+  `arret_operateur`, un redémarrage du serveur après l'envoi du segment `erreur_rover`, et un
+  choc pendant la coupure est marqué. Une réponse perdue au `POST /path` n'est renvoyée que si
+  un `GET /state` dit que le serveur ne l'a pas reçu.
 
 ## 4. Arrêter
 

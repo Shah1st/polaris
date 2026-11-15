@@ -4,6 +4,7 @@ For a camera looking straight down. The map origin is the image's bottom-left co
 right and y up. Used by `segment_image` (photos) and `drone.OverheadDrone` (the map fusion).
 """
 
+import dataclasses
 import logging
 from dataclasses import dataclass
 
@@ -78,6 +79,17 @@ class OverheadSettings:
     rover_size: tuple[float, float] = (0.20, 0.23)
     rover_size_tolerance: float = 0.2
 
+    def per_metre(self, image_size: tuple[int, int] | None = None) -> float:
+        """What the lens says, without any height: metres on the floor per pixel, per metre of
+        camera height, for an image of this size. The scale is this times the height."""
+        lens_only = dataclasses.replace(self, metres_per_pixel=None, camera_height=1.0)
+        return lens_only.scale(image_size)
+
+    def height_for(self, scale: float, image_size: tuple[int, int] | None = None) -> float:
+        """The camera height at which this lens gives `scale` metres per pixel on the floor:
+        the height found once the scale was measured on the rover."""
+        return scale / self.per_metre(image_size)
+
     def scale(self, image_size: tuple[int, int] | None = None) -> float:
         """Ground size of one pixel of an image of `image_size` (width, height) pixels.
 
@@ -117,10 +129,11 @@ def marker_scale(image: np.ndarray, settings: OverheadSettings) -> float | None:
     """Ground size of one pixel, read off the rover's marker: its known side over its side in
     pixels. None when there is no `marker_size`, no marker id, or the marker is not seen.
 
-    The marker sits `marker_height` above the floor, closer to the camera, so it looks larger
-    than it would on the floor: the result is brought down to the floor with the camera
-    height, which only needs to be roughly right for that (10 cm of error on 1.8 m changes
-    the scale by 0.3 % for a marker 10 cm up).
+    The camera height is not used. The marker sits `marker_height` above the floor, closer
+    to the camera, so it looks larger than it would on the floor. One pixel covers a fixed
+    angle (`OverheadSettings.per_metre`, from the lens), so the floor is `marker_height`
+    times that further away: scale on the floor = scale at the marker + per_metre x
+    marker_height.
     """
     if settings.marker_size is None or settings.rover_marker_id is None:
         return None
@@ -129,8 +142,8 @@ def marker_scale(image: np.ndarray, settings: OverheadSettings) -> float | None:
         return None
     sides = np.linalg.norm(corners - np.roll(corners, -1, axis=0), axis=1)
     at_marker = settings.marker_size / float(sides.mean())
-    height = settings.camera_height
-    return at_marker * height / max(height - settings.marker_height, 1e-6)
+    size = (image.shape[1], image.shape[0])
+    return at_marker + settings.per_metre(size) * settings.marker_height
 
 
 @dataclass(frozen=True)

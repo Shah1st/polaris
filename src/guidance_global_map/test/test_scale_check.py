@@ -1,6 +1,14 @@
+import math
+
 import pytest
 
-from guidance_global_map.scale_check import Seen, find_mover, scale_correction, size_matches
+from guidance_global_map.scale_check import (
+    Seen,
+    find_mover,
+    frame_from_move,
+    scale_correction,
+    size_matches,
+)
 
 BOX = Seen(1.0, 1.0, 0.27, 0.36)
 PACK = Seen(0.4, 0.8, 0.13, 0.15)
@@ -41,3 +49,20 @@ def test_size_check_at_the_corrected_scale() -> None:
     assert size_matches(pack_seen_too_large, 1.0, (0.20, 0.23))
     assert not size_matches(pack_seen_too_large, 1 / 1.55, (0.20, 0.23))
     assert size_matches(Seen(0, 0, 0.31, 0.36), 1 / 1.55, (0.23, 0.20))
+
+
+def test_one_move_gives_the_rotation_and_the_scale() -> None:
+    # The camera's frame is turned 90 degrees from the odometry's and its scale is 1.25 times
+    # too large: the rover drove 0.20 m along +x and the camera saw 0.25 m along -y.
+    rotation, correction = frame_from_move((1.0, 1.0), (1.0, 0.75), (20.0, 20.0), (20.2, 20.0))
+
+    assert rotation == pytest.approx(math.pi / 2)
+    assert correction == pytest.approx(0.8)
+
+
+def test_the_rotation_does_not_depend_on_which_way_the_rover_faces() -> None:
+    forwards = frame_from_move((0.5, 0.5), (0.7, 0.5), (3.0, 3.0), (3.0, 3.2))
+    # the same displacement, driven in reverse: nothing changes
+    assert forwards == pytest.approx((math.pi / 2, 1.0))
+    back = frame_from_move((0.7, 0.5), (0.5, 0.5), (3.0, 3.2), (3.0, 3.0))
+    assert back == pytest.approx((math.pi / 2, 1.0))

@@ -65,8 +65,18 @@ driving through `rover/rover_server.py` next to the mapper's live 3D view (see `
 
 ## Dev environment
 
-The Docker image is based on the official `ros:jazzy` image and adds Nav2, robot_localization,
-cv_bridge, image_publisher, OpenCV, pytest and ruff.
+The Docker image is based on the official `ros:jazzy` image and adds cv_bridge, image_publisher,
+OpenCV, matplotlib, pytest and ruff. Nav2 and robot_localization are left out by default, since
+nothing uses them yet and they are most of the download: add `--build-arg WITH_NAV2=1` to
+`docker build` to get them.
+
+**Fast test loop** (about half a minute, no `colcon build`): the plain-Python tests of the
+overhead camera, the map fusion and the dashboard's maps.
+
+```bash
+docker run --rm -v "$PWD":/ws polaris-dev scripts/test_fast.sh           # from the host
+scripts/test_fast.sh -k scale                                            # in the container
+```
 
 **VS Code:** open the folder and run *Dev Containers: Reopen in Container*. The first start runs
 `rosdep install` and `colcon build`.
