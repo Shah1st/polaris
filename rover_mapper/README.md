@@ -62,3 +62,27 @@ Lanceur : `scripts/live_iphone.command`, à ouvrir avec l'app Terminal de macOS,
 - `rovermap/viewer.py` : scène 3D (viser), modèle du rover et caméra de suivi.
 - `scripts/fake_rover.py` : simule le flux du rover à partir d'une vidéo.
 - `scripts/eval_tum.py` : mesure de précision sur un jeu de données TUM (`0` comme pas d'images = rythme réel).
+
+## Perception du rover pour la mission (une seule image, sans suivi)
+
+`perception_service.py` donne à `merging_map` (interface 4 : `merging_map/perception_rover.py`, `percevoir_http(url)`) les cases de 5 cm devant le rover : 1 obstacle, 0 sol vu, -1 inconnu. À chaque demande : dernière image de la caméra → DA3 sur cette seule image → plan du sol (RANSAC, moitié basse) → échelle donnée par `--cam-height` → repère rover (x devant = axe optique projeté sur le sol, y à gauche, z depuis le sol) → obstacle = points entre `--band-low` 4 cm et `--band-high` 40 cm au-dessus du sol ; ce qui est derrière un obstacle ou hors du champ reste -1 (un 0 effacerait les obstacles du drone). Pas de suivi : celui du mappeur n'a pas tenu sur le vrai rover.
+
+```bash
+/home/romaindcrl/rovermap/.venv/bin/python rover_mapper/perception_service.py \
+    --source http://127.0.0.1:8082/video_rect --cam-height 0.22 --fov 100 --port 8095
+# GET /obstacles (JSON, 503 sans image de moins de 2 s ; ?fresh=1 attend une image arrivée
+# après la demande), GET /debug.jpg (image avec cases rouges/vertes), GET /health
+```
+
+`--fov 100` : `/video_rect` est par construction une image sténopé centrée de 100° (option `--rect-fov` du dashboard) ; sans `--fov`/`--k`, les intrinsèques estimées par DA3 sont utilisées. Liaison 127.0.0.1 seulement.
+
+**Mesures en simulation** (`scripts/eval_perception.py`, 30 images de la forêt enregistrée + 30 de l'appartement, même classification appliquée à la profondeur exacte, portée 2 m, cases à 1 case près ; inférence 0,08-0,1 s sur la L4 partagée, 0,57 s par requête dans le service en direct) :
+
+| | appartement, K connue | appartement, K de DA3 | forêt, K connue | forêt, K de DA3 |
+|---|---|---|---|---|
+| échelle (profondeur / vérité, 0-1 m) | 0,98 | 1,19 | 0,91 | 1,17 |
+| obstacles 0,5-1 m : précision / rappel | 0,71 / 0,77 | 0,67 / 0,61 | 0,35 / 0,59 | 0,47 / 0,80 |
+| obstacles 1-1,5 m : précision / rappel | 0,49 / 0,60 | 0,45 / 0,36 | 0,22 / 0,36 | 0,28 / 0,37 |
+| cases « libres » qui sont des obstacles, 0,5-1 m / 1-1,5 m | 0,2 % / 1,9 % | 1,4 % / 3,8 % | 0,5 % / 1,8 % | 0,5 % / 1,7 % |
+
+À la case exacte, la précision tombe à 0,46 (appartement, 0,5-1 m, K connue) : les positions sont justes à ~5 cm près, pas mieux. Au-delà de 1-1,5 m le rappel s'effondre : portée par défaut 1,5 m. En intérieur, la K connue est meilleure (échelle et obstacles) ; en forêt, DA3 avec sa propre K l'est. **Jamais essayé avec la caméra du vrai rover.** À vérifier d'abord : la hauteur réelle de l'objectif (elle fixe l'échelle), la tourelle de niveau (le plan du sol absorbe une inclinaison, mais l'axe x suit l'axe optique : un panoramique non nul tourne toute la vue), `/debug.jpg` devant une boîte posée à 0,5 m et 1 m, et si l'avant du rover est dans l'image (`--min-range`).
