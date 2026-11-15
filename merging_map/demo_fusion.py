@@ -16,15 +16,12 @@ Lancer :  python demo_fusion.py      (produit demo_fusion.png)
 import math
 
 import cerveau
-import matplotlib
-
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 import numpy as np
 from fusion_carte import INCONNU, LIBRE, OBSTACLE, SRC_DRONE, SRC_ROVER, CarteFusion, decouper
-from matplotlib.lines import Line2D
-from matplotlib.patches import Patch, Rectangle
 from robot import RobotOdometrie
+
+# matplotlib n'est importe que pour dessiner la figure (dessiner, main) : la simulation et
+# ses tests marchent sans lui.
 
 ZONE_M = 25.6
 RES = 0.05
@@ -343,6 +340,8 @@ def dessiner(
     point=None,
     chemin_style='-',
 ):
+    from matplotlib.patches import Rectangle
+
     ax.imshow(image(g), origin='lower', extent=g.etendue(), interpolation='nearest')
     for k in tuiles:
         x0, y0, cote = carte.rect_tuile(k)
@@ -462,6 +461,13 @@ def scenario_2():
 
 
 def main():
+    import matplotlib
+
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
     c1, d1, v1, s1 = scenario_1()
     c2, d2, v2, s2 = scenario_2()
 

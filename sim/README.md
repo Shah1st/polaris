@@ -77,3 +77,33 @@ ranges = w.ranges()                    # distance to obstacles at rover height, 
 
 World = `map`: metres, z up, origin at the room centre, floor at z = 0. Camera poses use OpenCV
 axes (x right, y down, z forward). Rover heading 0 = +x.
+
+## Live map fusion on the forest simulation
+
+`sim/fusion_live.py` runs `merging_map` (`CarteFusion`) on what a running forest simulator
+gives, about once per second, and serves the result on `127.0.0.1:8094` (pictures and a JSON
+status; on the team VM the teleop dashboard shows them on its `/sim` page):
+
+* **drone**: the simulator's `/grid/overhead.png` (what the drone sees from 18 m, unknown under
+  the canopy), cut with `decouper()` into 5 cm drone tiles (`--drone-level 4`);
+* **rover**: one `/snapshot` per cycle, turned into world points by one source at a time:
+  the rover camera's exact depth cut at `--range` m (default 2 m, the range in
+  `merging_map/README.md`), or the simulated D405 (`--source d405`); a third slot for the rover
+  mapper's DA3 estimate is not connected yet. Points are classified per 5 cm cell
+  (`fusion_feed.classify_scan`: 5-30 cm above the local ground = obstacle, higher = ignored,
+  ground expected but not seen = drop) and cut with `decouper()` into rover tiles;
+* **decision**: `decider()` towards the scene's goal, re-run when `chemin_valide()` fails on the
+  next 3 m, when the rover is 1 m off the path, or every 10 s. The simulated rover drives its
+  own route: nothing is sent to it.
+
+```bash
+python sim/fusion_live.py --sim http://127.0.0.1:5050 --scene <forest scene dir with maps.npz>
+pytest sim/test_fusion_feed.py
+```
+
+Low vegetation is driven through: a point in the 5-30 cm band whose colour is green (excess
+green above `--vegetation`, default 0.15, 0 turns it off) does not make an obstacle. On the
+recorded forest route this removes 84 % of the points wrongly taken for obstacles and 3 % of
+those on real ones. What is still marked and that the simulator's truth calls passable is
+mostly dead branches and rocks it draws without collision: a real rover would hit those, so
+they stay obstacles.

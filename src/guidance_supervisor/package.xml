@@ -8,6 +8,11 @@
   <license>TODO</license>
 
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <!-- merging_map_node imports merging_map/ (plain Python, at the repo root) and numpy -->
+  <exec_depend>python3-numpy</exec_depend>
   <!-- TODO(supervisor): add as the logic lands: geometry_msgs, nav2_msgs, guidance_interfaces -->
 
   <test_depend>python3-pytest</test_depend>

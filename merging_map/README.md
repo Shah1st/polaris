@@ -8,10 +8,11 @@ and decides what to do when the rover is blocked.
 | `fusion_carte.py` | The map: tile storage, fusion, A*, blocking decisions |
 | `cerveau.py` | The brain: the mission loop (decide, drive, look, handle link losses) |
 | `robot.py` | The interface between the brain and a rover, plus shared odometry bookkeeping |
+| `mission_settings.py` | The mission's distances in two sets: `FIELD` (default) and `ARENA` (2.4 m demo) |
 | `demo_fusion.py` | Simulated world and `Simu`, the simulated robot (needs `numpy` and `matplotlib`) |
-| `rover_reel.py` | `RaspRoverReel`, the real RaspRover (**not yet tested on the robot**) |
+| `rover_reel.py` | `RaspRoverReel`, the real RaspRover through its on-board server (**not yet tested on the robot**) |
 | `demo_fusion.png` | Output of the demo |
-| `test_*.py` | pytest tests (map, simulation, real-rover adapter against a fake rover) |
+| `test_*.py` | pytest tests (map, simulation, real-rover adapter against a fake rover server) |
 | `conftest.py` | Lets pytest import the modules from this folder |
 | `dashboard/` | Replay dashboard (see below) |
 
@@ -23,8 +24,8 @@ and decides what to do when the rover is blocked.
            +-------------+--------------+
            |                            |
    demo_fusion.Simu              rover_reel.RaspRoverReel
-   (simulated world,             (ESP32 JSON commands through the Pi web app,
-    tests, dashboard)             odometry, drone position, camera, drone zooms)
+   (simulated world,             (steps sent to the rover's own server, which drives:
+    tests, dashboard)             rover/rover_server.py, branch rover-teleop)
 ```
 
 The brain only uses the `robot.Robot` interface: `position()`, `incertitude()`,
@@ -35,24 +36,120 @@ simulation and the real robot.
 ```python
 from cerveau import mission
 from fusion_carte import CarteFusion
-from rover_reel import RaspRoverReel, envoyeur_http
+from rover_reel import RaspRoverReel, client_http
 
 carte = CarteFusion()
 rover = RaspRoverReel(
     carte,
-    envoyer=envoyeur_http('http://192.168.50.5:5000'),  # the Pi web app
-    lire_odometrie=...,   # -> (odl, odr) in metres, from T:1001 (small script on the Pi)
-    position_drone=...,   # -> (x, y, heading) of the rover's ArUco marker, or None
-    percevoir=...,        # -> (matrix -1/0/1, x0, y0): what the rover camera sees
-    drone=...,            # object with disponible() and zoomer(tile) -> list of tiles
+    client_http('http://<rover IP>:8080'),  # rover/rover_server.py on the rover (RDK X5)
+    position_drone=...,  # -> (x, y, heading or None) of the rover seen from above, or None
+    percevoir=...,  # -> (matrix -1/0/1, x0, y0): what the rover camera sees
+    drone=...,  # object with disponible() and zoomer(tile) -> list of tiles
 )
 mission(rover, carte, depart=(3.0, 3.0), victime=(8.0, 20.0))
 ```
 
-`RaspRoverReel` already handles the motor commands (`T:13` at 5 Hz, stop `T:1`, pan-tilt
-`T:133`), wheel odometry, segment following and bump detection. What remains to plug in is
-listed at the top of `rover_reel.py`: drone position, odometry reading, camera perception,
-drone control, and the on-board safety program for rover link losses.
+**Who does what.** The brain decides where to go; the rover's own server (RBDRB's
+`rover/rover_server.py`, branch `rover-teleop`) decides how. Each step of the path (about
+30 cm) goes to the server with `POST /path`, in the frame of its odometry (wheels + gyro);
+the server follows it and stops. It needs the server of the branch `rover-teleop`:
+`POST /path` came with commit 5a7277d and is not in `main` yet (the adapter says so if it
+gets a 404).
+
+* **Two frames.** The adapter keeps the transform map <- odometry (rotation + translation).
+  It is corrected only when the rover has **stopped**, on an image taken after the stop;
+  while the rover moves, the position comes from the odometry. A slow camera therefore no
+  longer makes false bumps.
+* **Heading.** From the camera if it gives one; otherwise measured from a motion seen by both
+  the camera and the odometry (a 15 cm straight line before the first step, then refined at
+  every stop).
+* **Bumps.** `stalled` from the server (wheels not turning), or wheels that spun while the
+  camera saw the rover stay in place.
+* **Links.** Only 2 s without any answer (`delai_liaison`) means "rover unreachable": a few
+  answers lost on the Wi-Fi do not count, the server keeps driving meanwhile. An HTTP error
+  (400, 404) raises `ServeurRoverError` instead of starting the recovery. When the link is
+  really lost, the server finishes its current step and stops: there is no on-board return
+  program, the brain waits for the link to come back.
+* **Small arena:** on the field, a real cut (2 s or more) makes the brain mark a 1.5 m no-go
+  zone. In the 2.4 m arena that blocks almost everything (with the fake server, a 3 s cut
+  ended the mission far from the victim), so the arena uses its own settings, without any
+  no-go zone (see "Field and arena settings" below).
+* **Measured against the real server** in simulation (`rover_server.py --sim`, slope drift
+  0.1 rad/s): the camera in a frame rotated by 30 degrees and shifted, taking an image every
+  second on its own clock (so up to 1 s late), 1 cm noise, no heading. Arrived around a box,
+  no false bump, 1 to 2 cm position error at each stop, 1 to 5 cm odometry drift during a
+  step. That run checks the API, the frames and the slow camera; bumps (`stalled`, spinning
+  wheels) and link losses are only tested against the fake server (`test_rover_reel.py`).
+  The previous adapter, which trusted every image, made 4 false bumps and 35 to 54 cm of
+  error with a camera at one image a second (in its own simulation).
+* **The adapter relies on `/state` fields** that the rover README does not list:
+  `ctrl.mode`, `ctrl.queued`, `ctrl.current`, `ctrl.history[0].status`, `odom.x`, `odom.y`,
+  `odom.heading_deg`, `odom.gyro_ready`, `link.connected`. Changing them breaks the brain.
+* Not yet run on the real robot. Its first move, when the camera gives no heading, is a
+  15 cm straight line in an unknown direction.
+
+## Field and arena settings
+
+The distances of a mission come from `mission_settings.py`, in two sets.
+`mission(..., settings=FIELD)` is the default (the simulation, the dashboard, a real mission
+outdoors); `lancer_overhead.py` uses `ARENA` for the 2.4 m arena of the demo. Only what
+depends on the size of the place changes; the rover and its sensors are the same:
+
+| Setting | `FIELD` | `ARENA` | Why |
+|---|---|---|---|
+| `step`, `careful_step` | 0.3, 0.15 m | same | the rover |
+| `drone_wait_max` | 300 s | same | time, not distance |
+| `uncertainty_budget` | 0.6 m | 0.15 m | position error allowed without the drone, vs the passages (30 to 40 cm in the arena) |
+| `link_backoff` | 0.5 m | 0 | rover link lost: how far back before the last connected point |
+| `no_go_radius` | 1.5 m | 0 | outdoors a link loss comes from a place (behind a ridge); in a room it is a Wi-Fi glitch: no zone, just plan again |
+| `check_horizon` | 3 m | 1 m | path ahead checked against new obstacles after each step |
+| `inspect_reserve`, `inspect_max_distance` | 0.35, 1.2 m | 0.15, 0.6 m | where the rover stops to look at an obstacle itself (no drone) |
+
+The `FIELD` values are the ones used so far: the simulation behaves exactly as before. The
+`ARENA` values are orders of magnitude, to check on the first test drive with the real robot.
+The rover radius and the planning cell size stay with the map (`REGLAGES_PETITE_ZONE`).
+
+## With the overhead camera (branch `overhead-camera`)
+
+The overhead camera pipeline (`guidance_global_map.drone.OverheadDrone`) plays the drone.
+`lancer_overhead.py` wires it to the rover and runs a mission:
+
+```bash
+PYTHONPATH=merging_map:src/guidance_calib:src/guidance_global_map:src/guidance_rover_pose \
+    python merging_map/lancer_overhead.py --image overhead.jpg --victime 1.2 0.9 \
+    --rover http://<rover IP>:8080
+```
+
+* **The adapter is used as asked**: first survey from `camera.tiles()`, rover position from
+  `camera.rover_pose` (with or without a heading), `drone=camera`, `zone=camera.zone()`.
+  The start defaults to where the camera sees the rover.
+* **Small-area settings** (`REGLAGES_PETITE_ZONE`): `CarteFusion(niveau_plan=4,
+  rayon_robot=0.155)`, i.e. 5 cm planning cells, and `tolerance=0.15`. `rayon_robot` is the
+  radius of the circle around the whole rover: hypot(0.20, 0.23) / 2 = 0.152 m for the
+  0.20 x 0.23 m rover, rounded up. The 0.115 in the overhead camera's doc is the half-length,
+  which let a corner of the rover hit an obstacle when turning on the spot.
+  Provisional until a test drive gives real numbers.
+* **Frame**: the camera's, origin at the image's bottom-left corner, x right, y up, metres.
+  Start and goal outside the camera's view are refused with a message saying so; tiles from
+  the rover camera must use the same frame.
+* Needs the `overhead-camera` modules on `PYTHONPATH` and `opencv-contrib-python`. Tested here
+  only with a fake camera that has the same methods (`test_lancer_overhead.py`): the real
+  `OverheadDrone` has not been run with it yet.
+* `--image` is a still photo, read again for every image: it does not see the rover move, so
+  it is only good to try the chain. A real mission needs the live camera.
+
+**ROS node** (`src/guidance_supervisor`, `merging_map_node`): subscribes to `/map` and
+`/rover/pose_overhead` (and `/goal_pose`, or the `goal_x` / `goal_y` parameters), runs the
+fusion's planner about once a second and publishes `/fusion/map` (merged `OccupancyGrid`),
+`/fusion/plan` (`nav_msgs/Path`) and `/fusion/decision` (JSON). It plans; it does not drive
+the rover. The conversion logic is in `fusion_bridge.py` (no ROS, tested with plain pytest);
+the node finds `merging_map/` by itself in the repo, or through `MERGING_MAP_PATH`.
+
+```bash
+ros2 run guidance_supervisor merging_map_node --ros-args -p goal_x:=1.2 -p goal_y:=0.9
+```
+
+The node itself has not been run: it needs the ROS container.
 
 ```bash
 cd merging_map
@@ -189,7 +286,7 @@ In the simulation: `Simu(..., coupures=[(t0, t1)])` cuts the link (`t1=None`: fo
 
 If the computer can no longer talk to the rover (a radio dead zone), nobody sends it orders
 any more, so the way back has to be done **by the rover itself**: a small safety program on
-the Pi, not the whole module. The drone keeps seeing the rover meanwhile, so the computer
+the rover's computer (RDK X5), not the whole module. The drone keeps seeing the rover meanwhile, so the computer
 still knows where it is.
 
 1. No order from the computer for 1 s: the rover records the exact moment and the **last point
@@ -197,15 +294,17 @@ still knows where it is.
 2. It drives back along its own trace to 50 cm before that point; the link comes back.
 3. It sends what it saw during the cut. The computer marks the area where the link was lost
    as a **no-go zone** (`carte.interdire_zone(x, y, r)`: a circle of 1.5 m just past that
-   point). The A\* treats it like an obstacle, but it stays out of the obstacle tiles, so the
+   point; none with the `ARENA` settings, where a lost link is a Wi-Fi glitch). The A\* treats it like an obstacle, but it stays out of the obstacle tiles, so the
    drone does not try to zoom on it and it can be removed later (radio relay).
 4. The module plans again with the global map and the drone. If the new path enters the dead
    zone somewhere else, the same thing happens and the zone is mapped bit by bit.
 
 In the simulation: `Simu(..., zones_blanches=[(x, y, r)])`; `monde_6()` is the scenario.
 
-**Still to do on the real robot:** the on-board safety program (watchdog on the Pi: record the
-odometry trail and the link state, and drive back on it when the computer goes silent).
+**Still to do on the real robot:** the on-board safety program (a watchdog in the rover's
+server, `rover/rover_server.py`: record the odometry trail and the link state, and drive back
+on it when the computer goes silent). Today that server finishes its current step and stops,
+and the brain waits for the link to come back (`attendre_retour_embarque`).
 
 When no path exists, the module asks: "if the obstacles the drone only saw from far away were
 actually passable, where would I go?" It then asks the drone to zoom on exactly those tiles. If
@@ -215,8 +314,12 @@ the alert.
 ## Tests and lint
 
 ```bash
-pytest merging_map                     # needs numpy (also run by a plain `pytest` from the root)
-ruff check merging_map && ruff format --check merging_map
+pytest merging_map                     # numpy only; matplotlib is needed only for the figure
+PYTHONPATH=src/guidance_supervisor pytest src/guidance_supervisor/test/test_fusion_bridge.py
+ruff check . && ruff format --check .
 ```
+
+Outside the ROS container, run `pytest merging_map` rather than a bare `pytest` at the root,
+which stops on the ROS packages.
 
 Code comments and identifiers are in French.

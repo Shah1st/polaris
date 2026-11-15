@@ -370,11 +370,27 @@ def test_gimbal_moves_while_held_and_respects_limits() -> None:
     assert g.pan == pytest.approx(90, abs=5) and g.tilt == pytest.approx(90, abs=5)
     assert all(c['T'] == 133 for _, c in sent)
     assert len(sent) <= 11  # at most gimbal_hz commands per second
-    # The key is released: the camera stops, nothing more is sent.
-    for _ in range(20):
+    # The key is released (rate 0 sent at once): the camera stops, nothing more is sent.
+    g.set_rate(0, 0, t)
+    pan = g.pan
+    for _ in range(5):
         t += 0.05
         cmd = g.step(t, 0.05)
-    assert cmd is None
+    assert cmd is None and g.pan == pan
+    # Key repeats lost (Wi-Fi): the camera stops after gimbal_timeout, not before.
+    g.set_rate(1, 0, t)
+    t0 = t
+    while t - t0 < cfg.gimbal_timeout - 0.1:
+        t += 0.05
+        g.step(t, 0.05)
+    assert g.pan > pan
+    for _ in range(10):
+        t += 0.05
+        g.step(t, 0.05)
+    stopped = g.pan
+    t += 0.5
+    g.step(t, 0.5)
+    assert g.pan == stopped
     g.set_angles(500, -100)
     assert (g.pan, g.tilt) == (cfg.pan_max, cfg.tilt_min)
 
@@ -404,3 +420,131 @@ def test_rover_sends_gimbal_commands_to_the_board() -> None:
         assert (board.pan, board.tilt) == (-45, 20)
     finally:
         rover.close()
+
+
+# -- path following -------------------------------------------------------------------------
+
+
+def _seg_dist(p, a, b) -> float:
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    n2 = dx * dx + dy * dy
+    t = 0.0 if n2 == 0 else max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / n2))
+    return math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
+
+
+def follow(points, drift: float = 0.0, limit: float = 60.0, **step) -> tuple[Sim, float, float]:
+    """Follow a local path; returns (sim, true max deviation, true end miss) in metres."""
+    s = Sim(Config(dist_scale=0.98), yaw_drift=drift)  # dist_scale = the board's ground_ratio
+    s.run(2.5)
+    poly = [(0.0, 0.0)] + [tuple(p) for p in points]
+    s.start(Step.path(points, **step))
+    worst = 0.0
+    end = s.t + limit
+    while s.t < end:
+        s.run(0.05)
+        here = (s.board.x, s.board.y)
+        worst = max(
+            worst, min(_seg_dist(here, a, b) for a, b in zip(poly, poly[1:], strict=False))
+        )
+        if s.ctrl.mode == 'idle' and not s.ctrl.queue:
+            break
+    return s, worst, math.dist((s.board.x, s.board.y), poly[-1])
+
+
+CIRCLE = [
+    [0.5 * math.sin(k * math.pi / 18), 0.5 - 0.5 * math.cos(k * math.pi / 18)]
+    for k in range(1, 37)
+]
+SQUARE = [[0.6, 0.0], [0.6, 0.6], [0.0, 0.6], [0.0, 0.0]]
+
+
+@pytest.mark.parametrize(
+    'name, points, max_dev',
+    [
+        ('straight', [[1.0, 0.0]], 0.02),
+        ('L shape', [[1.0, 0.0], [1.0, 0.5]], 0.035),
+        ('square', SQUARE, 0.035),
+        ('circle', CIRCLE, 0.035),
+        ('behind', [[-0.5, 0.0]], 0.035),
+    ],
+)
+def test_path_is_followed_closely(name, points, max_dev) -> None:
+    s, dev, miss = follow(points)
+    result = s.ctrl.history[0]
+    assert result['kind'] == 'path' and result['status'] == 'done'
+    assert dev < max_dev, f'{name}: {dev * 100:.1f} cm off the path'
+    assert miss < 0.035, f'{name}: ended {miss * 100:.1f} cm from the end point'
+
+
+def test_path_holds_on_a_slope() -> None:
+    s, dev, miss = follow(SQUARE, drift=0.1)
+    assert s.ctrl.history[0]['status'] == 'done'
+    assert dev < 0.04 and miss < 0.04
+
+
+def test_path_stops_and_pivots_on_corners_only() -> None:
+    from rover_core import PathFollower
+
+    square = PathFollower([tuple(p) for p in SQUARE], (0.0, 0.0), corner_deg=45)
+    assert len(square.corners) == 3  # the end point is not a corner
+    circle = PathFollower([tuple(p) for p in CIRCLE], (0.0, 0.0), corner_deg=45)
+    assert circle.corners == []  # 10 deg bends: followed as a curve
+    assert PathFollower([(1.0, 0.0), (1.0, 1.0)], (0.0, 0.0), corner_deg=0).corners == []
+
+
+def test_path_in_odometry_frame_and_in_a_sequence() -> None:
+    s = Sim(Config(dist_scale=0.98))
+    s.run(2.5)
+    s.start(
+        Step('turn', 90.0),
+        Step.path([[0.0, 0.5], [0.5, 0.5]], frame='odom'),  # absolute: ignores the turn
+        Step('move', 0.1),
+    )
+    s.run_until_idle(limit=60)
+    kinds = [h['kind'] for h in reversed(s.ctrl.history)]
+    assert kinds == ['turn', 'path', 'move']
+    assert all(h['status'] == 'done' for h in s.ctrl.history)
+    assert math.dist((s.board.x, s.board.y), (0.6, 0.5)) < 0.05
+
+
+def test_path_speed_and_progress_snapshot() -> None:
+    s = Sim(Config(dist_scale=0.98))
+    s.run(2.5)
+    s.start(Step.path([[2.0, 0.0]], speed=0.3))
+    s.run(4.0)
+    snap = s.ctrl.snapshot()
+    assert snap['mode'] == 'path' and snap['path']['length'] == pytest.approx(2.0)
+    assert 0.5 < snap['path']['done_m'] < 2.0
+    assert max(s.ctrl.v_cmd, s.odom.v) > 0.25  # cruising faster than the 0.2 default
+
+
+def test_path_can_be_stopped_or_replaced() -> None:
+    s = Sim()
+    s.run(2.5)
+    s.start(Step.path([[2.0, 0.0]]))
+    s.run(1.0)
+    s.start(Step.path([[0.0, 0.5]]))  # a new trajectory replaces the running one
+    assert s.ctrl.history[0]['status'] == 'replaced by a new command'
+    s.run(1.0)
+    s.ctrl.stop(s.t)
+    assert s.ctrl.history[0]['status'] == 'stopped'
+    s.run(0.5)
+    assert abs(s.board.wl) < 0.01 and abs(s.board.wr) < 0.01
+
+
+def test_path_aborts_when_the_rover_is_blocked() -> None:
+    s = Sim()
+    s.run(2.5)
+    s.board.blocked = True
+    s.start(Step.path([[1.0, 0.0]]))
+    s.run_until_idle()
+    assert s.ctrl.history[0]['status'] == 'stalled'
+
+
+def test_path_step_parsing() -> None:
+    step = Step.parse({'path': [[0.3, 0], [0.3, 0.4]], 'speed': 0.15})
+    assert step.kind == 'path' and step.value == pytest.approx(0.7) and step.speed == 0.15
+    assert Step.parse({'path': [[1, 1]], 'frame': 'odom'}).frame == 'odom'
+    for bad in ({'path': []}, {'path': [[1, 0]], 'frame': 'map'}, {'path': [[1, 0]], 'speed': 3}):
+        with pytest.raises(ValueError):
+            Step.parse(bad)
