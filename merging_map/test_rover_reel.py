@@ -1,5 +1,6 @@
-"""Tests of the real-rover adapter against a fake of RBDRB's rover server (rover/rover_server.py,
-branch rover-teleop), driven through the same requete() function as the HTTP client."""
+"""Tests of the real-rover adapter against a fake of RBDRB's rover server (rover/rover_server.py),
+driven through the same requete() function as the HTTP client. test_rover_reel_banc.py runs
+the adapter against the REAL server code with the simulated ESP32."""
 
 import json
 import math
@@ -10,7 +11,12 @@ import cerveau
 import numpy as np
 import pytest
 from fusion_carte import CarteFusion, decouper
-from rover_reel import RaspRoverReel, ServeurRoverError, angle_normalise, client_http
+from rover_reel import (
+    RaspRoverReel,
+    ServeurRoverError,
+    angle_normalise,
+    client_http,
+)
 
 
 class FauxServeur:
@@ -31,6 +37,8 @@ class FauxServeur:
     def __init__(self, x, y, cap, mur_x=None, mur='bloque', periode_camera=0.0, glissement=0.02):
         self.x, self.y, self.cap = x, y, cap  # truth, map frame
         self.ox = self.oy = self.oh = 0.0  # odometry
+        self.odometre = 0.0  # odom.odometer: total path length, only grows within one life
+        self.boot_id = None  # None: an older server without boot_id in /state
         self.mur_x, self.mur, self.glissement = mur_x, mur, glissement
         self.t = 0.0
         self.mode, self.tache, self.queued, self.history = 'idle', None, [], []
@@ -41,12 +49,33 @@ class FauxServeur:
         self.passe = [(0.0, x, y, cap)]  # truth over time, for the slow camera
         self.requetes = []
         self.trace = [(x, y)]
+        self.perdre_reponse = 0  # the next N POST answers are lost (the server got them)
+
+    def redemarrer(self, boot=3.0):
+        """rover_server.py restarts: odometry and history back to zero, the ESP32 boots and
+        calibrates its gyro for `boot` s. The rover itself does not move."""
+        self.ox = self.oy = self.oh = self.odometre = 0.0
+        self.mode, self.tache, self.queued, self.history = 'idle', None, [], []
+        self.gyro_pret_a = self.t + boot
+        if self.boot_id is not None:
+            self.boot_id += '+'
+
+    def stop_operateur(self):
+        """Someone presses STOP on the rover's page: POST /stop from another client."""
+        self._reponse('POST', '/stop', {})
 
     # ---- the HTTP API ------------------------------------------------------------------
     def requete(self, methode, chemin, corps=None):
         self.requetes.append((self.t, methode, chemin, corps))
         if not self.joignable or self.coupure[0] <= self.t < self.coupure[1]:
             return None
+        reponse = self._reponse(methode, chemin, corps)
+        if methode == 'POST' and self.perdre_reponse > 0:
+            self.perdre_reponse -= 1
+            return None
+        return reponse
+
+    def _reponse(self, methode, chemin, corps):
         if (methode, chemin) == ('GET', '/state'):
             return json.loads(json.dumps(self.etat()))  # a copy, like an HTTP answer
         if chemin == '/path':
@@ -67,13 +96,14 @@ class FauxServeur:
         return {'ok': True}
 
     def etat(self):
-        return {
+        etat = {
             'link': {'connected': self.connecte},
             'odom': {
                 'x': self.ox,
                 'y': self.oy,
                 'heading_deg': math.degrees(self.oh),
                 'gyro_ready': self.t >= self.gyro_pret_a,
+                'odometer': self.odometre,
             },
             'ctrl': {
                 'mode': self.mode,
@@ -82,6 +112,9 @@ class FauxServeur:
                 'history': [dict(h) for h in self.history],
             },
         }
+        if self.boot_id is not None:
+            etat['boot_id'] = self.boot_id
+        return etat
 
     def _lancer(self, tache):
         if self.mode in ('path', 'move'):
@@ -147,6 +180,7 @@ class FauxServeur:
         self.oh += dh
         self.ox += ds * math.cos(self.oh)
         self.oy += ds * math.sin(self.oh)
+        self.odometre += abs(ds)
         k['immobile'] = k['immobile'] + self.TICK if (v or w) and not (ds or dh) else 0.0
         if k['immobile'] > self.STALL:
             self._finir('stalled')
@@ -219,7 +253,9 @@ def test_unknown_heading_is_measured_with_a_short_straight_move() -> None:
     r.placer((1.0, 1.0))
     assert r.drone_disponible() and not r.cap_fiable
     assert r.deplacer((1.4, 1.3)) is None
-    assert [ch for _, m, ch, _ in faux.requetes if m == 'POST'] == ['/move', '/path']
+    # the heading move is a /path to an absolute odometry point 15 cm ahead (idempotent)
+    assert [ch for _, m, ch, _ in faux.requetes if m == 'POST'] == ['/path', '/path']
+    assert chemins(faux, '/path')[0]['points'] == [[0.15, 0.0]]
     assert r.cap_fiable and abs(angle_normalise(r.cap - faux.cap)) < 0.05
     assert math.dist((faux.x, faux.y), (1.4, 1.3)) < 0.03
 
@@ -248,7 +284,9 @@ def test_heading_is_measured_backwards_when_the_rover_faces_a_wall() -> None:
     r = robot(faux)
     r.placer((1.0, 1.0))
     impact = r.deplacer((1.5, 1.0))
-    assert [c['distance'] for c in chemins(faux, '/move')] == [0.15, -0.15]
+    mesures = chemins(faux, '/path')[:2]
+    assert mesures[0]['points'] == [[0.15, 0.0]]  # ahead: stalled against the wall
+    assert mesures[1]['points'][0][0] < 0  # then 15 cm behind where it stalled
     assert r.cap_fiable and abs(angle_normalise(r.cap - faux.cap)) < 0.05
     assert impact is not None and math.dist(impact, (1.17, 1.0)) < 0.03
 
@@ -403,7 +441,7 @@ def test_http_client_tells_errors_from_lost_links() -> None:
     try:
         requete = client_http(f'http://127.0.0.1:{serveur.server_address[1]}/')
         assert requete('GET', '/state') == {'odom': {'x': 0.1}}
-        with pytest.raises(ServeurRoverError, match='rover-teleop'):
+        with pytest.raises(ServeurRoverError, match='trop ancien'):
             requete('POST', '/path', {'points': [[0, 0]]})
         with pytest.raises(ServeurRoverError, match='400'):
             requete('POST', '/move', {'distance': 'loin'})
