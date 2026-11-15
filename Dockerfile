@@ -1,25 +1,21 @@
-# Dev image for the guidance workspace: ROS 2 Jazzy + Nav2 + robot_localization + OpenCV.
+# Dev image for the guidance workspace: ROS 2 Jazzy + OpenCV. Light by default.
+#   docker build -t polaris-dev .                          about 150 MB of packages
+#   docker build -t polaris-dev --build-arg WITH_NAV2=1 .  adds Nav2 and robot_localization
+#                                                          (about 300 MB more; nothing in the
+#                                                          repo uses them yet)
 FROM ros:jazzy
 
 ARG USERNAME=ubuntu
 ARG RUFF_VERSION=0.8.4
+ARG WITH_NAV2=0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Retries: a dropped connection resumes the download instead of failing the build.
-RUN echo 'Acquire::Retries "10";' > /etc/apt/apt.conf.d/80-retries \
-    && apt-get update && apt-get install -y --no-install-recommends \
-        ros-jazzy-navigation2 \
-        ros-jazzy-robot-localization \
-        ros-jazzy-cv-bridge \
-        ros-jazzy-image-publisher \
-        python3-opencv \
-        python3-matplotlib \
-        python3-pip \
-        python3-pytest \
-        git \
-        sudo \
-    && rm -rf /var/lib/apt/lists/*
+RUN echo 'Acquire::Retries "10";' > /etc/apt/apt.conf.d/80-retries     && apt-get update && apt-get install -y --no-install-recommends         ros-jazzy-cv-bridge         ros-jazzy-image-publisher         python3-opencv         python3-matplotlib         python3-pip         python3-pytest         git         sudo     && rm -rf /var/lib/apt/lists/*
+
+# Its own layer, after the light one: turning it on does not download the rest again.
+RUN if [ "${WITH_NAV2}" = "1" ]; then         apt-get update && apt-get install -y --no-install-recommends             ros-jazzy-navigation2             ros-jazzy-robot-localization         && rm -rf /var/lib/apt/lists/*;     fi
 
 # Ubuntu 24.04 marks the system Python as externally managed; ruff is a standalone binary.
 RUN pip3 install --no-cache-dir --break-system-packages "ruff==${RUFF_VERSION}"
