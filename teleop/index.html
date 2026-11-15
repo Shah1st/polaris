@@ -73,8 +73,11 @@
              color:#c9d1db; font-size:13px; overflow-wrap:anywhere; }
   #fstatus b { color:var(--fg); }
   .maptools { display:flex; gap:10px; align-items:center; font-size:13px; color:#c9d1db; }
+  .maptools { flex-wrap:wrap; }
   .maptools button { background:#20262d; color:var(--fg); border:1px solid var(--line); border-radius:6px;
                      padding:6px 12px; cursor:pointer; }
+  .maptools button.go { background:#1f5c36; } .maptools button.halt { background:#7a1f1f; font-weight:bold; }
+  #mFused, #mDrone { cursor:crosshair; }
   @media (max-width: 1250px) { .pane { grid-template-columns:1fr; } .pane .feed { grid-column:auto; } }
   @media (max-width: 820px) { .app { grid-template-columns:1fr; grid-template-rows:auto 80vh; } }
 </style>
@@ -144,7 +147,11 @@
         <div class="video wide"><canvas id="droneCam" width="640" height="480"></canvas><span id="dinfo"></span></div>
       </figure>
       <div id="fstatus">Cartes : en attente…</div>
-      <div class="maptools"><button id="mapReset" type="button">Réinitialiser les cartes</button><span id="mapResetMsg"></span></div>
+      <div class="maptools"><button id="mapReset" type="button">Réinitialiser les cartes</button>
+        <button id="goalGo" type="button" class="go">Aller vers le point</button>
+        <button id="goalStop" type="button" class="halt">Arrêter la mission</button>
+        <button id="goalClear" type="button">Effacer le point</button>
+        <span id="mapResetMsg">Clic sur la carte du drone ou la carte fusionnée : point d'arrivée du rover</span></div>
       <figure class="mapfig">
         <figcaption><b>1. Carte du rover</b><span id="aRover">–</span></figcaption>
         <canvas id="mRover"></canvas>
@@ -321,11 +328,58 @@ function showStatus(s) {
     + ` · recalculée parce que : ${esc(d.pourquoi)} (il y a ${fmt(d.age_s, 0)} s)`;
   if (d.distance_restante_m !== null && d.distance_restante_m !== undefined)
     html += ` · reste ${fmt(d.distance_restante_m, 1)} m`;
+  const ms = s.mission || {};
+  if (ms.etat && ms.etat !== 'aucune')
+    html += `<br><b>Mission : ${esc(ms.etat)}</b>${ms.pas ? ' · pas ' + esc(ms.pas) : ''} · ${esc(ms.texte || '')}`;
   html += `<br>Rover (${fmt(rv.x, 1)}, ${fmt(rv.y, 1)}) m · scan : ${esc(sc.points || 0)} points,`
     + ` ${esc(sc.free || 0)} cases libres, ${esc(sc.obstacle || 0)} obstacles`
     + ` · tuiles : drone ${esc(dr.tuiles || 0)}, rover ${esc(s.tuiles_rover || 0)}`;
   el.innerHTML = html;
 }
+// The point the rover must reach: a click on the drone map or the fused map (both drawn in the
+// same frame by the real fusion), sent as fractions of the picture.
+function mapMsg(t) {
+  const msg = $('mapResetMsg'); msg.textContent = t;
+  clearTimeout(mapMsg.timer);
+  mapMsg.timer = setTimeout(() => { msg.textContent = ''; }, 8000);
+}
+async function fusionPost(name, body) {
+  const r = await fetch('/fusion/' + name, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify(body || {}) });
+  let d = {}; try { d = await r.json(); } catch (e) {}
+  return { ok: r.status === 200, status: r.status, d };
+}
+for (const [id, panneau] of [['mFused', 'fused'], ['mDrone', 'drone']]) {
+  $(id).addEventListener('click', async (e) => {
+    const cv = $(id), box = cv.getBoundingClientRect();
+    const fx = (e.clientX - box.left) / box.width, fy = (e.clientY - box.top) / box.height;
+    try {
+      const { ok, status, d } = await fusionPost('objectif', { panneau, fx, fy });
+      if (ok && d.objectif) mapMsg(`point d'arrivée : (${(+d.objectif[0]).toFixed(2)}, ${(+d.objectif[1]).toFixed(2)}) m — « Aller vers le point » pour partir`);
+      else mapMsg('point refusé : ' + (d.error || 'HTTP ' + status) + (status === 404 ? ' (cette fusion ne gère pas les points)' : ''));
+      for (const p of panels) p.got = 0;
+    } catch (err) { mapMsg('fusion injoignable'); }
+  });
+}
+$('goalGo').addEventListener('click', async () => {
+  if (!confirm("Le rover va rouler SEUL vers le point choisi, en contournant ce que sa caméra voit.\n\n"
+             + "Quelqu'un est à côté du rover, prêt à l'arrêter (bouton « Arrêter la mission » ou STOP) ?")) return;
+  try {
+    const { ok, status, d } = await fusionPost('aller');
+    mapMsg(ok ? 'mission lancée' : 'refusé : ' + (d.error || 'HTTP ' + status));
+  } catch (err) { mapMsg('fusion injoignable'); }
+});
+$('goalStop').addEventListener('click', async () => {
+  stopAll();   // the rover stops at once through the dashboard too
+  try {
+    const { ok } = await fusionPost('arreter');
+    mapMsg(ok ? 'mission arrêtée, /stop envoyé' : 'arrêt envoyé au rover ; la fusion ne répond pas');
+  } catch (err) { mapMsg('arrêt envoyé au rover ; fusion injoignable'); }
+});
+$('goalClear').addEventListener('click', async () => {
+  try { const { ok } = await fusionPost('objectif', {}); mapMsg(ok ? 'point effacé' : 'refusé'); }
+  catch (err) { mapMsg('fusion injoignable'); }
+});
 // Empty the maps of the live fusion: a new map starts from where the rover stands now.
 $('mapReset').addEventListener('click', async () => {
   if (!confirm('Effacer les cartes (rover, fusionnée, trace) et repartir de la position actuelle du rover ?')) return;

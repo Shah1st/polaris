@@ -29,6 +29,10 @@
                      --fusion (127.0.0.1:8094); nothing else is relayed
   POST /fusion/source {"source": "camera"|"d405"}  which rover sensor feeds the fusion
   POST /fusion/reset   empty the maps of the live fusion (when the fusion offers it)
+  POST /fusion/objectif {"panneau": "fused"|"drone", "fx", "fy"} | {}   the point clicked on a
+                     map (fractions of the picture), or none; POST /fusion/aller: the rover
+                     drives there by itself; POST /fusion/arreter: end of that mission + /stop
+                     (sim/fusion_reelle.py)
                      (simulation only: never reaches the robot)
   POST /api/client   what the browser measures (frames shown, delays), logged
   GET  /mission      the live page of the mission for the jury: map, rover, victim, path,
@@ -92,6 +96,14 @@ FUSION_FILES = {
     'depth_d405.png',
     'depth_camera.png',
     'status.json',
+}
+# What /fusion/ relays as POST, with the fields passed on.
+FUSION_POSTS = {
+    '/fusion/source': ('source',),
+    '/fusion/reset': (),
+    '/fusion/objectif': ('panneau', 'fx', 'fy'),
+    '/fusion/aller': (),
+    '/fusion/arreter': (),
 }
 SNAPSHOT_PERIOD = 0.1  # s: a camera that answers one picture per request is asked this often
 SNAPSHOT_MAX = 10_000_000  # bytes: a larger "picture" is refused
@@ -749,9 +761,11 @@ def make_handler(
                         body.get('press'),
                     )
                     return self._json({'ok': True, 'accepted': ok})
-                elif self.path in ('/fusion/source', '/fusion/reset'):  # relayed to the fusion
+                elif self.path in FUSION_POSTS:  # relayed to the fusion
                     name = self.path[len('/fusion/') :]
-                    data = {'source': str(body.get('source'))} if name == 'source' else {}
+                    data = {k: body[k] for k in FUSION_POSTS[self.path] if k in body}
+                    if name == 'source':
+                        data = {'source': str(body.get('source'))}
                     try:
                         r = requests.post(f'{fusion}/{name}', json=data, timeout=4)
                     except requests.RequestException as e:
