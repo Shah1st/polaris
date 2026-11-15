@@ -46,9 +46,34 @@ and `CarteFusion.astar` from `merging_map/fusion_carte.py`, pulled straight wher
 clear. The guide checks the route being driven every 0.5 s and plans again when the grid blocks
 it; with no way left, it stops the rover. A click on a point that cannot be reached is refused.
 
-Not there yet: the rover's D405 proximity beam. The LiDAR depth with the pose (Pro iPhones) is
-read (`camstream.read_depth`, `FloorMap.add_depth`) but not wired into the dashboard nor tried on
-a real iPhone.
+**The rover's own close look** (`beam.py`, `--beam URL`): the D405 on the front of the rover is
+a second stream, next to the air camera. Its detection is the team's
+(`rover_mapper/perception_service.py --d405`: the floor found in the depth itself, obstacles
+4 to 40 cm above it, in the rover's frame); each of its looks is placed on the floor with where
+the rover was when it was taken (its odometry at that time, through the air-ground link), then
+believed over the air map, which sees tall things lean and moving things late:
+
+* a cell it sees as an obstacle is one at once: added (put down in front of the rover, or
+  missed from the air) or confirmed;
+* a cell it sees as floor is cleared at once (taken away, or a false obstacle of the air map),
+  and what the air had said of it is forgotten;
+* its verdict holds until the air, looking again 15 views later, says otherwise;
+* something it sees within the rover's radius of the first 0.8 m of the route: the route is
+  planned again at once (an event, not the next half-second check).
+
+Its place on the rover is `--beam-offset` (0.10 m ahead of the centre by default: **to
+measure**); it looks straight ahead (fixed on the chassis: the turret carries the USB camera).
+Not tried on the real rover yet: the perception service has to run where it reaches the D405's
+capture server (`rover_mapper/d405_server.py`, 127.0.0.1:8091 on the robot): on the robot
+itself, or on this computer through `ssh -N -L 8091:127.0.0.1:8091 sunrise@<rover>`:
+
+```bash
+python rover_mapper/perception_service.py --d405 http://127.0.0.1:8091 --port 8095
+python air_ground/guide_rover.py --phone http://<iPhone>:8080 --rover http://<rover>:8080     --beam http://127.0.0.1:8095
+```
+
+Not there yet: the LiDAR depth with the pose (Pro iPhones) is read (`camstream.read_depth`,
+`FloorMap.add_depth`) but not wired into the dashboard nor tried on a real iPhone.
 
 ## Run
 
@@ -124,6 +149,9 @@ the team shares it.
   it), a goal behind a closed wall refused (`test_planner.py`, fake rover with wrong odometry);
   the drive around the wall ends 3 cm from the goal with no pause, the picture lost for 2 s does
   not stop it.
+* The D405 stream: its looks land where the rover points; it adds, confirms and clears cells;
+  a box right in front is not taken for the rover; a box only it sees, on the straight line to
+  the goal, is driven around (`test_beam.py`, simulated rover and D405).
 * The rover's follower keeps above 0.12 m/s through three corrections in a row
   (`rover/tests/test_rover_core.py`); **the robot runs this only once `rover_core.py` is
   deployed on it**.

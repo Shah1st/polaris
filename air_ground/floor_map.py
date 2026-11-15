@@ -139,6 +139,8 @@ class FloorMap:
         # the votes of a cell are scaled down past this total: new evidence can still turn
         # it within a few pairs, instead of fighting all the votes of the past
         self.max_votes = max_votes
+        # views of the air after which it may contradict what the D405 said of a cell
+        self.beam_hold = 15
         # the team's colour detection on each view (off: heights only)
         self.colour_on = colour
         # The cells the map decides on: obstacle or floor. Smaller than the team's 5 cm (the
@@ -177,6 +179,11 @@ class FloorMap:
         # the same for the heights of the pairs of views
         self.height_q = np.full((self.crows, self.ccols), np.inf, np.float32)
         self.height_hits = np.zeros((self.crows, self.ccols), np.int8)
+        # the rover's D405 (add_beam): -1 nothing said, 0 floor, 1 obstacle, and the view
+        # count when it said it
+        self.beam_state = np.full((self.crows, self.ccols), -1, np.int8)
+        self.beam_view = np.zeros((self.crows, self.ccols), np.int64)
+        self.beam_looks = 0
         self._centre_next = self.follow
 
     def recentre(self, x: float, y: float) -> None:
@@ -484,6 +491,48 @@ class FloorMap:
         kept[take] = q[take]
         step = np.where(says_obstacle, 1, -1).astype(np.int8)
         hits[take] = np.clip(hits[take] + step[take], 0, 3)
+        self._air_overrules_beam(win, take, says_obstacle)
+
+    def _air_overrules_beam(self, win, take, says_obstacle) -> None:
+        """The air has looked again, well after the D405 spoke (`beam_hold` views later) and
+        says otherwise: the D405's verdict ends there (the obstacle it saw has gone, or one has
+        come where it saw floor). Until then, the D405 is believed over the air."""
+        state, view = self.beam_state[win], self.beam_view[win]
+        late = take & (self.views > view + self.beam_hold)
+        state[late & ~says_obstacle & (state == 1)] = -1
+        state[late & says_obstacle & (state == 0)] = -1
+
+    def add_beam(self, obstacle_xy, floor_xy) -> dict:
+        """One look of the rover's D405, placed on the floor (beam.BeamLook.on_floor): what
+        it sees right ahead is believed over the air map (closer, metric, looking at it now).
+        A cell it sees as an obstacle is one at once (added, or confirmed); a cell it sees as
+        floor is cleared at once, and what the air had said of it is forgotten (the air must
+        see an obstacle there twice again). Its verdict holds until the air, looking again
+        `beam_hold` views later, says otherwise."""
+        k = self.colour_k
+
+        def cells(xy):
+            xy = np.asarray(xy, float).reshape(-1, 2)
+            if not len(xy):
+                return None
+            c = np.floor(self._cells(xy) / k).astype(np.int64)
+            ok = (c[:, 0] >= 0) & (c[:, 0] < self.ccols) & (c[:, 1] >= 0) & (c[:, 1] < self.crows)
+            return c[ok, 1], c[ok, 0]
+
+        free, hit = cells(floor_xy), cells(obstacle_xy)
+        if free is not None:
+            self.beam_state[free] = 0
+            self.colour_hits[free] = 0
+            self.height_hits[free] = 0
+            self.beam_view[free] = self.views
+        if hit is not None:  # a cell with both: an obstacle (an edge, the safe side)
+            self.beam_state[hit] = 1
+            self.beam_view[hit] = self.views
+        self.beam_looks += 1
+        return {
+            'obstacle_cells': 0 if hit is None else len(set(zip(*hit, strict=False))),
+            'floor_cells': 0 if free is None else len(set(zip(*free, strict=False))),
+        }
 
     def _up(self, cells: np.ndarray) -> np.ndarray:
         """decision cells -> the map's own cells."""
@@ -523,7 +572,13 @@ class FloorMap:
         if colour is not None:  # what the team's colour detection sees counts too
             obstacle |= colour
             known = known | colour
-        return height, known, self._clean(obstacle)
+        obstacle = self._clean(obstacle)  # the air's view of the rover and its specks
+        if self.beam_looks:  # the rover's D405, believed over the air where it spoke; after the
+            # cleaning: what it sees right in front of the rover is no part of the rover
+            ahead, floor = self._up(self.beam_state == 1), self._up(self.beam_state == 0)
+            obstacle = (obstacle | ahead) & ~floor
+            known = known | ahead | floor
+        return height, known, obstacle
 
     def _clean(self, obstacle: np.ndarray) -> np.ndarray:
         """Without what is the rover itself and without specks: a patch no larger than one
@@ -641,6 +696,7 @@ class FloorMap:
         kept[take] = q[take]
         step = np.where(obstacle, 1, -1).astype(np.int8)
         hits[take] = np.clip(hits[take] + step[take], 0, 3)
+        self._air_overrules_beam((slice(gr0, gr0 + rows), slice(gc0, gc0 + cols)), take, obstacle)
 
     def _colour_layer(self) -> np.ndarray | None:
         """The colour obstacles at the map's own cell size, or None without colour."""

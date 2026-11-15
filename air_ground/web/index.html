@@ -436,7 +436,8 @@ function renderGuide(g) {
   $('mapInfo').textContent = M.views == null ? 'Map: –'
     : `Map: ${M.views} views, ${M.pairs} height pairs · seen ${fmt(M.seen_m2, 2)} m², height known on ${fmt(M.known_m2, 2)} m², obstacles ${fmt(M.obstacle_m2, 3)} m²`
       + (M.update_s != null ? ` · update ${fmt(M.update_s, 2)} s` : '') + (M.error ? ' · error: ' + M.error : '')
-      + (g.plan ? ` · route: radius ${fmt(g.plan.radius_m, 2)} m, ${g.plan.routes} planned` + (g.plan.note ? ` (${g.plan.note})` : '') : '');
+      + (g.plan ? ` · route: radius ${fmt(g.plan.radius_m, 2)} m, ${g.plan.routes} planned` + (g.plan.note ? ` (${g.plan.note})` : '') : '')
+      + (g.beam ? (g.beam.error ? ` · D405: ${g.beam.error}` : ` · D405: look ${g.beam.age_ms} ms old, ${g.beam.obstacle_cells} obstacle / ${g.beam.floor_cells} floor cells, ${g.beam.events} on the way`) : '');
   const cls = g.rover_error || /^stopped|not reachable|lost/.test(st) ? 'bad'
     : /^arrived/.test(st) ? 'ok' : /waiting|not seen|blind/.test(st) ? 'warn' : '';
   $('guide').textContent = st.charAt(0).toUpperCase() + st.slice(1);

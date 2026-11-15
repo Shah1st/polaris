@@ -48,6 +48,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cv2
 import numpy as np
+from beam import BeamReader
 from camstream import PoseStream
 from floor_map import FloorMap
 from guidance import ClockSync, Guide, GuideConfig, RoverClient, RoverError
@@ -112,6 +113,26 @@ def shade_blocked(picture: np.ndarray, blocked: np.ndarray, k: int) -> np.ndarra
     out = picture.copy()
     out[full] = (0.7 * out[full] + 0.3 * np.array([200, 60, 160])).astype(np.uint8)
     return out
+
+
+def on_the_way(points, route, radius: float, ahead: float) -> bool:
+    """Is any of `points` (N x 2) within `radius` of the first `ahead` metres of `route`
+    (a polyline from the rover's place)?"""
+    pts = np.asarray(points, float).reshape(-1, 2)
+    left = ahead
+    for a, b in zip(route, route[1:], strict=False):
+        length = math.dist(a, b)
+        if length < 1e-6:
+            continue
+        span = min(length, left)
+        d = np.subtract(b, a) / length
+        t = np.clip((pts - a) @ d, 0.0, span)
+        if (np.hypot(*(pts - (np.asarray(a) + t[:, None] * d)).T) <= radius).any():
+            return True
+        left -= span
+        if left <= 0:
+            break
+    return False
 
 
 class NoRover:
@@ -186,6 +207,10 @@ class MapWorker:
         with self.lock:
             self.fmap.set_rover(x, y)
 
+    def add_beam(self, obstacle_xy, floor_xy) -> dict:
+        with self.lock:
+            return self.fmap.add_beam(obstacle_xy, floor_xy)
+
     def stats(self) -> dict:
         with self.lock:
             s = self.fmap.stats()
@@ -216,6 +241,9 @@ class GuideService:
         radius=0.15,
         colour=True,
         log_dir=None,
+        beam=None,
+        beam_offset=(0.10, 0.0),
+        beam_range=1.0,
     ):
         """`follow`: the map centres itself where the phone first looks (`bounds` then only
         gives its size); otherwise it covers `bounds` of the floor frame. `radius`: the
@@ -223,6 +251,12 @@ class GuideService:
         `colour`: the team's colour detection adds its obstacles to the heights' (it cannot
         tell a flat colour on the floor from an object: off for a painted floor)."""
         self.planner = RoutePlanner(radius=radius)
+        # the rover's D405 (beam.py): a second stream, right ahead of the rover
+        self.beam = BeamReader(beam) if beam else None
+        self.beam_offset, self.beam_range = tuple(beam_offset), beam_range
+        self.beam_info: dict = {}
+        self.beam_events = 0
+        self._beam_seq = 0
         # a record of each drive (run_log.py): None = none
         self.log = RunLog(log_dir) if log_dir else None
         self.clock = time.monotonic  # the time of the record's lines
@@ -275,6 +309,8 @@ class GuideService:
         self._stop.set()
         self.mapper.close()
         self.stream.close()
+        if self.beam is not None:
+            self.beam.close()
         self.server.shutdown()
         self.server.server_close()
 
@@ -285,6 +321,8 @@ class GuideService:
             if now >= next_state:
                 next_state = now + 0.1
                 self._read_rover()
+            if self.beam is not None:
+                self._use_beam()
             frame = self.stream.latest(max_age=2.0)
             fresh = frame is not None and frame.seq != seq
             if fresh:
@@ -306,6 +344,51 @@ class GuideService:
                 next_draw = now + 0.15
                 self._draw(frame)
             self._stop.wait(0.01 if fresh else 0.03)
+
+    def _use_beam(self) -> None:
+        """A new look of the rover's D405: placed on the floor with where the rover was when
+        it was taken, then believed over the air map (FloorMap.add_beam). Something on the
+        way, close ahead: the route is planned again at once, not at the next half second."""
+        look = self.beam.latest(max_age=1.5)
+        if look is None:
+            self.beam_info = {
+                'error': self.beam.error or 'no fresh look',
+                'looks': self.beam.count,
+            }
+            return
+        if look.seq == self._beam_seq:
+            return
+        self._beam_seq = look.seq
+        with self.lock:
+            odom = self.guide.history.at(look.taken)
+            pose = (
+                self.guide.link.to_floor(odom)
+                if odom is not None and self.guide.link.ready
+                else None
+            )
+            goal, waypoints = self.guide.goal, list(self.guide.waypoints)
+        if pose is None:
+            self.beam_info = {'error': 'the rover is not placed on the map yet', 'looks': look.seq}
+            return
+        obstacle, floor = look.on_floor(pose, self.beam_offset, 0.0, self.beam_range)
+        said = self.mapper.add_beam(obstacle, floor)
+        ahead = False
+        if goal is not None and len(obstacle):
+            ahead = on_the_way(obstacle, [(pose.x, pose.y), *waypoints, goal],
+                               self.planner.radius + 0.03, 0.8)  # fmt: skip
+            if ahead:
+                self._next_plan = 0.0  # plan again now
+                self.beam_events += 1
+                if self.log is not None:
+                    self.log.write('beam', at=self.clock(), obstacle_cells=said['obstacle_cells'])
+        self.beam_info = {
+            'looks': look.seq,
+            'age_ms': round((time.monotonic() - look.taken) * 1000),
+            'obstacle_cells': said['obstacle_cells'],
+            'floor_cells': said['floor_cells'],
+            'events': self.beam_events,
+            'request_ms': None if self.beam.last_s is None else round(self.beam.last_s * 1000),
+        }
 
     def _write_log(self, now: float) -> None:
         """The drive's record: a line per path sent and per end of a goal, four a second
@@ -569,6 +652,7 @@ class GuideService:
             'routes': self.plans,
             'note': self.plan_note,
         }
+        snap['beam'] = self.beam_info if self.beam is not None else None
         snap['mapping_only'] = self.mapping_only
         if self.mapping_only:
             snap['status'] = 'mapping only (no rover): move the phone above the scene'
@@ -716,6 +800,25 @@ def main() -> None:
         '--fixed-bounds: then only its size counts',
     )
     ap.add_argument(
+        '--beam',
+        default=None,
+        metavar='URL',
+        help="the rover's D405 perception (rover_mapper/perception_service.py --d405), e.g. "
+        'http://<rover>:8095: what it sees right ahead adds, confirms or clears obstacles',
+    )
+    ap.add_argument(
+        '--beam-offset',
+        type=float,
+        nargs=2,
+        default=(0.10, 0.0),
+        metavar=('X', 'Y'),
+        help='where the D405 is on the rover, m ahead and to the left of its centre (0.10 0; '
+        'to measure)',
+    )
+    ap.add_argument(
+        '--beam-range', type=float, default=1.0, help='m ahead of the D405 believed (1.0)'
+    )
+    ap.add_argument(
         '--log',
         default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'runs'),
         help="folder of the drives' records (run_log.py); '' for none",
@@ -739,7 +842,8 @@ def main() -> None:
     service = GuideService(
         a.phone, rover, finder, cfg, tuple(a.bounds), a.res, a.port, a.host,
         follow=not a.fixed_bounds, radius=a.radius, colour=not a.no_colour,
-        log_dir=a.log or None,
+        log_dir=a.log or None, beam=a.beam, beam_offset=tuple(a.beam_offset),
+        beam_range=a.beam_range,
     )  # fmt: skip
     service.start()
     print(
