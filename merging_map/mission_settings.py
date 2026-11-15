@@ -28,6 +28,19 @@ class MissionSettings:
     step: float = 0.3  # m driven per step while the drone sees the rover
     careful_step: float = 0.15  # m per step without the drone (twice as slow)
     drone_wait_max: float = 300.0  # s waiting for the drone at the return point, then stop
+    # Rover server errors (rover_reel.ServeurRoverError) in a row before the mission stops
+    # ('erreur_robot'); after each one the rover is stopped and the step tried again.
+    robot_error_retries: int = 3
+    # No progress: the mission stops ('sans_progres') when the rover has not moved more than
+    # stall_distance m over stall_steps commanded steps in a row, or bumps same_bump_max
+    # times within same_bump_radius m of the same place.
+    stall_steps: int = 8
+    stall_distance: float = 0.05
+    same_bump_max: int = 4
+    same_bump_radius: float = 0.3
+    # s a bump (CarteFusion.signaler_obstacle) stays on the map; None: for good, as before.
+    # With a value, one false 'stalled' closes a passage only that long.
+    bump_lifetime: float | None = None
 
     # ---- depends on the size of the place -------------------------------------------------
     # m of possible position error without the drone before going back to the last point it
@@ -51,12 +64,18 @@ class MissionSettings:
         """Give the map the settings it uses itself (the rover's own inspection)."""
         carte.inspect_reserve = self.inspect_reserve
         carte.inspect_max_distance = self.inspect_max_distance
+        if self.bump_lifetime is not None:
+            carte.duree_choc = self.bump_lifetime
 
 
 FIELD = MissionSettings()
 
 ARENA = MissionSettings(
-    uncertainty_budget=0.15,  # passages of 30 to 40 cm
+    # Without the overhead camera the drone obstacles grow by the uncertainty: with the
+    # 0.155 m rover radius a 40 cm passage closes from ~4.5 cm of uncertainty (~1.8 m driven
+    # at 2.5 cm/m), well before this budget, and a passage under 31 cm never opens even with
+    # the camera (audit mm-mission F4). To set from the real passages and odometry drift.
+    uncertainty_budget=0.15,
     link_backoff=0.0,
     no_go_radius=0.0,  # a Wi-Fi glitch, not a dead zone: wait for the link and go on
     check_horizon=1.0,

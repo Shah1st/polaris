@@ -40,7 +40,44 @@ RESUMES = {
     'perte_rover': 'LIAISON ROVER PERDUE -> retour au dernier point connecte',
     'reprise_rover': 'liaison rover retrouvee -> zone interdite, replanification',
     'link_back': 'liaison rover retrouvee -> replanification, sans zone interdite',
+    'erreur_robot': 'ERREUR du rover -> arret, nouvel essai',
+    'rover_injoignable': 'abandon: rover injoignable -> arret et alerte',
+    'sans_progres': "abandon: le rover n'avance plus -> arret et alerte",
+    'max_tours': 'abandon: trop de tours sans arriver -> arret et alerte',
 }
+
+# Issue d'une mission (instantanes['issue']) -> etat pour une page de suivi (interface 6 :
+# en_cours | arrive | arret_operateur | abandon | erreur). Seule 'arrivee' est un succes.
+ETAT_SUIVI = {
+    'arrivee': 'arrive',
+    'objectif_degrade': 'abandon',  # point le plus proche atteint, victime inaccessible
+    'abandon_drone': 'abandon',
+    'rover_injoignable': 'abandon',
+    'sans_progres': 'abandon',
+    'max_tours': 'abandon',
+    'erreur_robot': 'erreur',
+}
+
+
+class _FinMission(Exception):  # noqa: N818 - signal interne, pas une erreur
+    """Fin anticipee de la mission depuis une fonction imbriquee (issue dans ETAT_SUIVI)."""
+
+    def __init__(self, issue, raison=''):
+        super().__init__(issue)
+        self.issue, self.raison = issue, raison
+
+
+def _noms_classes(erreur):
+    return {c.__name__ for c in type(erreur).__mro__}
+
+
+def erreur_rover_reessayable(erreur):
+    """Une erreur du serveur du rover (rover_reel.ServeurRoverError) apres laquelle le rover
+    est a l'arret : la mission peut l'arreter et reessayer. Reconnue par son nom, pour ne pas
+    importer rover_reel (qui importe robot et la carte). Un arret de l'operateur
+    (rover_reel.ArretOperateur) n'en est jamais une : il doit remonter tout de suite."""
+    noms = _noms_classes(erreur)
+    return 'ServeurRoverError' in noms and 'ArretOperateur' not in noms
 
 
 def longueur(chemin):
@@ -90,25 +127,89 @@ def mission(
     `evenement(type, action, **infos)` est appele a chaque etape (tableau de bord).
     `settings` : distances and delays of the mission (mission_settings.FIELD, the default, or
     ARENA for the 2.4 m arena); the map's own inspection settings are set from it too.
-    Renvoie des instantanes pour la figure de la demo."""
+
+    Renvoie des instantanes pour la figure de la demo, avec l'issue de la mission :
+    instantanes['issue'] (une cle de ETAT_SUIVI), ['succes'] (True seulement pour
+    'arrivee') et ['raison']. Une erreur du serveur du rover (ServeurRoverError) arrete le
+    rover et fait reessayer, settings.robot_error_retries fois de suite au plus ; un arret de
+    l'operateur (ArretOperateur) remonte tout de suite a l'appelant."""
     settings.apply_to_map(carte)
     instantanes, demandees, replans = {}, [], []
     traj, traj_vraie = [], []
     essais = {}
     etat = {'drone': True}
+    # Non-progres : positions apres les derniers pas commandes, serie de chocs au meme
+    # endroit, erreurs du rover a la suite.
+    suivi = {'pas': [], 'choc0': None, 'chocs': 0, 'erreurs': 0}
 
     def emettre(type_, action=None, **infos):
         if evenement:
             evenement(type_, action, **infos)
         if type_ != 'avance':
             detail = f' {infos["tuiles"]}' if 'tuiles' in infos else ''
+            if 'message' in infos:
+                detail += f' : {infos["message"]}'
             journal(f'  t={robot.temps():5.1f}s  {RESUMES[type_]}{detail}')
+
+    def abandonner(issue, action, raison='', **infos):
+        emettre(issue, action, message=raison, **infos)
+        raise _FinMission(issue, raison)
 
     def noter_position():
         traj.append(robot.position())
         traj_vraie.append(robot.position_reelle() or robot.position())
 
+    def surveiller_progres(avant, cible, impact, action):
+        """Arrete la mission si le rover ne bouge plus de plus de settings.stall_distance m
+        sur settings.stall_steps pas commandes a la suite, ou s'il se cogne
+        settings.same_bump_max fois au meme endroit (faux 'stalled', roues bloquees)."""
+        ici = robot.position()
+        if math.dist(avant, cible) > settings.stall_distance:
+            suivi['pas'] = (suivi['pas'] + [ici])[-(settings.stall_steps + 1) :]
+            fenetre = suivi['pas']
+            if len(fenetre) > settings.stall_steps and all(
+                math.dist(fenetre[0], p) <= settings.stall_distance for p in fenetre[1:]
+            ):
+                abandonner(
+                    'sans_progres',
+                    action,
+                    f'immobile (< {settings.stall_distance:.2f} m) sur '
+                    f'{settings.stall_steps} pas',
+                )
+        if impact is None:
+            if suivi['choc0'] and math.dist(ici, suivi['choc0']) > 2 * settings.same_bump_radius:
+                suivi['choc0'], suivi['chocs'] = None, 0
+            return
+        if suivi['choc0'] and math.dist(impact, suivi['choc0']) <= settings.same_bump_radius:
+            suivi['chocs'] += 1
+        else:
+            suivi['choc0'], suivi['chocs'] = tuple(impact), 1
+        if suivi['chocs'] >= settings.same_bump_max:
+            abandonner('sans_progres', action, f'{suivi["chocs"]} chocs au meme endroit')
+
+    def deplacer(cible, action):
+        """robot.deplacer, avec reprise apres une erreur du serveur du rover. Renvoie
+        (impact, erreur)."""
+        try:
+            impact = robot.deplacer(cible)
+        except Exception as e:
+            if not erreur_rover_reessayable(e):
+                raise
+            suivi['erreurs'] += 1
+            if suivi['erreurs'] > settings.robot_error_retries:
+                abandonner('erreur_robot', action, str(e))
+            emettre('erreur_robot', action, message=str(e))
+            try:
+                robot.attendre(1.0)  # arret du rover, puis nouvel essai
+            except Exception as e2:
+                if not erreur_rover_reessayable(e2):
+                    raise
+            return None, True
+        suivi['erreurs'] = 0
+        return impact, False
+
     def decider():
+        carte.expirer_chocs(robot.temps())
         carte.marge_drone = 0.0 if robot.drone_disponible() else robot.incertitude()
         return carte.decider(
             robot.position(),
@@ -144,7 +245,7 @@ def mission(
         **infos,
     ):
         """Suit le chemin pas a pas. Renvoie 'arrive', 'bloque', 'choc', 'budget',
-        'liaison' (drone) ou 'perte_rover'."""
+        'liaison' (drone), 'perte_rover' ou 'erreur' (erreur du rover, a replanifier)."""
         chemin = list(chemin)
         while chemin:
             if suivre_liaison():
@@ -156,14 +257,19 @@ def mission(
             ):
                 return 'budget'
             pas = settings.step if robot.drone_disponible() else settings.careful_step
-            cible, chemin = avancer(robot.position(), chemin, pas)
-            impact = robot.deplacer(cible)
+            avant = robot.position()
+            cible, chemin = avancer(avant, chemin, pas)
+            impact, erreur = deplacer(cible, action)
+            if erreur:
+                return 'erreur'
             noter_position()
             if surveiller_rover and not robot.rover_joignable():
                 robot.garder_a_bord()  # l'ordinateur ne l'entend plus : il garde ce qu'il voit
                 robot.observer()
                 secours_rover()
                 return 'perte_rover'
+            if surveiller_rover:
+                surveiller_progres(avant, cible, impact, action)
             robot.observer()
             if impact:
                 robot.signaler_choc(impact)
@@ -233,8 +339,10 @@ def mission(
             chemin.append(b)
             d += math.dist(a, b)
         if robot.retour_embarque:
-            # le vrai rover revient tout seul : l'ordinateur ne peut que l'attendre
-            robot.attendre_retour_embarque(chemin)
+            # le vrai rover revient tout seul : l'ordinateur ne peut que l'attendre, pendant
+            # un temps borne (delai de l'adaptateur), puis la mission s'arrete
+            if not robot.attendre_retour_embarque(chemin):
+                abandonner('rover_injoignable', 'SECOURS', 'pas de reponse du rover', point=ici)
             noter_position()
         else:
             rouler(
@@ -246,6 +354,9 @@ def mission(
                 surveiller_rover=False,
                 point=dernier_ok,
             )
+        if not robot.rover_joignable():
+            # jamais 'liaison retrouvee' si elle ne l'est pas
+            abandonner('rover_injoignable', 'SECOURS', 'liaison pas revenue', point=ici)
         robot.vider_tampon()
         radius = settings.no_go_radius
         if radius <= 0:  # the link loss does not come from a place: just plan again
@@ -259,7 +370,7 @@ def mission(
         carte.interdire_zone(*zone_interdite)
         emettre('reprise_rover', 'SECOURS', point=dernier_ok, zone=zone_interdite, instant=instant)
 
-    def fin():
+    def fin(issue, raison=''):
         instantanes['fin'] = {
             'grille': carte.grille(*zone) if zone else None,
             'traj': traj,
@@ -267,119 +378,133 @@ def mission(
             'replans': replans,
             'demandees': demandees,
         }
+        instantanes['issue'], instantanes['raison'] = issue, raison
+        instantanes['succes'] = issue == 'arrivee'
         return instantanes
+
+    def boucle(dec):
+        """La mission elle-meme ; renvoie (issue, raison)."""
+        premier = True
+        for _ in range(max_tours):
+            if suivre_liaison():
+                dec = decider()
+                continue
+            action = dec['action']
+
+            if action == 'DEMANDER_DRONE':
+                tuiles = list(dec['tuiles'])
+                instantanes.setdefault(
+                    'blocage',
+                    {
+                        'grille': dec['grille'],
+                        'tuiles': tuiles,
+                        'optimiste': dec['chemin_optimiste'],
+                    },
+                )
+                emettre('blocage', action, tuiles=tuiles, optimiste=dec['chemin_optimiste'])
+                demandees.extend(tuiles)
+                for k in tuiles:
+                    robot.demander_zoom(k)
+                emettre('zoom', action, tuiles=tuiles)
+                dec = decider()
+                continue
+
+            if action == 'INSPECTER':
+                secteur, cible, vue = dec['secteur'], dec['cible'], dec['point_de_vue']
+                essais[secteur] = essais.get(secteur, 0) + 1
+                infos = {'cible': cible, 'point_de_vue': vue}
+                emettre(
+                    'inspecter',
+                    action,
+                    chemin=dec['chemin'],
+                    optimiste=dec['chemin_optimiste'],
+                    **infos,
+                )
+                r = rouler(
+                    dec['chemin'], lambda q, vue=vue: math.dist(q, vue) < 0.05, action, **infos
+                )
+                # deja assez pres pour bien voir la cible : on s'arrete et on regarde
+                assez_pres = math.dist(robot.position(), cible) <= robot.portee_camera - 0.4
+                if r == 'arrive' or (r in ('bloque', 'choc') and assez_pres):
+                    robot.attendre(2.0)  # le temps de faire tourner la tourelle
+                    robot.observer(tour_complet=True)
+                    carte.inspectees.add(secteur)
+                    emettre('analyse', action, **infos)
+                elif essais[secteur] >= 3:
+                    carte.inspectees.add(secteur)  # impossible d'y arriver : on passe
+                if r == 'budget' and revenir_et_attendre() == 'abandon':
+                    return 'abandon_drone', 'drone toujours absent'
+                dec = decider()
+                continue
+
+            if action == 'OBJECTIF_DEGRADE':
+                point, restant = dec['point'], dec['distance_restante']
+                instantanes['degrade'] = {
+                    'grille': dec['grille'],
+                    'chemin': dec['chemin'],
+                    'point': point,
+                }
+                emettre('degrade', action, chemin=dec['chemin'], point=point, restant=restant)
+                r = rouler(dec['chemin'], lambda q: False, action, False, True, False, point=point)
+                if r == 'arrive' and robot.drone_disponible():
+                    emettre('fin', action, point=point, restant=restant)
+                    return 'objectif_degrade', f'point le plus proche, a {restant:.2f} m'
+                if r == 'arrive':
+                    # sans drone, rien n'est definitif : on attend qu'il revienne verifier
+                    if attendre_drone(action, point) == 'abandon':
+                        return 'abandon_drone', 'drone toujours absent'
+                    dec = decider()
+                    continue
+                if r == 'budget' and revenir_et_attendre() == 'abandon':
+                    return 'abandon_drone', 'drone toujours absent'
+                dec = decider()
+                continue
+
+            # SUIVRE
+            if premier:
+                instantanes.setdefault(
+                    'premier_chemin', {'grille': dec['grille'], 'chemin': list(dec['chemin'])}
+                )
+            if dec['a_verifier']:
+                tuiles = list(dec['a_verifier'])
+                emettre('verifier', 'DEMANDER_DRONE', tuiles=tuiles, chemin=dec['chemin'])
+                demandees.extend(tuiles)
+                carte.demandes.update(tuiles)
+                for k in tuiles:
+                    robot.demander_zoom(k)
+                emettre('zoom', 'DEMANDER_DRONE', tuiles=tuiles)
+                dec = decider()
+                continue
+            emettre('suivre', action, chemin=dec['chemin'], premier=premier)
+            premier = False
+            r = rouler(dec['chemin'], lambda q: math.dist(q, victime) <= tolerance, action)
+            if r == 'budget':
+                # Trop d'incertitude. Si la victime est plus proche que le dernier point vu par
+                # le drone, revenir serait plus risque que finir : on continue, on reste pres
+                # d'elle et on signale. Sinon, retour.
+                suite = decider()
+                retour = longueur(robot.trace_depuis_recalage()[1])
+                if suite['action'] == 'SUIVRE' and longueur(suite['chemin']) < retour:
+                    emettre('poursuite', action, chemin=suite['chemin'], sigma=robot.incertitude())
+                    r = rouler(
+                        suite['chemin'],
+                        lambda q: math.dist(q, victime) <= tolerance,
+                        action,
+                        budget=False,
+                    )
+                elif revenir_et_attendre() == 'abandon':
+                    return 'abandon_drone', 'drone toujours absent'
+            if r == 'arrive':
+                emettre('arrivee', action, distance=math.dist(robot.position(), victime))
+                return 'arrivee', f'a {math.dist(robot.position(), victime):.2f} m'
+            dec = decider()
+        abandonner('max_tours', None, f'{max_tours} tours')
 
     robot.placer(depart)
     noter_position()
     robot.observer()
     emettre('capteur')
-    dec = decider()
-    premier = True
-    for _ in range(max_tours):
-        if suivre_liaison():
-            dec = decider()
-            continue
-        action = dec['action']
-
-        if action == 'DEMANDER_DRONE':
-            tuiles = list(dec['tuiles'])
-            instantanes.setdefault(
-                'blocage',
-                {'grille': dec['grille'], 'tuiles': tuiles, 'optimiste': dec['chemin_optimiste']},
-            )
-            emettre('blocage', action, tuiles=tuiles, optimiste=dec['chemin_optimiste'])
-            demandees += tuiles
-            for k in tuiles:
-                robot.demander_zoom(k)
-            emettre('zoom', action, tuiles=tuiles)
-            dec = decider()
-            continue
-
-        if action == 'INSPECTER':
-            secteur, cible, vue = dec['secteur'], dec['cible'], dec['point_de_vue']
-            essais[secteur] = essais.get(secteur, 0) + 1
-            infos = {'cible': cible, 'point_de_vue': vue}
-            emettre(
-                'inspecter',
-                action,
-                chemin=dec['chemin'],
-                optimiste=dec['chemin_optimiste'],
-                **infos,
-            )
-            r = rouler(dec['chemin'], lambda q, vue=vue: math.dist(q, vue) < 0.05, action, **infos)
-            # deja assez pres pour bien voir la cible : on s'arrete et on regarde
-            assez_pres = math.dist(robot.position(), cible) <= robot.portee_camera - 0.4
-            if r == 'arrive' or (r in ('bloque', 'choc') and assez_pres):
-                robot.attendre(2.0)  # le temps de faire tourner la tourelle
-                robot.observer(tour_complet=True)
-                carte.inspectees.add(secteur)
-                emettre('analyse', action, **infos)
-            elif essais[secteur] >= 3:
-                carte.inspectees.add(secteur)  # impossible d'y arriver : on passe
-            if r == 'budget' and revenir_et_attendre() == 'abandon':
-                break
-            dec = decider()
-            continue
-
-        if action == 'OBJECTIF_DEGRADE':
-            point, restant = dec['point'], dec['distance_restante']
-            instantanes['degrade'] = {
-                'grille': dec['grille'],
-                'chemin': dec['chemin'],
-                'point': point,
-            }
-            emettre('degrade', action, chemin=dec['chemin'], point=point, restant=restant)
-            r = rouler(dec['chemin'], lambda q: False, action, False, True, False, point=point)
-            if r == 'arrive' and robot.drone_disponible():
-                emettre('fin', action, point=point, restant=restant)
-                break
-            if r == 'arrive':
-                # sans drone, rien n'est definitif : on attend qu'il revienne verifier
-                if attendre_drone(action, point) == 'abandon':
-                    break
-                dec = decider()
-                continue
-            if r == 'budget' and revenir_et_attendre() == 'abandon':
-                break
-            dec = decider()
-            continue
-
-        # SUIVRE
-        if premier:
-            instantanes.setdefault(
-                'premier_chemin', {'grille': dec['grille'], 'chemin': list(dec['chemin'])}
-            )
-        if dec['a_verifier']:
-            tuiles = list(dec['a_verifier'])
-            emettre('verifier', 'DEMANDER_DRONE', tuiles=tuiles, chemin=dec['chemin'])
-            demandees += tuiles
-            carte.demandes.update(tuiles)
-            for k in tuiles:
-                robot.demander_zoom(k)
-            emettre('zoom', 'DEMANDER_DRONE', tuiles=tuiles)
-            dec = decider()
-            continue
-        emettre('suivre', action, chemin=dec['chemin'], premier=premier)
-        premier = False
-        r = rouler(dec['chemin'], lambda q: math.dist(q, victime) <= tolerance, action)
-        if r == 'budget':
-            # Trop d'incertitude. Si la victime est plus proche que le dernier point vu par
-            # le drone, revenir serait plus risque que finir : on continue, on reste pres
-            # d'elle et on signale. Sinon, retour.
-            suite = decider()
-            retour = longueur(robot.trace_depuis_recalage()[1])
-            if suite['action'] == 'SUIVRE' and longueur(suite['chemin']) < retour:
-                emettre('poursuite', action, chemin=suite['chemin'], sigma=robot.incertitude())
-                r = rouler(
-                    suite['chemin'],
-                    lambda q: math.dist(q, victime) <= tolerance,
-                    action,
-                    budget=False,
-                )
-            elif revenir_et_attendre() == 'abandon':
-                break
-        if r == 'arrive':
-            emettre('arrivee', action, distance=math.dist(robot.position(), victime))
-            return fin()
-        dec = decider()
-    return fin()
+    try:
+        return fin(*boucle(decider()))
+    except _FinMission as f:
+        return fin(f.issue, f.raison)

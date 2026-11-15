@@ -258,6 +258,19 @@ python -m http.server 8765 --directory merging_map/dashboard
 * In the merged view, a cell **seen by the rover** (`0` or `1`) wins over the drone; elsewhere the
   drone value stands. `-1` never changes anything.
 * Within one source, the finest level and the most recent tile win.
+* **Several devices per role**: `source` may also be `'drone:<id>'` or `'rover:<id>'` (any
+  number of each; the role is the part before the colon). Each device's tiles are stored
+  apart (`carte.tuiles['drone:a']`), then merged per role: the finest level wins, and at the
+  same level the most recent tile wins; any rover still wins over every drone. Plain
+  `'drone'` / `'rover'` behave exactly as before. `carte.sources('drone')` lists the devices.
+* **Forgetting rover observations**: a rover cell wins over the drone for good, so a false
+  bump (`stalled`, wheel slip) or a person in front of the rover camera can close a passage
+  for the whole mission. `carte.oublier_rover(zone=(x0, y0, x1, y1))` (or `zone=None`:
+  everywhere; `source='rover:b'`: one device) forgets them; the drone map takes over again.
+  Bumps can also be given a lifetime: `carte.duree_choc = 30.0` (or
+  `signaler_obstacle(..., duree=30.0)`, or `MissionSettings.bump_lifetime`), then
+  `carte.expirer_chocs(t)` (called by the mission before every decision) erases them. Off by
+  default: bumps last for good, as before.
 
 ## Using the module
 
@@ -267,6 +280,7 @@ from fusion_carte import CarteFusion
 carte = CarteFusion(n=32, res_fine=0.05, zmax=4)
 carte.recevoir(msg)            # every tile received from the drone or the rover
 carte.signaler_obstacle(x, y)  # wheel slip / stuck / slope too steep, felt by the rover
+carte.oublier_rover(zone)      # forget what the rovers saw or felt there (false bump)
 
 dec = carte.decider(rover_position, victim_position)
 # dec['action'] is one of:
@@ -288,12 +302,25 @@ rover and the victim, so the rover does not wander off the map. Pass `zone=(x0, 
 * **A\*** on the z3 grid (10 cm cells), 8 directions (straight 1, diagonal 1.414, no corner
   cutting), straight-line heuristic, so the path is the shortest one. Unknown cells cost 3×,
   obstacles are grown by the robot radius (15 cm). Arrival = any free cell within 50 cm of
-  the victim.
+  the victim. If no free cell is that close (victim seen as an obstacle by the overhead
+  camera, with the arena tolerance of 15 cm below the rover radius), arrival is any free cell
+  just outside the inflation: tolerance + robot radius + drone margin + one cell.
+* **Leaving the start**: when the rover stands inside the inflation (after a bump, or when
+  the drone margin grew), the A\* lets it out only through cells at least as far from the
+  nearest obstacle as the rover already is: it can back away, never get closer. When the
+  rover stands outside the inflation nothing is released, so every vertex of the path keeps
+  the robot radius. The path check after each step applies the same rule.
 * Tile levels, 32×32 cells each: z0 = 80 cm cells (drone, first survey), z2 = 20 cm (drone
   zoom), z3 = 10 cm (planning), z4 = 5 cm (rover). One first-survey drone cell covers
   16 × 16 rover cells.
 * Typical timings on a laptop (25.6 m area): one A\* ≈ 0.12 s, a full decision ≈ 0.16 s,
   the path check after each step ≈ 1 ms. Expect a few times slower on a Raspberry Pi.
+* Field scale, measured on the VM (64 × 57.6 m surveyed at z4, 700 trunks): a 26 m path
+  0.25-0.38 s; a victim that cannot be reached 0.32-0.48 s (0.55-0.63 s without the drone),
+  instead of 4.3-5.6 s before; with a z0 survey (102 m area) 0.8-1.7 s instead of ~22 s.
+  Reachability comes from connected components (OpenCV, `cv2.connectedComponents`) checked
+  before the A\*, so a failing A\* no longer explores the whole map in Python. Without OpenCV
+  the result is the same, only slower.
 
 ## When the drone link is lost
 
@@ -341,7 +368,28 @@ In the simulation: `Simu(..., zones_blanches=[(x, y, r)])`; `monde_6()` is the s
 **Still to do on the real robot:** the on-board safety program (a watchdog in the rover's
 server, `rover/rover_server.py`: record the odometry trail and the link state, and drive back
 on it when the computer goes silent). Today that server finishes its current step and stops,
-and the brain waits for the link to come back (`attendre_retour_embarque`).
+and the brain waits for the link to come back (`attendre_retour_embarque`, 60 s by default
+in `RaspRoverReel(delai_retour=...)`). If it does not come back, the mission ends with
+`abandon: rover injoignable` (it never logs "link back" when it is not).
+
+## How a mission ends
+
+`cerveau.mission()` returns its snapshots with the outcome:
+
+| `instantanes['issue']` | meaning | `ETAT_SUIVI` (live page) |
+|---|---|---|
+| `arrivee` | at the victim (`instantanes['succes']` is True only here) | `arrive` |
+| `objectif_degrade` | no passage: closest reachable point, alert | `abandon` |
+| `abandon_drone` | no drone for `drone_wait_max`: stopped, alert | `abandon` |
+| `rover_injoignable` | rover link lost and not back after the adapter's wait | `abandon` |
+| `sans_progres` | rover did not move more than `stall_distance` (5 cm) over `stall_steps` (8) steps, or bumped `same_bump_max` (4) times at one place | `abandon` |
+| `max_tours` | `max_tours` turns without an end | `abandon` |
+| `erreur_robot` | `robot_error_retries` (3) rover server errors in a row | `erreur` |
+
+`instantanes['raison']` says why in words. A rover server error (`ServeurRoverError`, e.g. the
+heading could not be measured because the overhead camera missed the rover) stops the rover,
+waits 1 s and tries the step again; an operator stop (any exception named `ArretOperateur`)
+is never retried: it goes straight to the caller.
 
 When no path exists, the module asks: "if the obstacles the drone only saw from far away were
 actually passable, where would I go?" It then asks the drone to zoom on exactly those tiles. If
