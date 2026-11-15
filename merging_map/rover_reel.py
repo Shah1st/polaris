@@ -47,6 +47,10 @@ une reponse perdue sur le Wi-Fi ne compte pas. Une reponse HTTP d'erreur (400, 4
 erreur de programme : elle leve ServeurRoverError au lieu de declencher le secours. Quand
 l'ordinateur se tait, le serveur finit le pas en cours puis s'arrete : il n'y a PAS de
 programme de retour embarque, l'ordinateur attend que la liaison revienne.
+Liaison lente (tunnel SSH vers le robot, 1,5 a 4 s par requete, 15 nov.) : ce qui compte est
+le nombre de requetes. Un pas en coute GET /state (controles), POST, puis les lectures de
+l'etat jusqu'a l'arret ; avec attente_pas, la premiere lecture attend la duree attendue du
+pas. lancer_overhead.py --liaison-lente regle delai_liaison, periode et le delai HTTP.
 
 Securite
 --------
@@ -250,6 +254,7 @@ class RaspRoverReel(RobotOdometrie):
         rafraichir_drone=None,
         vitesse=0.2,
         periode=0.2,
+        attente_pas=False,
         attente_image=0.6,
         base_cap=0.1,
         pas_cap=0.15,
@@ -270,6 +275,9 @@ class RaspRoverReel(RobotOdometrie):
         self.rafraichir_drone = rafraichir_drone
         self.vitesse = vitesse  # m/s, vitesse de croisiere demandee au serveur
         self.periode = periode  # s, lecture de GET /state pendant un pas
+        # liaison lente : apres le POST d'un pas, pas de GET /state avant sa duree attendue
+        # (longueur / vitesse, moins une periode) ; chaque requete y coute 1,5 a 4 s
+        self.attente_pas = attente_pas
         self.attente_image = attente_image  # s apres l'arret, sans rafraichir_drone
         self.base_cap = base_cap  # m, deplacement minimal pour mesurer le cap
         self.pas_cap = pas_cap  # m, ligne droite pour mesurer le cap au depart
@@ -539,13 +547,16 @@ class RaspRoverReel(RobotOdometrie):
                 'carte <- odometrie faux (serveur redemarre, /reset_odom ?) : rien envoye.'
             )
 
-    def _faire_un_pas(self, chemin, corps, longueur):
+    def _faire_un_pas(self, chemin, corps, longueur, avant=None):
         """Envoie un pas au serveur et le suit jusqu'a l'arret. Renvoie (statut, etat) : le
         statut du serveur ('done', 'stalled', 'timeout'...), 'delai' s'il ne finit pas,
         'redemarrage' si le serveur a redemarre, ou (None, None) si la liaison est perdue.
-        Leve ArretOperateur si un operateur a arrete ou remplace le pas."""
+        Leve ArretOperateur si un operateur a arrete ou remplace le pas. `avant` : la reponse
+        de GET /state que l'appelant vient de lire (rien entre elle et le POST), sinon elle
+        est lue ici : une requete de moins par pas."""
         self._odo_fin = None
-        avant = self._etat()
+        if avant is None:
+            avant = self._etat()
         if avant is None:
             return None, None
         if self._redemarrage:
@@ -567,8 +578,11 @@ class RaspRoverReel(RobotOdometrie):
         debut, vu_en_cours = self.temps(), False
         derniere_reponse = debut
         etat = avant
+        # attente_pas : premiere lecture a la fin attendue du pas, pas avant
+        attente = max(0.0, longueur / self.vitesse - self.periode) if self.attente_pas else 0.0
         while self.temps() - debut < delai:
-            self.dormir(self.periode)
+            self.dormir(self.periode + attente)
+            attente = 0.0
             etat = self._demander('GET', '/state')
             if etat is None:
                 if self.temps() - derniere_reponse < self.delai_liaison:
@@ -677,11 +691,11 @@ class RaspRoverReel(RobotOdometrie):
         visee = self.pas_cap + TOLERANCE_BUT
         return max(minimum, min(visee, self._degagement(visee)))
 
-    def _mesurer_le_cap(self):
+    def _mesurer_le_cap(self, frais=None):
         """Cap inconnu (rover sans marqueur) : le rover avance tout droit (au plus pas_cap m,
         voir _pas_pour_le_cap), et la camera et l'odometrie voient le meme deplacement. S'il
         est bloque devant, il essaie en arriere. Renvoie le point d'impact s'il etait bloque en
-        avancant, sinon None."""
+        avancant, sinon None. `frais` : GET /state que deplacer vient de lire."""
         bloque = None
         pas = round(self._pas_pour_le_cap(), 3)
         for distance in (pas, -pas):
@@ -690,11 +704,13 @@ class RaspRoverReel(RobotOdometrie):
             # (un /move relatif repartait de la ou le rover en etait). En arriere : un /move,
             # envoye une seule fois. Un /path vers un point derriere le rover a moins de
             # path_lookahead (0,2 m) finit 'done' sans bouger sur le vrai serveur.
-            etat = self._etat()
+            etat = frais or self._etat()
+            frais = None  # en arriere : relu apres l'arret et l'image
             if etat is None or self._redemarrage:
                 return None
             if distance < 0:
-                statut, etat = self._faire_un_pas('/move', {'distance': distance}, -distance)
+                corps = {'distance': distance}
+                statut, etat = self._faire_un_pas('/move', corps, -distance, avant=etat)
             else:
                 xo, yo, ho = pose_odom(etat)
                 but = (xo + distance * math.cos(ho), yo + distance * math.sin(ho))
@@ -703,7 +719,7 @@ class RaspRoverReel(RobotOdometrie):
                     'frame': 'odom',
                     'speed': self.vitesse,
                 }
-                statut, etat = self._faire_un_pas('/path', corps, distance)
+                statut, etat = self._faire_un_pas('/path', corps, distance, avant=etat)
             if statut is None or statut == 'redemarrage':
                 return None
             patine = self._arret(statut, etat)
@@ -745,6 +761,8 @@ class RaspRoverReel(RobotOdometrie):
             elif not self._est_pret(etat):
                 self.pret = False  # ESP32 deconnecte ou gyroscope a recalibrer
                 self._a_recaler = True
+            else:
+                self.pret = True  # vu pret sur le GET /state qu'on vient de lire
             if self.pret:
                 break
             if not self._attendre_le_rover():
@@ -755,7 +773,9 @@ class RaspRoverReel(RobotOdometrie):
         else:
             raise ServeurRoverError('Le serveur du rover redemarre sans arret : mission arretee.')
         if self._a_recaler:
-            etat, mesure = self._etat(), self._mesure_fraiche()
+            # l'image d'abord : l'etat lu ensuite est le plus recent, il sert aussi au pas
+            mesure = self._mesure_fraiche()
+            etat = self._etat()
             if etat is None:
                 return None
             if mesure is not None:
@@ -767,7 +787,7 @@ class RaspRoverReel(RobotOdometrie):
                     'Cap du rover inconnu et camera indisponible : impossible de savoir dans '
                     'quelle direction partir.'
                 )
-            impact = self._mesurer_le_cap()
+            impact = self._mesurer_le_cap(etat if etat is self._dernier_etat else None)
             if impact is not None or not self.joignable or self.repere.angle is None:
                 return impact  # choc, liaison perdue, ou redemarrage : le pas suivant reprend
         but = self.repere.vers_odom(*cible)
@@ -776,7 +796,10 @@ class RaspRoverReel(RobotOdometrie):
             'frame': 'odom',
             'speed': self.vitesse,
         }
-        statut, etat = self._faire_un_pas('/path', corps, math.dist(self.est, cible))
+        # etat : la derniere reponse de GET /state (debut de deplacer ou recalage, rien n'est
+        # parti depuis) sert au pas ; apres la mesure du cap, il est relu
+        avant = etat if etat is self._dernier_etat else None
+        statut, etat = self._faire_un_pas('/path', corps, math.dist(self.est, cible), avant)
         if statut is None:
             return None  # liaison perdue : le cerveau le voit avec rover_joignable()
         if statut == 'redemarrage':
