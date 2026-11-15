@@ -145,7 +145,7 @@ la ligne `Rover joint` contre `rover_server.py --sim`, les autres avec `--marque
 Rover joint : liaison ESP32 True, gyroscope pret True, boot_id 122b409f3c60dd72
 Zone vue par la camera : 2.34 x 1.89 m (...) ; echelle 3.000 mm/pixel (--metres-par-pixel)
 Rover vu par la camera : (0.62, 1.33) m, cap -34 deg
-[dry-run] decision : SUIVRE, chemin de 3.24 m
+[dry-run] decision : SUIVRE, chemin de 3.88 m
 [dry-run] pas 1 : (0.62, 1.33) -> (0.49, 1.19) m, 0.19 m
 ```
 
