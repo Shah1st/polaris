@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 
 import pytest
 
@@ -42,7 +43,12 @@ class Bench:
         self.camera = Camera('test', width=64, height=48, fps=15, quality=70)
         self.camera.request = lambda: None  # frames are published by the tests
         self.cfg_path = os.path.join(tmp, 'rover_config.json')
-        self.app = App(self.rover, self.camera, self.cfg_path, None)
+        # An App around this rover (no ESP32 port: /mode can only say 'sim', a no-op here).
+        args = types.SimpleNamespace(
+            width=64, height=48, fps=15, quality=70, camera='test', no_camera=True, sim_drift=0.0
+        )
+        self.app = App(self.rover.cfg, self.cfg_path, args, None)
+        self.app.rover, self.app.camera, self.app.mode = self.rover, self.camera, 'sim'
         self.server = rover_server.ThreadingHTTPServer(('127.0.0.1', PORT), make_handler(self.app))
         self.server.daemon_threads = True
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
