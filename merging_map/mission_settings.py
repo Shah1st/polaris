@@ -8,7 +8,7 @@ are absurd: a 1.5 m no-go zone after a link loss blocks the whole floor, while a
 in a room has nothing to do with where the rover is.
 
 Only the values that depend on the size of the place differ between the two sets. Those that
-depend on the rover or its sensors are the same in both (step length, wait for the drone),
+depend on the rover or its sensors are the same in both (careful step, wait for the drone),
 and the rover radius and the planning cell size stay with the map
 (CarteFusion(rayon_robot=..., niveau_plan=...), lancer_overhead.REGLAGES_PETITE_ZONE).
 
@@ -25,8 +25,7 @@ import dataclasses
 @dataclasses.dataclass(frozen=True)
 class MissionSettings:
     # ---- the same everywhere (rover and sensors) ------------------------------------------
-    step: float = 0.3  # m driven per step while the drone sees the rover
-    careful_step: float = 0.15  # m per step without the drone (twice as slow)
+    careful_step: float = 0.15  # m per step without the drone
     drone_wait_max: float = 300.0  # s waiting for the drone at the return point, then stop
     # Rover server errors (rover_reel.ServeurRoverError) in a row before the mission stops
     # ('erreur_robot'); after each one the rover is stopped and the step tried again.
@@ -43,6 +42,10 @@ class MissionSettings:
     bump_lifetime: float | None = None
 
     # ---- depends on the size of the place -------------------------------------------------
+    # m driven per step while the drone sees the rover. The rover drives straight to the end
+    # of the step, so a corner of the path inside it is cut: by about 11 cm at 0.3 m on a
+    # right-angle turn, 7 cm at 0.2 m. Compare with the margin around obstacles.
+    step: float = 0.3
     # m of possible position error without the drone before going back to the last point it
     # saw (unless the victim is closer). Compare with the width of the passages.
     uncertainty_budget: float = 0.6
@@ -71,6 +74,7 @@ class MissionSettings:
 FIELD = MissionSettings()
 
 ARENA = MissionSettings(
+    step=0.2,  # to try: less corner cutting between obstacles 30 to 40 cm apart
     # Without the overhead camera the drone obstacles grow by the uncertainty: with the
     # 0.155 m rover radius a 40 cm passage closes from ~4.5 cm of uncertainty (~1.8 m driven
     # at 2.5 cm/m), well before this budget, and a passage under 31 cm never opens even with

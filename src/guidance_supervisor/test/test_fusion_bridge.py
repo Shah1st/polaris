@@ -3,6 +3,7 @@
 import math
 
 import numpy as np
+import pytest
 
 from guidance_supervisor.fusion_bridge import (
     decision_summary,
@@ -11,6 +12,7 @@ from guidance_supervisor.fusion_bridge import (
     heading_from_pose,
     load_merging_map,
     ros_grid_to_fusion,
+    seen_area,
     tiles_from_ros_grid,
 )
 
@@ -72,3 +74,49 @@ def test_the_bridge_feeds_a_plan() -> None:
     summary = decision_summary(decision)
     assert summary['action'] == 'SUIVRE' and summary['path_length'] > math.dist((0.4, 0.4), (2, 2))
     assert 'chemin' not in summary  # no big arrays in the message
+
+
+def test_planning_area_is_where_the_camera_saw() -> None:
+    """A 2 m x 2 m /map of which the camera saw only x 0..1.6, y 0..1.75: the rest is unknown
+    and must stay out of the planning area."""
+    width = height = 40
+    grid = np.full((height, width), -1, np.int8)
+    grid[:35, :32] = 0
+    grid[10, 10] = 100
+
+    area = seen_area(grid.ravel().tolist(), width, height, 0.05, 0.0, 0.0)
+
+    assert area == pytest.approx((0.0, 0.0, 1.6, 1.75))
+    assert grid_area(width, height, 0.05, 0.0, 0.0) == pytest.approx((0.0, 0.0, 2.0, 2.0))
+
+
+def test_planning_area_follows_the_grid_origin_and_is_none_when_nothing_is_seen() -> None:
+    grid = np.full((4, 6), -1, np.int8)
+    assert seen_area(grid.ravel().tolist(), 6, 4, 0.05, 1.0, 2.0) is None
+    grid[1:3, 2:5] = 0
+    assert seen_area(grid.ravel().tolist(), 6, 4, 0.05, 1.0, 2.0) == pytest.approx(
+        (1.10, 2.05, 1.25, 2.15)
+    )
+
+
+def test_planner_stays_inside_the_seen_area() -> None:
+    """Goal behind a wall that spans the camera's view: on the whole 2 m grid the planner
+    goes around through unknown cells; inside the seen area it reports no way through."""
+    width = height = 40
+    grid = np.full((height, width), -1, np.int8)
+    grid[:, :24] = 0  # the camera saw x 0..1.2
+    grid[18:22, :24] = 100  # a wall across all of it, y 0.9..1.1
+    data = grid.ravel().tolist()
+    carte = CarteFusion(niveau_plan=4, rayon_robot=0.155)
+    for tile in tiles_from_ros_grid(data, width, height, 0.05, 0.0, 0.0, carte):
+        carte.recevoir(tile)
+    start, goal = (0.6, 0.4), (0.6, 1.6)
+    whole_grid = grid_area(width, height, 0.05, 0.0, 0.0)
+    seen = seen_area(data, width, height, 0.05, 0.0, 0.0)
+
+    on_whole_grid = carte.decider(start, goal, zone=whole_grid, tolerance=0.15)
+    on_seen_area = carte.decider(start, goal, zone=seen, tolerance=0.15)
+
+    assert on_whole_grid['action'] == 'SUIVRE'
+    assert max(x for x, _ in on_whole_grid['chemin']) > 1.2
+    assert on_seen_area['action'] != 'SUIVRE'

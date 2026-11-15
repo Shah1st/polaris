@@ -15,7 +15,9 @@ module provides them from the overhead pipeline:
   adapter then measures the heading from the rover's motion).
 
 Sources: `camera_reader` (live camera, stream, snapshot URL or still file; see
-`camera_source.py`) or `image_file_reader` (a file read again at each call).
+`camera_source.py`; `lancer_overhead.py --camera` uses it), `LiveCamera` (a stream read with
+`cv2.VideoCapture`) or `image_file_reader` (a file read again at each call). Only
+`camera_reader` has `read_new`, the frame taken after a call.
 
 Tile format, from `merging_map/README.md`: N x N cells (N = 32), values 1 obstacle, 0 free and
 seen, -1 not seen, row 0 = south, tile (z, x, y) covering x*T <= X < (x+1)*T with T = N * cell
@@ -24,6 +26,7 @@ size. The grid here has 5 cm cells, which is level z = 4 of the fusion's default
 
 import logging
 import math
+import threading
 import time
 from collections.abc import Callable
 
@@ -106,6 +109,80 @@ def image_file_reader(path: str) -> Callable[[], np.ndarray | None]:
         return cv2.imread(str(path))
 
     return read
+
+
+class LiveCamera:
+    """A camera stream that always gives its newest picture. Call it to get a BGR image, or
+    None when no picture has arrived for `max_age` seconds.
+
+    `source` is anything `cv2.VideoCapture` opens: the URL of a phone camera app
+    (`http://<phone>:8080/video`, `rtsp://...`), a video file, or a device number. A thread
+    keeps reading, since OpenCV queues pictures and a slow reader would get old ones. It
+    reopens the stream when it breaks.
+
+    A stream has its own scale: it is cropped and resized differently from a photo of the same
+    camera, so set `OverheadSettings.metres_per_pixel` from a picture of this stream.
+    """
+
+    def __init__(
+        self,
+        source: str | int,
+        max_age: float = 2.0,
+        retry_delay: float = 1.0,
+        open_capture: Callable = cv2.VideoCapture,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._source = source
+        self._max_age = max_age
+        self._retry_delay = retry_delay
+        self._open = open_capture
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._frame: np.ndarray | None = None
+        self._time: float | None = None
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        capture = None
+        while not self._stop.is_set():
+            if capture is None:
+                capture = self._open(self._source)
+            ok, frame = capture.read() if capture.isOpened() else (False, None)
+            if ok and frame is not None:
+                with self._lock:
+                    self._frame, self._time = frame, self._clock()
+            else:  # broken or not open yet: start again after a pause
+                capture.release()
+                capture = None
+                self._stop.wait(self._retry_delay)
+        if capture is not None:
+            capture.release()
+
+    def __call__(self) -> np.ndarray | None:
+        with self._lock:
+            if self._time is None or self._clock() - self._time > self._max_age:
+                return None
+            return self._frame.copy()
+
+    def age(self) -> float | None:
+        """Seconds since the newest picture arrived; None before the first one."""
+        with self._lock:
+            return None if self._time is None else self._clock() - self._time
+
+    def wait_for_image(self, timeout: float = 10.0) -> bool:
+        """Wait until a picture has arrived. False if none came within `timeout` seconds."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if self() is not None:
+                return True
+            time.sleep(0.05)
+        return self() is not None
+
+    def close(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=5.0)
 
 
 class OverheadDrone:

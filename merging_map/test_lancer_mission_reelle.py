@@ -220,11 +220,11 @@ def faux_modules(monkeypatch):
             vu['lecteur'] = lecteur
 
     class Lecteur:
-        def __init__(self, source):
-            vu['source'] = source
+        def __init__(self, source, **options):
+            vu['source'], vu['options_lecteur'] = source, options
 
         def __call__(self):
-            return None
+            return 'image'  # the stream has its first frame: main() does not wait
 
         def close(self):
             vu['ferme'] = True
@@ -301,6 +301,7 @@ def test_command_line_wires_camera_scale_and_options(faux_modules, monkeypatch) 
         ]
     )
     assert faux_modules['source'] == 'http://127.0.0.1:8101/snapshot.jpg'
+    assert faux_modules['options_lecteur'] == {'latency': 0.5}  # --latence by default
     assert faux_modules['ferme'] is True  # the live reader is closed at the end
     assert faux_modules['reglages'] == {
         'camera_height': 1.9,

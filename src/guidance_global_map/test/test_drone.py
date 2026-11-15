@@ -1,11 +1,12 @@
 import math
+import time
 
 import cv2
 import numpy as np
 import pytest
 
 from guidance_calib.synthetic import Box, Scene, render_top_down
-from guidance_global_map.drone import OverheadDrone, cut_tiles
+from guidance_global_map.drone import LiveCamera, OverheadDrone, cut_tiles
 from guidance_global_map.pipeline import OverheadSettings, process_image
 from guidance_global_map.segmentation import OCCUPIED, ROVER
 
@@ -321,3 +322,87 @@ def test_an_unrecognised_rover_does_not_become_an_obstacle_where_it_was_last_see
     assert tile[int(0.915 / 0.05), int(0.80 / 0.05)] == -1  # unseen, not an obstacle
     assert tile[int(0.95 / 0.05), int(1.25 / 0.05)] == 1  # the box's far side stays
     assert tile[int(0.30 / 0.05), int(0.30 / 0.05)] == 0  # floor away from the rover
+
+
+class FakeCapture:
+    """Stands in for cv2.VideoCapture: gives numbered pictures, then breaks if told to."""
+
+    opened = 0
+
+    def __init__(self, source, frames=1000) -> None:
+        type(self).opened += 1
+        self.left, self.count, self.released = frames, 0, False
+
+    def isOpened(self) -> bool:  # noqa: N802 (OpenCV's name)
+        return True
+
+    def read(self):
+        time.sleep(0.002)
+        if self.left <= 0:
+            return False, None
+        self.left -= 1
+        self.count += 1
+        return True, np.full((2, 2, 3), self.count % 250, dtype=np.uint8)
+
+    def release(self) -> None:
+        self.released = True
+
+
+def test_live_camera_gives_the_newest_picture() -> None:
+    camera = LiveCamera('stream', open_capture=FakeCapture)
+    try:
+        assert camera.wait_for_image(2.0)
+        first = int(camera()[0, 0, 0])
+        time.sleep(0.1)
+        later = int(camera()[0, 0, 0])
+        assert later != first  # it kept reading in the background
+        assert camera.age() < 0.5
+    finally:
+        camera.close()
+
+
+def test_live_camera_gives_nothing_when_the_stream_stops_and_reopens_it() -> None:
+    FakeCapture.opened = 0
+    camera = LiveCamera(
+        'stream',
+        max_age=0.05,
+        retry_delay=0.2,
+        open_capture=lambda source: FakeCapture(source, frames=3),
+    )
+    try:
+        assert camera.wait_for_image(2.0)
+        time.sleep(0.12)  # the 3 pictures are used up and the last one is too old
+        assert camera() is None
+        time.sleep(0.3)  # reopened: pictures again
+        assert camera.wait_for_image(2.0)
+        assert FakeCapture.opened >= 2
+    finally:
+        camera.close()
+
+
+def test_live_camera_before_the_first_picture() -> None:
+    camera = LiveCamera('stream', open_capture=lambda source: FakeCapture(source, frames=0))
+    try:
+        assert camera() is None
+        assert camera.age() is None
+        assert not camera.wait_for_image(0.1)
+    finally:
+        camera.close()
+
+
+def test_drone_follows_a_live_camera() -> None:
+    image = render_top_down(scene_with_marked_rover())
+
+    class Stream(FakeCapture):
+        def read(self):
+            time.sleep(0.002)
+            return True, image
+
+    camera = LiveCamera('stream', open_capture=Stream)
+    try:
+        assert camera.wait_for_image(2.0)
+        drone = OverheadDrone(camera, settings(rover_marker_id=10))
+        assert drone.disponible()
+        assert drone.position_drone()[:2] == pytest.approx((0.80, 0.90), abs=0.01)
+    finally:
+        camera.close()

@@ -3,8 +3,14 @@ lancer_overhead.py - Mission sur le vrai RaspRover, avec la camera au-dessus de 
 (`guidance_global_map.drone.OverheadDrone`) dans le role du drone.
 
     PYTHONPATH=merging_map:src/guidance_calib:src/guidance_global_map:src/guidance_rover_pose \\
-        python merging_map/lancer_overhead.py --camera 0 --metres-par-pixel 0.0021 \\
-        --victime 1.2 0.9 --rover http://<IP du rover>:8080 --dry-run
+        python merging_map/lancer_overhead.py --camera http://<IP du telephone>:8080/video \\
+        --metres-par-pixel 0.0012 --victime 1.2 0.9 --rover http://<IP du rover>:8080 --dry-run
+
+--camera : la camera en direct (flux d'une application camera IP, RTSP, ou numero de
+peripherique). Son echelle n'est pas celle d'une photo : il faut --metres-par-pixel, mesure sur
+une image de ce flux (un objet de longueur connue pose au sol) ; seul --dry-run s'en passe.
+--image a la place : une photo fixe, pour essayer sans camera ; elle ne voit pas le rover
+bouger.
 
 D'abord --dry-run : aucun POST ne part, le programme affiche la zone, le rover vu par la
 camera, l'echelle, la premiere decision et les premiers pas, puis s'arrete. Ensuite la meme
@@ -329,7 +335,7 @@ def _premiere_decision(carte, rover, depart, victime, zone, tolerance, settings,
     if not rover.cap_fiable and (rover.position_drone() or (0, 0, None))[2] is None:
         suivi.journal(
             f"[dry-run] cap du rover inconnu : il avancera d'abord tout droit de "
-            f'{rover.pas_cap:.2f} m pour le mesurer (marqueur ArUco : --marqueur)'
+            f'{rover._pas_pour_le_cap():.2f} m pour le mesurer (marqueur ArUco : --marqueur)'
         )
     pos, reste = tuple(depart), list(chemin)
     for k in range(PAS_AFFICHES):
@@ -346,7 +352,10 @@ def _premiere_decision(carte, rover, depart, victime, zone, tolerance, settings,
     return {'etat': 'dry_run', 'decision': dec}
 
 
-def _lecteur_camera(source):
+ATTENTE_PREMIERE_IMAGE = 15.0  # s : --camera, delai pour la premiere image du flux
+
+
+def _lecteur_camera(source, latence):
     try:
         from guidance_global_map.drone import camera_reader
     except ImportError as e:
@@ -354,7 +363,19 @@ def _lecteur_camera(source):
             f'--camera : {e}\nIl faut guidance_global_map.drone.camera_reader (camera en '
             'direct, src/guidance_global_map). Sans lui : --image photo.jpg --dry-run.'
         )
-    return camera_reader(source)
+    # latency : une image arrivee moins de `latence` s apres la demande est partie avant ;
+    # OverheadDrone.refresh(force=True) attend donc une image qui montre le rover arrete.
+    return camera_reader(source, latency=latence)
+
+
+def _attendre_image(lecteur, delai=ATTENTE_PREMIERE_IMAGE, dormir=time.sleep):
+    """Un flux qu'on vient d'ouvrir n'a pas encore d'image : on l'attend `delai` s au plus."""
+    fin = time.monotonic() + delai
+    while lecteur() is None:
+        if time.monotonic() >= fin:
+            return False
+        dormir(0.05)
+    return True
 
 
 def _percevoir(url):
@@ -365,18 +386,39 @@ def _percevoir(url):
     return percevoir_http(url)
 
 
+def rafraichir_apres(camera, latence, dormir):
+    """Pour RaspRoverReel(rafraichir_drone=...) avec une camera en direct dont le lecteur n'a
+    pas read_new (drone.LiveCamera) : son flux a du retard, donc on attend `latence` s avant de
+    prendre l'image, pour qu'elle montre bien le rover arrete. Avec camera_reader (--camera),
+    c'est son parametre latency qui le fait."""
+
+    def rafraichir():
+        dormir(latence)
+        camera.refresh(force=True)
+
+    return rafraichir
+
+
 def analyser(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     source = p.add_mutually_exclusive_group(required=True)
     source.add_argument(
         '--camera',
-        help='camera du dessus en direct : indice local (0), URL http(s) MJPEG ou snapshot, '
-        'rtsp://, ou fichier (guidance_global_map.drone.camera_reader)',
+        help='camera du dessus en direct : indice local (0), URL http(s) MJPEG ou snapshot '
+        '(application camera IP du telephone), rtsp://, ou fichier '
+        '(guidance_global_map.drone.camera_reader). Demande --metres-par-pixel',
     )
     source.add_argument(
         '--image',
         help='photo fixe de la camera du dessus : seulement avec --dry-run (une photo ne voit '
         'pas le rover bouger)',
+    )
+    p.add_argument(
+        '--latence',
+        type=float,
+        default=0.5,
+        help='retard du flux de --camera (s) : apres un arret, la camera attend une image '
+        'arrivee au moins --latence s plus tard pour regarder le rover arrete',
     )
     p.add_argument(
         '--rover',
@@ -415,16 +457,23 @@ def analyser(argv=None):
         p.error('--image (photo fixe) seulement avec --dry-run : il faut --camera pour rouler')
     if args.rover is None and not args.dry_run:
         p.error('--rover est obligatoire sans --dry-run')
+    if args.camera is not None and args.metres_par_pixel is None and not args.dry_run:
+        p.error(
+            "--camera demande --metres-par-pixel : l'echelle d'un flux video n'est pas celle "
+            "d'une photo (a mesurer a la regle, python -m guidance_global_map.measure_scale). "
+            "Seul --dry-run s'en passe, pour voir l'echelle deduite de --hauteur."
+        )
     return args
 
 
 def reglages_camera(args):
+    """Arguments de OverheadSettings d'apres la ligne de commande."""
     reglages = {'camera_height': args.hauteur}
     if args.metres_par_pixel is not None:
         reglages['metres_per_pixel'] = args.metres_par_pixel
-    if args.focale_35mm is not None:
+    if getattr(args, 'focale_35mm', None) is not None:
         reglages['focal_length_35mm'] = args.focale_35mm
-    if args.capteur is not None:
+    if getattr(args, 'capteur', None) is not None:
         reglages['sensor_size'] = tuple(args.capteur)
     if args.marqueur is not None:
         reglages['rover_marker_id'] = args.marqueur
@@ -441,7 +490,13 @@ def main(argv=None):
             f'{e}\nIl faut guidance_global_map sur le PYTHONPATH (src/guidance_calib, '
             'src/guidance_global_map, src/guidance_rover_pose) et opencv-contrib-python.'
         )
-    lecteur = _lecteur_camera(args.camera) if args.camera else image_file_reader(args.image)
+    if args.camera:
+        lecteur = _lecteur_camera(args.camera, args.latence)
+        if not _attendre_image(lecteur):
+            lecteur.close()
+            sys.exit(f'Aucune image de la camera {args.camera} en {ATTENTE_PREMIERE_IMAGE:g} s.')
+    else:
+        lecteur = image_file_reader(args.image)
     percevoir = _percevoir(args.perception) if args.perception else None
     if args.rover:
         requete = client_http(args.rover, delai=args.delai_http)

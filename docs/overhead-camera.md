@@ -59,7 +59,7 @@ steps on one photo and writes the grid as a picture (`_grid.png`), as numbers (`
 `_grid.npy`), in the map-fusion convention (`_fusion.npy`), and an overlay on the photo
 (`_overlay.jpg`).
 
-## Feeding the map fusion (`merging_map`, branch `mergingmap`)
+## Feeding the map fusion (`merging_map`)
 
 `merging_map` merges drone and rover maps, plans the path and drives the rover. It is plain
 Python with no ROS. It takes the drone's map as tiles, and its rover controller
@@ -123,18 +123,45 @@ To import the adapter from their plain-Python side, put `src/guidance_calib`,
 `src/guidance_global_map` and `src/guidance_rover_pose` on `PYTHONPATH` (or source the built
 workspace) and have `opencv-contrib-python` and `numpy` installed.
 
-### Notes for the `merging_map` side
+### How the two are connected today
 
-- The rover position comes with or without a heading (`camera.rover_pose`); without one,
-  `rover_reel` measures it from the rover's motion. The old "drone lost the whole time" mode
-  no longer happens.
-- Planner settings for the small area are in `lancer_overhead.REGLAGES_PETITE_ZONE`
-  (5 cm cells, `rayon_robot=0.155`, goal reached at 0.15 m).
-- The frame: origin at the image's bottom-left corner, x right, y up, metres. It holds while
-  the camera does not move.
-- `lancer_overhead.py` on the command line only reads `--image FILE` today. To use a live
-  camera from the command line it needs `--source` (passed to `camera_reader`),
-  `--metres-per-pixel` and a marker height option; until then use the Python snippet above.
+| Way | Entry point | What it does |
+|---|---|---|
+| Plain Python | `merging_map/lancer_overhead.py` | Runs a whole mission: `OverheadDrone` as the drone, the planner, and the real rover through its server (`rover/rover_server.py`). `--camera <stream>` for a live camera (read by `camera_reader`, with `--metres-par-pixel`), `--dry-run` first (no command reaches the rover), `--image <file>` for trials without a camera (only with `--dry-run`). `--suivi` writes the file the mission page shows, `--perception` adds the rover's own camera. |
+| ROS | `merging_map_node` in `guidance_supervisor`, started by `guidance.launch.py` | Subscribes to `/map` and `/rover/pose_overhead`, waits for a goal on `/goal_pose`, publishes `/fusion/map`, `/fusion/plan` and `/fusion/decision`. It plans; it does not drive. |
+
+Points that were open and how they were settled:
+
+- **Rover heading.** The rover controller accepts a position with or without a heading. With
+  no marker it drives a short straight line first and works out its heading from how the
+  camera saw it move. That line is limited to the floor the map shows free all around the
+  rover; next to an obstacle it is the shortest measurable step (12 cm), protected by bump
+  detection only. It is sent as a `/path` to an absolute point of the odometry, so sending it
+  again after a lost answer does not drive it twice; the point is 2 cm past the length wanted,
+  since the rover server ends a path up to 2 cm early.
+- **Planner settings for a small area**: 5 cm planning cells, arrival within 15 cm, and a
+  rover radius of 0.155 m, the circle around the whole 0.20 x 0.23 m rover. The 0.115 m once
+  proposed here was the half-width and let a corner touch an obstacle while turning.
+- **Planning area.** Both ways plan only where the camera saw the floor: `camera.zone()` in
+  the script, the cells of `/map` that are not unknown in the ROS node.
+- **Live camera.** Two readers exist. `camera_reader(source)` (`camera_source.py`: MJPEG or
+  snapshot URL, RTSP, USB index or file) is the one `lancer_overhead.py --camera` uses: it
+  gives None when the newest frame is older than 2 s, and `read_new()` waits for a frame
+  taken after the call. `drone.LiveCamera(source)` reads a stream with `cv2.VideoCapture`
+  and always gives its newest picture. A stream has its own scale: measure
+  `metres_per_pixel` on a picture of that stream (`measure_scale`, and
+  `segment_image --metres-per-pixel` shows the result). After the rover stops, the script
+  looks at a frame that arrived at least `--latence` seconds (0.5 by default) later, because a
+  stream is late.
+
+Still open:
+
+- **The rover's own map.** `rover_mapper/perception_service.py` turns one rover camera image
+  into a -1/0/1 grid around the rover, and `merging_map/perception_rover.py` gives it to the
+  fusion (`lancer_overhead.py --perception URL`). Measured in simulation only: it has never
+  seen the real rover's camera. `sim/fusion_feed.py` does the same for a depth image with a
+  known camera pose; the D405 (`camera-test/`) is not mounted.
+- **The frame** holds only while the camera does not move.
 - ROS: `/map` and `/rover/pose_overhead` are published by the nodes; the plain-Python path
   above does not need them.
 
@@ -226,22 +253,29 @@ camera looking straight down.
 
 ## What has been verified
 
-- Unit tests of the logic on synthetic images (pure Python, no ROS): `guidance_calib` 9,
-  `guidance_global_map` 44, `guidance_rover_pose` 10, on 2026-11-15. Among them:
+- Unit tests of the logic on synthetic images and masks, and node start-up tests, run in
+  the dev container (ROS 2 Jazzy, OpenCV 4.6) with the rest of the repository.
+- Unit tests of the logic in plain Python on the VM, on 2026-11-15, among them:
   `camera_reader` against local HTTP servers (an MJPEG stream with and without
   Content-Length, a snapshot URL polled, a stalled stream, an unreachable URL), a video file
-  through the OpenCV capture loop, a forced refresh using a frame made after the call; the
-  scale of a resized frame; the marker's parallax against a pinhole projection; black, white,
-  grey, dark-noise and covered frames; a rover touching a box.
-- The three ROS nodes were run once with stub ROS modules (new parameters, parallax, frame
-  rejection), never with ROS: `rclpy` is not installed on the VM.
-- Earlier (2026-11-14): six real photos (IMG_4097 to IMG_4102, floor mock-up, phone at 1.9 m)
-  through the photo tool, all obstacles detected and the rover found in all six; one of them
-  through the launched ROS nodes in the dev container. Those photos are not in the repo.
+  through the OpenCV capture loop, a forced refresh using a frame made after the call;
+  `LiveCamera` against a fake capture; the scale of a resized frame; the marker's parallax
+  against a pinhole projection; black, white, grey, dark-noise and covered frames; a rover
+  touching a box.
+- The three ROS nodes were run once on the VM with stub ROS modules (new parameters,
+  parallax, frame rejection), not with ROS: `rclpy` is not installed there.
+- Six real photos (IMG_4097 to IMG_4102, floor mock-up, phone at 1.9 m) through the photo
+  tool: all obstacles detected, the rover found in all six.
+- One of them (IMG_4099) through the launched ROS nodes in the container, planner
+  included: a goal sent on `/goal_pose` gave a path on `/fusion/plan` that stays inside the
+  photo. Also `/map` and
+  `/rover/pose_overhead` published, and the grid equal to the photo tool's except 1 of 1,188
+  cells (the container has OpenCV 4.6, the photo tool was run with 5.0).
 
 Not verified: any live camera or real stream; the scale against a ruler; the marker on the
 real rover and its height; the bad-frame thresholds on a real camera (a very plain, evenly lit
-floor with nothing on it may read as "nearly uniform"); a moving camera; anything outdoors.
+floor with nothing on it may read as "nearly uniform"); a moving camera; the marker setup
+through the launched nodes; anything outdoors.
 
 ## Decisions and why
 
@@ -272,12 +306,14 @@ floor with nothing on it may read as "nearly uniform"); a moving camera; anythin
 
 ## Next steps, in order
 
-1. Run a mission on the real rover with the live camera and the marker (procedure above).
-2. Live-camera options on the `lancer_overhead.py` command line.
-3. Rover tracking from its last position without a marker; mask the rover's rectangle
-   instead of a 0.20 m disc.
-4. A reference image of the empty arena, to see grey/white obstacles and ignore floor marks.
-5. Later: tilted or moving camera without markers, uneven ground, a learned segmentation for
+1. A first run on the real rover with the live camera and the marker (procedure above):
+   check the stream's scale and delay, and the planner's margin.
+2. The rover's own map on the real rover (see "Still open" above).
+3. Check the scale with a tape measure on the floor.
+4. Make rover detection sturdier than size alone (colour, or tracking from the last
+   position); mask the rover's rectangle instead of a 0.20 m disc.
+5. A reference image of the empty arena, to see grey/white obstacles and ignore floor marks.
+6. Later: tilted or moving camera without markers, uneven ground, a learned segmentation for
    outdoor scenes.
 
 ## For coding agents

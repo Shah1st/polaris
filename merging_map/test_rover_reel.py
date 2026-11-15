@@ -253,9 +253,10 @@ def test_unknown_heading_is_measured_with_a_short_straight_move() -> None:
     r.placer((1.0, 1.0))
     assert r.drone_disponible() and not r.cap_fiable
     assert r.deplacer((1.4, 1.3)) is None
-    # the heading move is a /path to an absolute odometry point 15 cm ahead (idempotent)
+    # the heading move is a /path to an absolute odometry point (idempotent), aimed 2 cm past
+    # the 15 cm wanted since the server ends a path up to 2 cm early
     assert [ch for _, m, ch, _ in faux.requetes if m == 'POST'] == ['/path', '/path']
-    assert chemins(faux, '/path')[0]['points'] == [[0.15, 0.0]]
+    assert chemins(faux, '/path')[0]['points'] == [[0.17, 0.0]]
     assert r.cap_fiable and abs(angle_normalise(r.cap - faux.cap)) < 0.05
     assert math.dist((faux.x, faux.y), (1.4, 1.3)) < 0.03
 
@@ -285,7 +286,7 @@ def test_heading_is_measured_backwards_when_the_rover_faces_a_wall() -> None:
     r.placer((1.0, 1.0))
     impact = r.deplacer((1.5, 1.0))
     mesures = chemins(faux, '/path')[:2]
-    assert mesures[0]['points'] == [[0.15, 0.0]]  # ahead: stalled against the wall
+    assert mesures[0]['points'] == [[0.17, 0.0]]  # ahead: stalled against the wall
     assert mesures[1]['points'][0][0] < 0  # then 15 cm behind where it stalled
     assert r.cap_fiable and abs(angle_normalise(r.cap - faux.cap)) < 0.05
     assert impact is not None and math.dist(impact, (1.17, 1.0)) < 0.03
@@ -449,3 +450,56 @@ def test_http_client_tells_errors_from_lost_links() -> None:
         serveur.shutdown()
         serveur.server_close()
     assert requete('GET', '/state') is None  # nobody answers: the link is lost
+
+
+def carte_avec_obstacle(x0, y0, x1, y1, **reglages):
+    """A map of free floor, 3.2 m wide, with one obstacle rectangle (metres)."""
+    carte = CarteFusion(**reglages)
+    sol = np.zeros((64, 64), np.int8)
+    sol[round(y0 / 0.05) : round(y1 / 0.05), round(x0 / 0.05) : round(x1 / 0.05)] = 1
+    for msg in decouper(sol, 0.0, 0.0, 4, carte, 'drone'):
+        carte.recevoir(msg)
+    return carte
+
+
+def pas_du_cap(faux):
+    """Distance aimed at by the heading step: a /path to an absolute odometry point
+    (idempotent), and the odometry of the fake server starts at its origin. Like the real
+    server, the fake one ends a /path up to 2 cm before its point."""
+    assert chemins(faux, '/move') == []
+    return round(math.hypot(*chemins(faux, '/path')[0]['points'][0]), 3)
+
+
+def test_the_heading_step_is_shortened_by_a_known_obstacle() -> None:
+    """The heading is not known, so the straight line may go any way: it is limited to what
+    the map shows free all around the rover (here an obstacle 25 cm away, radius 10 cm)."""
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    faux.cap_visible = False
+    r = robot(faux, carte_avec_obstacle(1.25, 0.8, 1.6, 1.2, rayon_robot=0.10))
+    r.placer((1.0, 1.0))
+    r.deplacer((0.6, 1.0))
+    assert pas_du_cap(faux) == 0.15
+    assert r.cap_fiable
+
+
+def test_the_heading_step_is_full_when_the_floor_is_free_around() -> None:
+    """15 cm wanted: the path aims 2 cm further, since the server ends it up to 2 cm early."""
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    faux.cap_visible = False
+    r = robot(faux, carte_avec_obstacle(1.6, 0.8, 1.8, 1.2))
+    r.placer((1.0, 1.0))
+    r.deplacer((0.6, 1.0))
+    assert pas_du_cap(faux) == 0.17
+
+
+def test_the_heading_step_is_the_smallest_measurable_one_next_to_an_obstacle() -> None:
+    """Too close to an obstacle to have 10 cm free all around: the rover makes the shortest
+    step that still gives a heading (12 cm driven, so 14 cm aimed at), and bump detection is
+    the only protection."""
+    faux = FauxServeur(1.0, 1.0, math.pi)  # facing away from the obstacle
+    faux.cap_visible = False
+    r = robot(faux, carte_avec_obstacle(1.2, 0.8, 1.6, 1.2))
+    r.placer((1.0, 1.0))
+    r.deplacer((0.6, 1.0))
+    assert pas_du_cap(faux) == 0.14
+    assert r.cap_fiable

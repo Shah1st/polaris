@@ -7,7 +7,10 @@ a second it runs the fusion's planner and publishes:
 - /fusion/map       nav_msgs/OccupancyGrid  the merged map (frame `map`, 5 cm cells)
 - /fusion/plan      nav_msgs/Path           the planned path, empty when there is none
 - /fusion/decision  std_msgs/String         JSON: action (SUIVRE, DEMANDER_DRONE,
-                                            OBJECTIF_DEGRADE...) and its details
+                                            OBJECTIF_DEGRADE...), its details, and the
+                                            rover pose it planned from
+
+It plans inside the area the camera saw: the cells of /map that are not unknown.
 
 It plans; it does not drive the rover. Driving stays with `merging_map/rover_reel.py`
 (`lancer_overhead.py`) or, later, Nav2 following /fusion/plan.
@@ -26,9 +29,9 @@ from std_msgs.msg import String
 from guidance_supervisor.fusion_bridge import (
     decision_summary,
     fusion_to_ros_grid,
-    grid_area,
     heading_from_pose,
     load_merging_map,
+    seen_area,
     tiles_from_ros_grid,
 )
 
@@ -91,7 +94,9 @@ class MergingMapNode(Node):
             return
         for tile in tiles:
             self.carte.recevoir(tile)
-        self.zone = grid_area(
+        # plan only where the camera saw the floor, not on the unknown cells around its view
+        self.zone = seen_area(
+            msg.data,
             info.width,
             info.height,
             info.resolution,
@@ -129,7 +134,14 @@ class MergingMapNode(Node):
             point.pose.orientation.w = 1.0
             path.poses.append(point)
         self.plan_pub.publish(path)
-        self.decision_pub.publish(String(data=json.dumps(decision_summary(decision))))
+        summary = decision_summary(decision)
+        # where the planner started from; the heading is null when the camera does not know it
+        summary['rover'] = {
+            'x': round(self.position[0], 3),
+            'y': round(self.position[1], 3),
+            'heading': None if self.heading is None else round(self.heading, 3),
+        }
+        self.decision_pub.publish(String(data=json.dumps(summary)))
 
     def publish_map(self, stamp) -> None:
         x0, y0, x1, y1 = self.zone

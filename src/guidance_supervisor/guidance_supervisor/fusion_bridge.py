@@ -68,8 +68,27 @@ def tiles_from_ros_grid(data, width, height, resolution, origin_x, origin_y, car
 
 
 def grid_area(width, height, resolution, origin_x, origin_y):
-    """(x0, y0, x1, y1) covered by the grid: the planning area."""
+    """(x0, y0, x1, y1) covered by the whole grid, unknown cells included."""
     return (origin_x, origin_y, origin_x + width * resolution, origin_y + height * resolution)
+
+
+def seen_area(data, width, height, resolution, origin_x, origin_y):
+    """(x0, y0, x1, y1) around the cells the camera saw: the planning area. None if it saw
+    nothing.
+
+    The overhead camera's /map is larger than its view; the cells around the view are unknown
+    (-1). Planning on the whole grid would route the rover through ground nobody has seen,
+    where the camera cannot follow it either."""
+    known = np.asarray(data, dtype=np.int16).reshape(height, width) >= 0
+    if not known.any():
+        return None
+    rows, cols = np.flatnonzero(known.any(axis=1)), np.flatnonzero(known.any(axis=0))
+    return (
+        origin_x + float(cols[0]) * resolution,
+        origin_y + float(rows[0]) * resolution,
+        origin_x + float(cols[-1] + 1) * resolution,
+        origin_y + float(rows[-1] + 1) * resolution,
+    )
 
 
 def heading_from_pose(qz: float, qw: float, yaw_variance: float) -> float | None:
