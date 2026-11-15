@@ -35,6 +35,17 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Picker("Stabilisation", selection: $model.stabilization) {
+                        ForEach(VideoStabilization.allCases) { Text($0.title).tag($0) }
+                    }
+                    .disabled(!model.canStabilize)
+                } header: {
+                    Text("Stabilisation")
+                } footer: {
+                    Text(stabilizationFooter)
+                }
+
+                Section {
                     Picker("Résolution", selection: $model.resolution) {
                         ForEach(StreamResolution.allCases) { Text($0.rawValue).tag($0) }
                     }
@@ -96,6 +107,19 @@ struct SettingsView: View {
             return "Profondeur indisponible avec cette caméra : le flux continue sans."
         }
         return "Mesure la distance de chaque point (en mètres, jusqu'à environ 5 m), servie sur /depth ; aperçu sur /depth.jpg. Le flux vidéo passe alors par l'objectif 1× : le grand angle n'est pas disponible avec le LiDAR."
+    }
+
+    private var stabilizationFooter: String {
+        if model.lidar && model.position == .back {
+            return "Coupée avec le LiDAR : la profondeur doit rester alignée sur l'image."
+        }
+        var now = ""
+        if model.isLive && model.stabilization != .off {
+            now = model.stabilizationActive == "off"
+                ? " Pas disponible avec cette caméra et cette résolution : l'image n'est pas stabilisée."
+                : " En cours : \(model.stabilizationActive)."
+        }
+        return "Lisse les tremblements d'un iPhone tenu à la main en recadrant l'image : le champ de vue rétrécit (l'échelle de la carte vue du dessus change) et les modes Cinéma et Maximum retardent le flux d'une fraction de seconde. iPhone fixe au-dessus de la zone : laisser sur Aucune." + now
     }
 
     private var lensFooter: String {

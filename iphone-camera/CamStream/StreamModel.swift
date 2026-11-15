@@ -18,6 +18,8 @@ final class StreamModel {
     private(set) var cameraAccessDenied = false
     /// Incrémenté après chaque (re)configuration de la caméra, pour rafraîchir l'aperçu.
     private(set) var configurationID = 0
+    /// The stabilization mode actually in use ("off", "standard", "cinematic"…).
+    private(set) var stabilizationActive = "off"
 
     // MARK: Réglages (mémorisés entre les lancements)
 
@@ -44,6 +46,15 @@ final class StreamModel {
         didSet {
             guard lidar != oldValue else { return }
             defaults.set(lidar, forKey: Keys.lidar)
+            restartCaptureIfRunning()
+        }
+    }
+
+    /// Video stabilization asked for (none while the LiDAR depth is captured).
+    var stabilization: VideoStabilization {
+        didSet {
+            guard stabilization != oldValue else { return }
+            defaults.set(stabilization.rawValue, forKey: Keys.stabilization)
             restartCaptureIfRunning()
         }
     }
@@ -87,6 +98,7 @@ final class StreamModel {
         static let position = "position"
         static let lens = "lens"
         static let lidar = "lidar"
+        static let stabilization = "stabilization"
         static let resolution = "resolution"
         static let fps = "fps"
         static let quality = "quality"
@@ -96,6 +108,7 @@ final class StreamModel {
         position = defaults.string(forKey: Keys.position) == "front" ? .front : .back
         lens = CameraLens(rawValue: defaults.string(forKey: Keys.lens) ?? "") ?? .wide
         lidar = defaults.bool(forKey: Keys.lidar)
+        stabilization = VideoStabilization(rawValue: defaults.string(forKey: Keys.stabilization) ?? "") ?? .off
         resolution = StreamResolution(rawValue: defaults.string(forKey: Keys.resolution) ?? "") ?? .hd720
         let savedFPS = defaults.integer(forKey: Keys.fps)
         fps = Self.fpsOptions.contains(savedFPS) ? savedFPS : 30
@@ -180,6 +193,12 @@ final class StreamModel {
         lidarAvailable && position == .back && captureSource != .testPattern
     }
 
+    /// The stabilization picker: not with the LiDAR depth, which must stay aligned with the
+    /// picture.
+    var canStabilize: Bool {
+        !(lidar && position == .back) && captureSource != .testPattern
+    }
+
     var statusText: String {
         if !isRunning { return "Arrêté" }
         if case .failed(let message) = captureSource { return message }
@@ -187,7 +206,8 @@ final class StreamModel {
         if isLive {
             if captureSource == .testPattern { return "En direct · mire" }
             if depthActive { return "En direct · LiDAR" }
-            return activeLens == .ultraWide ? "En direct · grand angle" : "En direct"
+            let steady = stabilizationActive == "off" ? "" : " · stabilisé"
+            return (activeLens == .ultraWide ? "En direct · grand angle" : "En direct") + steady
         }
         return "Démarrage…"
     }
@@ -248,14 +268,15 @@ final class StreamModel {
     // MARK: Interne
 
     private func startCapture() {
-        camera.start(position: position, lens: lens, lidar: lidar,
-                     resolution: resolution) { [weak self] source in
+        camera.start(position: position, lens: lens, lidar: lidar, resolution: resolution,
+                     stabilization: stabilization) { [weak self] source in
             guard let self else { return }
             Self.onMain {
                 guard self.isRunning else { return }
                 self.captureSource = source
+                self.stabilizationActive = self.camera.stabilizationInUse()
                 self.configurationID += 1
-                self.pushStreamInfo() // the lens actually in use, for /status
+                self.pushStreamInfo() // the lens and stabilization actually in use, for /status
             }
         }
     }
@@ -280,7 +301,8 @@ final class StreamModel {
             fps: fps,
             camera: position == .front ? "front" : "back",
             lens: activeLens?.rawValue ?? "none",
-            depth: depthActive ? "lidar" : (lidarAvailable ? "off" : "unavailable")
+            depth: depthActive ? "lidar" : (lidarAvailable ? "off" : "unavailable"),
+            stabilization: stabilizationActive
         ))
     }
 

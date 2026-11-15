@@ -13,6 +13,9 @@ struct StreamInfo: Codable, Sendable, Equatable {
     var lens = "none"
     /// LiDAR depth: "lidar" (captured, on /depth), "off" (switched off) or "unavailable".
     var depth = "unavailable"
+    /// Video stabilization in use: "off", "standard", "cinematic", "cinematic-extended" or
+    /// "cinematic-extended-enhanced".
+    var stabilization = "off"
 }
 
 /// Petit serveur HTTP qui diffuse les images JPEG de la caméra en MJPEG
@@ -289,9 +292,11 @@ final class MJPEGServer: @unchecked Sendable {
                 let camera: String
                 let lens: String
                 let depth: String
+                let stabilization: String
             }
             let status = Status(viewers: streamClients.count, width: info.width, height: info.height,
-                                fps: info.fps, camera: info.camera, lens: info.lens, depth: info.depth)
+                                fps: info.fps, camera: info.camera, lens: info.lens, depth: info.depth,
+                                stabilization: info.stabilization)
             let body = (try? JSONEncoder().encode(status)) ?? Data("{}".utf8)
             sendResponse(on: connection, status: "200 OK", contentType: "application/json", body: body, headOnly: headOnly)
 

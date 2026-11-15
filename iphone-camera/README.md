@@ -28,7 +28,7 @@ L'app démarre la diffusion automatiquement et affiche l'adresse à ouvrir. L'iP
 | `http://IP:8080/stream` | Flux MJPEG brut (VLC, OBS, ffmpeg, OpenCV…) |
 | `http://IP:8080/view` | Page avec uniquement l'image (idéale pour OBS) |
 | `http://IP:8080/snapshot.jpg` | Dernière image en JPEG |
-| `http://IP:8080/status` | État en JSON (résolution, i/s, caméra, objectif, LiDAR, spectateurs) |
+| `http://IP:8080/status` | État en JSON (résolution, i/s, caméra, objectif, LiDAR, stabilisation, spectateurs) |
 | `http://IP:8080/depth` | Profondeur LiDAR brute (voir « LiDAR » plus bas) |
 | `http://IP:8080/depth.jpg` | Aperçu de la profondeur : proche = blanc, 5 m et plus = noir |
 
@@ -37,7 +37,7 @@ Le service est aussi annoncé en Bonjour sous le nom « CamStream » (`dns-sd -B
 Dans l'app :
 - **🔄** change de caméra (arrière / avant) ;
 - **1× / 0,5×** passe la caméra arrière en **grand angle** (objectif ultra grand-angle, champ environ deux fois plus large) et retour. Le bouton n'apparaît que sur un iPhone qui a cet objectif (iPhone 11 et suivants, pas le SE) ; la caméra avant reste en 1× ;
-- **Réglages** : caméra et objectif, **profondeur LiDAR**, résolution (480p / 720p / 1080p), images par seconde (15 / 24 / 30), qualité JPEG, liste des adresses à copier ;
+- **Réglages** : caméra et objectif, **profondeur LiDAR**, **stabilisation** (Aucune / Standard / Cinéma / Maximum), résolution (480p / 720p / 1080p), images par seconde (15 / 24 / 30), qualité JPEG, liste des adresses à copier ;
 - **🌙** éteint l'affichage (écran noir) pendant que la diffusion continue : moins de batterie et moins de chauffe. Touchez l'écran pour le rallumer.
 - L'interface reste en portrait. **Le flux suit l'orientation réelle de l'iPhone** : tenez-le à l'horizontale pour une image 16:9.
 
@@ -106,6 +106,27 @@ fx, fy, cx, cy = map(float, r.headers["X-Depth-Intrinsics"].split(","))
 Pour la caméra du dessus (Polaris), iPhone à plat au-dessus de l'arène : le sol est à la distance la plus fréquente, ce qui donne la hauteur de la caméra et donc l'échelle (mètres par pixel) sans mètre ruban ; un obstacle est ce qui dépasse du sol de quelques centimètres, quelle que soit sa couleur (ni les ombres ni les traits au sol ne comptent). Ce traitement n'est pas encore écrit côté Python.
 
 Pas encore essayé sur un vrai iPhone : le code compile (Mac de GitHub, voir `.github/workflows/camstream-ipa.yml`), mais la capture LiDAR n'a jamais tourné.
+
+## Stabilisation
+
+**Réglages › Stabilisation** lisse les tremblements d'un iPhone tenu à la main. Par défaut : **Aucune** (comme avant, l'image n'est pas stabilisée). Le choix est mémorisé, et `/status` donne le mode réellement utilisé (`"stabilization"`).
+
+| Réglage | Mode iOS demandé |
+|---|---|
+| Aucune | aucun (`off`) |
+| Standard | `standard` |
+| Cinéma | `cinematic`, sinon `standard` |
+| Maximum | le plus fort que l'iPhone accepte : `cinematic-extended-enhanced` (iOS 18), sinon `cinematic-extended`, `cinematic`, `standard` |
+
+Chaque caméra et chaque résolution n'acceptent pas tous les modes : l'app prend le premier de la liste que le format actif accepte, et `off` si aucun. iOS stabilise en recadrant et en décalant l'image :
+
+- **le champ de vue rétrécit** : pour la caméra du dessus (Polaris), l'échelle (mètres par pixel) change, à remesurer ;
+- **l'image se déforme d'une image à l'autre** : gênant pour une carte, où la géométrie doit rester fixe ;
+- **Cinéma et Maximum retardent le flux** d'une fraction de seconde (iOS garde des images d'avance pour lisser).
+
+iPhone fixe au-dessus de la zone : laisser sur **Aucune**. iPhone tenu à la main : **Standard** est un bon compromis. Avec le **LiDAR**, la stabilisation est coupée : la profondeur doit rester alignée sur l'image.
+
+Pas encore essayé sur un vrai iPhone : le code compile sur le Mac de GitHub (voir `.github/workflows/camstream-ipa.yml`).
 
 ## Tester sans iPhone
 
