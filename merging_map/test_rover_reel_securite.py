@@ -156,6 +156,7 @@ def test_restart_is_detected_by_boot_id_or_counters() -> None:
         return e
 
     assert not serveur_redemarre(etat('a'), etat('a', odometre=2.0))
+    assert serveur_redemarre(etat('a'), etat('a', odometre=0.1))  # odometry reset, same process
     assert serveur_redemarre(etat('a'), etat('b', odometre=2.0))
     assert serveur_redemarre(etat(), etat('b'))  # newer server started in between
     assert serveur_redemarre(etat(), etat(odometre=0.1))  # older server: odometer went down

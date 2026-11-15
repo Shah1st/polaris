@@ -55,7 +55,7 @@ Securite
   du tableau de bord, conduite au clavier, commande d'un autre client) leve ArretOperateur.
   C'est definitif : le cerveau ne renvoie pas de pas, lancer_overhead envoie /stop et finit.
 - Redemarrage du serveur (ou /reset_odom) : detecte a chaque lecture de GET /state (boot_id
-  qui change ; sans boot_id, odom.odometer ou link.rx_count qui diminue). L'odometrie est
+  qui change, ou odom.odometer ou link.rx_count qui diminue). L'odometrie est
   alors repartie de zero : avant le pas suivant on attend que l'ESP32 et le gyroscope soient
   prets, puis on recale le repere carte <- odometrie sur une image neuve (le cap aussi est
   oublie si la camera ne le donne pas : il est remesure).
@@ -107,10 +107,10 @@ TOLERANCE_BUT = 0.02
 def serveur_redemarre(avant, apres):
     """True si deux reponses de GET /state viennent de deux vies differentes du serveur (ou si
     l'odometrie a ete remise a zero entre les deux)."""
-    b0, b1 = avant.get('boot_id'), apres.get('boot_id')
-    if b0 is not None or b1 is not None:
-        return b0 != b1
-    # serveur sans boot_id : des compteurs qui ne font que croitre pendant une vie
+    if avant.get('boot_id') != apres.get('boot_id'):
+        return True
+    # Meme boot_id (ou aucun, serveur plus ancien) : l'odometrie a pu repartir de zero sans
+    # nouveau processus (Rover recree, /reset_odom). Ces compteurs ne font que croitre sinon.
     for bloc, cle in (('odom', 'odometer'), ('link', 'rx_count')):
         v0, v1 = (avant.get(bloc) or {}).get(cle), (apres.get(bloc) or {}).get(cle)
         if v0 is not None and v1 is not None and float(v1) < float(v0) - 1e-6:
