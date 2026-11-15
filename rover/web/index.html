@@ -42,7 +42,7 @@
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.stop { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 700; }
   button.held { background: var(--accent); border-color: var(--accent); color: #fff; }
-  input { background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  input, select { background: var(--bg); color: var(--text); border: 1px solid var(--line);
           border-radius: 7px; padding: 7px 9px; font: inherit; min-width: 0; }
   input:focus { outline: 1px solid var(--accent); }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
@@ -111,6 +111,23 @@
         <div class="msg" id="videoMsg">Connecting to the camera…</div>
       </div>
     </section>
+    <section>
+      <h2>D405 depth camera <span id="d405Info" class="unit"></span></h2>
+      <div class="row">
+        <button id="bD405">Show D405</button>
+        <span class="unit">Range</span>
+        <select id="d405Max"><option value="0.5">0.5 m</option><option value="1" selected>1 m</option><option value="2">2 m</option></select>
+        <span class="spacer"></span>
+        <span class="status" id="d405Status">hidden</span>
+      </div>
+      <div class="row" id="d405Views" hidden style="gap:6px;align-items:flex-start">
+        <img id="d405Color" alt="" style="flex:1;min-width:0;width:50%;border-radius:6px;background:#000">
+        <img id="d405Depth" alt="" style="flex:1;min-width:0;width:50%;border-radius:6px;background:#000">
+      </div>
+      <div class="help" style="text-align:left">Colour picture and depth (red = near, blue = far, black = no measure)
+        from the D405's capture server on the rover. It sees from about 7 cm.</div>
+    </section>
+
     <section>
       <h2>Path (odometry)</h2>
       <canvas id="map" width="800" height="600"></canvas>
@@ -401,6 +418,42 @@ $('simDrift').oninput = () => {
 };
 
 function stopAll() { held.clear(); refreshPad(); gheld.clear(); refreshGpad(); post('/stop'); }
+
+// ---------------------------------------------------------------- D405 depth camera
+let d405On = false;
+function d405Load(img, url) {  // one picture at a time: no queue on a slow Wi-Fi
+  return new Promise(res => { img.onload = img.onerror = () => res(); img.src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now(); });
+}
+async function d405Loop() {
+  while (d405On) {
+    await d405Load($('d405Color'), '/d405/color.jpg');
+    await d405Load($('d405Depth'), '/d405/depth.jpg?max=' + $('d405Max').value);
+    await new Promise(r => setTimeout(r, 200));
+  }
+}
+async function d405StatusLoop() {
+  while (d405On) {
+    try {
+      const s = await (await fetch('/d405/status')).json();
+      if (!s.ok) {
+        $('d405Status').innerHTML = `<b style="color:var(--bad)">${s.error || 'D405 not ready'}</b>`;
+      } else {
+        const d = s.depth || {}, c = s.camera || {}, h = s.health || {};
+        $('d405Status').innerHTML = `centre <b>${d.centre_m == null ? '–' : (d.centre_m * 100).toFixed(0) + ' cm'}</b>`
+          + ` · nearest <b>${d.nearest_m == null ? '–' : (d.nearest_m * 100).toFixed(0) + ' cm'}</b>`
+          + ` · ${(100 * (d.valid || 0)).toFixed(0)} % measured · ${d.age_ms ?? '–'} ms old`;
+        $('d405Info').textContent = `— ${c.name || 'D405'} ${c.mode || ''} USB ${c.usb || '?'}, ${h.frames ?? '?'} frames`;
+      }
+    } catch (e) { $('d405Status').textContent = 'rover server unreachable'; }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+}
+$('bD405').onclick = () => {
+  d405On = !d405On;
+  $('bD405').textContent = d405On ? 'Hide D405' : 'Show D405';
+  $('d405Views').hidden = !d405On;
+  if (d405On) { d405Loop(); d405StatusLoop(); } else { $('d405Status').textContent = 'hidden'; }
+};
 
 // ---------------------------------------------------------------- tilt safety
 function gauge(id, value, warn, stop) {  // -45..+45 deg bar, warn (amber) and stop (red) zones

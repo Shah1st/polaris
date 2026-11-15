@@ -45,6 +45,7 @@ class Sim:
                 self.odom.on_wheels(m['L'], m['R'], self.t)
                 self.odom.on_gyro(m['gz'], self.t)
                 self.odom.on_counters(m['odl'], m['odr'])
+                self.odom.on_imu(m['ax'], m['ay'], m['az'], m['gx'], m['gy'], self.t)
 
     def run(self, seconds: float) -> None:
         end = self.t + seconds
@@ -548,3 +549,156 @@ def test_path_step_parsing() -> None:
     for bad in ({'path': []}, {'path': [[1, 0]], 'frame': 'map'}, {'path': [[1, 0]], 'speed': 3}):
         with pytest.raises(ValueError):
             Step.parse(bad)
+
+
+# -- gyro bias vs hand rotations ------------------------------------------------------------
+
+
+def test_turning_the_rover_by_hand_is_not_learned_as_bias(sim: Sim) -> None:
+    bias = sim.odom.bias
+    sim.board.hand_rate = 0.5  # rad/s, wheels still, for 2 s
+    sim.run(2.0)
+    sim.board.hand_rate = 0.0
+    sim.run(1.0)
+    assert sim.odom.bias == pytest.approx(bias, abs=0.002)
+    assert sim.odom.heading == pytest.approx(sim.board.yaw, abs=0.05)
+    assert sim.odom.heading == pytest.approx(1.0, abs=0.05)
+
+
+def test_bias_calibration_waits_until_the_rover_is_still() -> None:
+    s = Sim()
+    s.board.hand_rate = 0.4  # carried and turned while the server starts
+    s.run(3.0)
+    assert not s.odom.bias_ready
+    s.board.hand_rate = 0.0
+    s.run(4.5)
+    assert s.odom.bias_ready
+    assert s.odom.bias == pytest.approx(s.board.gyro_bias_raw * s.cfg.gyro_scale, abs=0.003)
+
+
+# -- rover lifted or stuck: a turn that does not turn -----------------------------------------
+
+
+def test_turn_gives_up_when_the_rover_does_not_rotate(sim: Sim) -> None:
+    sim.board.lifted = True  # on its stand: the wheels spin, the body does not turn
+    sim.start(Step('turn', 90.0), Step('move', 0.5))
+    t0 = sim.t
+    sim.run_until_idle()
+    h = sim.ctrl.history[0]
+    assert h['status'] == 'no rotation (lifted or blocked?)'
+    assert sim.t - t0 < 4.0  # not the 20 s timeout
+    assert len(sim.ctrl.history) == 1  # the next step was dropped
+
+
+def test_path_gives_up_when_the_pivot_does_not_rotate(sim: Sim) -> None:
+    sim.board.lifted = True
+    sim.start(Step.path([[0.0, 0.5]]))  # 90 deg to the left: starts with a pivot
+    sim.run_until_idle()
+    assert sim.ctrl.history[0]['status'] == 'no rotation (lifted or blocked?)'
+
+
+def test_slow_real_turn_is_not_mistaken_for_no_rotation(sim: Sim) -> None:
+    sim.board.turn_efficiency = 0.3  # very grippy floor: turns, but slowly
+    sim.start(Step('turn', 90.0))
+    sim.run_until_idle()
+    assert sim.ctrl.history[0]['status'] == 'done'
+
+
+# -- tilt: estimate, guard, recorder ------------------------------------------------------
+
+
+def test_tilt_estimate_follows_a_slope(sim: Sim) -> None:
+    sim.board.roll_target, sim.board.pitch_target = 12.0, -14.0
+    sim.run(2.5)
+    tilt = sim.odom.tilt
+    assert tilt.roll == pytest.approx(12.0, abs=1.0)
+    assert tilt.pitch == pytest.approx(-14.0, abs=1.0)
+    assert tilt.sign_check() == {'roll': 'ok', 'pitch': 'ok'}
+    assert tilt.peaks['roll'] == pytest.approx(12.0, abs=1.5)
+
+
+def test_wrong_gyro_sign_is_reported() -> None:
+    s = Sim(Config(imu_roll_sign=-1))
+    s.run(2.5)
+    s.board.roll_target = 15.0
+    s.run(2.0)
+    assert s.odom.tilt.sign_check()['roll'] == 'wrong'
+
+
+def test_guard_slows_down_between_warn_and_stop(sim: Sim) -> None:
+    sim.board.roll_target = 20.0  # halfway between warn 15 and stop 25
+    sim.run(2.0)
+    sim.drive(0.2, 0.0, 0.5)
+    assert sim.ctrl.guard_state == 'caution'
+    assert sim.ctrl.v_cmd == pytest.approx(0.2 * (1 - 0.5 * 0.7), abs=0.02)
+
+
+def test_guard_stops_and_backs_off_when_the_side_tilt_gets_too_steep(sim: Sim) -> None:
+    sim.drive(0.2, 0.0, 1.0)
+    sim.board.roll_target = 32.0  # driving onto a side slope too steep
+    x_before = None
+    for _ in range(40):
+        sim.drive(0.2, 0.0, 0.1)
+        if sim.ctrl.guard_state == 'backoff' and x_before is None:
+            x_before = sim.board.x
+            assert sim.odom.tilt.roll >= 24.0
+    assert x_before is not None, 'never backed off'
+    assert sim.ctrl.guard_reason.startswith('side tilt')
+    sim.run(3.0)
+    assert sim.board.x == pytest.approx(x_before - 0.15, abs=0.05)  # reversed ~15 cm
+    # Still on the steep slope: forward is refused, backward is allowed (slowly).
+    sim.drive(0.2, 0.0, 0.5)
+    assert sim.ctrl.v_cmd == 0.0
+    sim.drive(-0.2, 0.0, 0.5)
+    assert sim.ctrl.v_cmd < -0.03
+
+
+def test_guard_catches_a_fast_tip_before_the_stop_angle(sim: Sim) -> None:
+    sim.board.slope_rate = 70.0  # deg/s: a wheel drops into a hole
+    sim.drive(0.2, 0.0, 0.5)
+    sim.board.pitch_target = -20.0  # below the 25 deg stop angle
+    for _ in range(10):
+        sim.drive(0.2, 0.0, 0.1)
+    assert sim.ctrl.guard_reason and sim.ctrl.guard_reason.startswith('tipping front/back')
+    assert sim.ctrl.guard_state in ('backoff', 'hold')
+
+
+def test_guard_aborts_a_path(sim: Sim) -> None:
+    sim.start(Step.path([[2.0, 0.0]]))
+    sim.run(1.5)
+    sim.board.roll_target = -30.0
+    sim.run(3.0)
+    assert sim.ctrl.history[0]['status'].startswith('tilt: side tilt')
+    assert sim.ctrl.mode == 'idle'
+
+
+def test_guard_off_for_tipping_tests() -> None:
+    s = Sim(Config(tilt_guard=0))
+    s.run(2.5)
+    s.board.roll_target = 30.0
+    s.run(2.0)
+    s.drive(0.2, 0.0, 0.5)
+    assert s.ctrl.guard_state == 'off' and s.ctrl.v_cmd == pytest.approx(0.2)
+
+
+def test_recorder_csv() -> None:
+    from rover_core import Recorder
+
+    board = FakeEsp32()
+    rover = Rover(Config(), lambda: FakeSerial(board, boot_time=0.2))
+    import time
+
+    rover.start()
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not rover.odom.tilt.ready:
+            time.sleep(0.05)
+        rover.recorder.start(time.monotonic())
+        time.sleep(0.6)
+        rover.recorder.stop()
+        lines = rover.recorder.csv().splitlines()
+        assert lines[0].split(',') == list(Recorder.COLUMNS)
+        assert 8 <= len(lines) - 1 <= 15  # 20 Hz for 0.6 s
+        assert len(lines[1].split(',')) == len(Recorder.COLUMNS)
+    finally:
+        rover.close()
