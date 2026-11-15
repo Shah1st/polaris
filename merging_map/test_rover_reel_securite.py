@@ -418,6 +418,19 @@ def test_an_older_server_without_stop_count_is_not_checked() -> None:
     assert r.deplacer((1.4, 1.0)) is None
 
 
+def test_reset_odom_is_not_an_operator_stop() -> None:
+    """/reset_odom (same process, same boot_id) looks like a restart to the adapter, but the
+    server's stop_count goes on: the stops pressed before the mission are not new."""
+    faux = FauxServeur(1.0, 1.0, 0.0)
+    faux.boot_id, faux.stops = 'a', 3  # STOP pressed during the setup
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    r.deplacer((1.2, 1.0))
+    faux.ox = faux.oy = faux.oh = faux.odometre = 0.0  # /reset_odom between two steps
+    assert r.deplacer((1.4, 1.0)) is None
+    assert r.redemarrages == 1 and math.dist((faux.x, faux.y), (1.4, 1.0)) < 0.03
+
+
 def test_stop_after_a_server_restart_is_seen() -> None:
     faux = FauxServeur(1.0, 1.0, 0.0)
     faux.boot_id = 'a'

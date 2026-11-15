@@ -280,9 +280,11 @@ class RaspRoverReel(RobotOdometrie):
         if reponse is not None and (methode, chemin) == ('GET', '/state'):
             if self._dernier_etat is not None and serveur_redemarre(self._dernier_etat, reponse):
                 self._redemarrage = True
-                if self._stops_vus is not None:
-                    # nouveau processus : son compteur part de zero, et tout /stop qu'il a recu
-                    # sans qu'on le sache compte comme un STOP d'operateur
+            if self._dernier_etat is not None and self._stops_vus is not None:
+                if self._dernier_etat.get('boot_id') != reponse.get('boot_id'):
+                    # nouveau processus : son stop_count part de zero, et tout /stop qu'il a
+                    # recu sans qu'on le sache compte comme un STOP d'operateur (un /reset_odom
+                    # garde le boot_id et le compteur : rien a remettre a zero)
                     self._stops_vus, self._stops_envoyes = 0, 0
             self._dernier_etat = reponse
         elif reponse is not None and (methode, chemin) == ('POST', '/stop'):
@@ -341,14 +343,16 @@ class RaspRoverReel(RobotOdometrie):
         if n is None:
             return
         vus, envoyes = self._stops_vus, self._stops_envoyes
-        if vus is not None and n >= vus and n - vus > envoyes:
+        if vus is not None and n < vus:
+            # compteur reparti de zero sous le meme boot_id (Rover recree) : comme apres un
+            # redemarrage, tout /stop qu'il a compte vient d'ailleurs
+            vus, envoyes = 0, 0
+        if vus is not None and n - vus > envoyes:
             raise ArretOperateur(
                 f'STOP recu par le serveur du rover entre deux pas (stop_count {vus} -> {n}, '
                 f'{envoyes} /stop de la mission) : fin de mission'
             )
-        # premier controle, ou compteur reparti de zero sans nouveau boot_id (Rover recree) :
-        # on repart de la valeur lue
-        self._stops_vus, self._stops_envoyes = n, 0
+        self._stops_vus, self._stops_envoyes = n, 0  # premier controle, ou rien d'anormal
 
     def _panne(self, statut, ctrl):
         """Le serveur a arrete le rover de lui-meme pendant le pas : ce n'est pas un pas fini.
