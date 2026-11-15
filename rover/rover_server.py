@@ -566,14 +566,16 @@ def main() -> None:
     def _terminate(signum, frame):  # systemctl stop/restart, kill: stop the rover as Ctrl-C does
         raise KeyboardInterrupt
 
-    signal.signal(signal.SIGTERM, _terminate)
-    for ip in local_ips() or ['<rover IP>']:
-        print(f'Open http://{ip}:{args.port}')
     try:
+        # Inside the try: a SIGTERM that comes before serve_forever still stops the rover.
+        signal.signal(signal.SIGTERM, _terminate)
+        for ip in local_ips() or ['<rover IP>']:
+            print(f'Open http://{ip}:{args.port}')
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)  # a second SIGTERM must not cut the stop
         print('Stopping the rover.')
         rover.close()
         server.server_close()
