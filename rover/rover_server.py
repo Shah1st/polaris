@@ -28,7 +28,10 @@ HTTP API (JSON bodies). The first two match the shared simulation in sim/run_wor
   POST /mode           {"mode": "real"|"sim"}: switch between the real rover and the simulated
                        one without restarting (the real rover stops; back to real reboots the
                        ESP32, ~7 s). /state gives "mode" and "real_available".
-  POST /sim            simulation only: {"drift": rad/s} the rover turns by itself while moving
+  POST /sim            simulation only: {"drift": rad/s} the rover turns by itself while moving,
+                       {"roll": deg, "pitch": deg} the slope it stands on (past 40 deg it falls)
+  POST /record         {"on": true|false}: 20 Hz log for the tipping tests; GET /record.csv
+  POST /tilt           {"reset_peaks": true}: forget the largest roll/pitch seen
   POST /gimbal         camera pan-tilt: {"pan_rate": -1|0|1, "tilt_rate": -1|0|1} while a key
                        is held (repeat it like /cmd), {"pan": deg, "tilt": deg} (pan + = right,
                        tilt + = up), or {"center": true}. A raw {"T":133,...} on /cmd works too.
@@ -300,6 +303,8 @@ class App:
                 'y': b.y,
                 'heading_deg': math.degrees(b.yaw),
                 'drift': b.yaw_drift,
+                'roll': b.roll,
+                'pitch': b.pitch,
             }
         return s
 
@@ -347,6 +352,16 @@ def make_handler(app: App):
                 self._json(json.loads(json.dumps(app.rover.cfg.__dict__)))
             elif path == '/video_feed':
                 self._stream()
+            elif path == '/record.csv':
+                with app.rover.lock:
+                    data = app.rover.recorder.csv().encode()
+                name = time.strftime('rover_tilt_%Y%m%d_%H%M%S.csv')
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/csv')
+                self.send_header('Content-Disposition', f'attachment; filename="{name}"')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
             elif path == '/snapshot.jpg':
                 frame, _ = app.camera.wait_frame(-1)
                 if frame is None:
@@ -386,7 +401,23 @@ def make_handler(app: App):
                 elif path == '/mode':
                     app.set_mode(str(body.get('mode', '')))
                 elif path == '/sim' and app.sim_board is not None:
-                    app.sim_board.yaw_drift = float(body['drift'])
+                    b = app.sim_board
+                    if 'drift' in body:
+                        b.yaw_drift = float(body['drift'])
+                    if 'roll' in body:
+                        b.roll_target = float(body['roll'])
+                    if 'pitch' in body:
+                        b.pitch_target = float(body['pitch'])
+                elif path == '/record':
+                    with rover.lock:
+                        if body.get('on'):
+                            rover.recorder.start(time.monotonic())
+                        else:
+                            rover.recorder.stop()
+                elif path == '/tilt':
+                    if body.get('reset_peaks'):
+                        with rover.lock:
+                            rover.odom.tilt.reset_peaks()
                 elif path == '/gimbal':
                     if body.get('center'):
                         rover.gimbal_set(0.0, 0.0)

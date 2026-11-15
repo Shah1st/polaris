@@ -53,6 +53,12 @@
          gap: 6px; justify-content: center; margin: 4px 0 10px; }
   .pad button { font-size: 20px; padding: 0; }
   .help { color: var(--muted); font-size: 12px; text-align: center; }
+  .gauge { position: relative; height: 18px; background: var(--panel2); border-radius: 4px;
+           border: 1px solid var(--line); overflow: hidden; margin: 2px 0 8px; }
+  .gauge .zone { position: absolute; top: 0; bottom: 0; }
+  .gauge .needle { position: absolute; top: -2px; bottom: -2px; width: 3px; background: var(--text);
+                   transform: translateX(-1px); }
+  .gauge .mid { position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: var(--muted); }
   .switch { display: flex; align-items: center; gap: 8px; cursor: pointer; }
   .switch input { width: 16px; height: 16px; accent-color: var(--accent); }
   .status { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; }
@@ -86,6 +92,7 @@
   <span id="pGyro" class="pill">Gyro …</span>
   <span id="pCpu" class="pill">CPU …</span>
   <span id="pMode" class="pill">…</span>
+  <span id="pTilt" class="pill" hidden>…</span>
   <span id="pSim" class="pill warn" hidden>SIMULATION</span>
   <span class="spacer"></span>
   <button id="bMode" title="Switch between the real rover and the simulated one">…</button>
@@ -153,6 +160,38 @@
         <input type="range" id="simDrift" min="-0.4" max="0.4" step="0.05" value="0" style="flex:1">
         <span class="status" id="simDriftVal">0.00 rad/s</span>
       </div>
+    </section>
+
+    <section>
+      <h2>Tilt safety</h2>
+      <div class="status">Roll (sideways) <b id="tRoll">–</b> · rate <b id="tRollRate">–</b> · accel <b id="tRollAcc">–</b></div>
+      <div class="gauge" id="gRoll"></div>
+      <div class="status">Pitch (nose) <b id="tPitch">–</b> · rate <b id="tPitchRate">–</b> · accel <b id="tPitchAcc">–</b></div>
+      <div class="gauge" id="gPitch"></div>
+      <div class="row">
+        <label class="switch" title="Slow down when tilted, stop and back off before tipping over. Turn it off to tip the rover on purpose.">
+          <input type="checkbox" id="tiltGuard"> Tilt guard
+        </label>
+        <span class="spacer"></span>
+        <span class="status" id="guardInfo"></span>
+      </div>
+      <div class="row">
+        <span class="status" id="tiltPeaks">Peaks –</span>
+        <span class="spacer"></span>
+        <button id="bPeaks">Reset peaks</button>
+      </div>
+      <div class="row">
+        <button id="bRecord">● Record</button>
+        <a id="aCsv" href="/record.csv" download><button>Download CSV</button></a>
+        <span class="status" id="recInfo"></span>
+      </div>
+      <div class="row" id="simTiltRow" hidden>
+        <span class="unit">Sim slope roll</span>
+        <input type="range" id="simRoll" min="-50" max="50" step="1" value="0" style="flex:1">
+        <span class="unit">pitch</span>
+        <input type="range" id="simPitch" min="-50" max="50" step="1" value="0" style="flex:1">
+      </div>
+      <div class="status" id="tiltSigns"></div>
     </section>
 
     <section>
@@ -360,6 +399,26 @@ $('simDrift').oninput = () => {
 
 function stopAll() { held.clear(); refreshPad(); gheld.clear(); refreshGpad(); post('/stop'); }
 
+// ---------------------------------------------------------------- tilt safety
+function gauge(id, value, warn, stop) {  // -45..+45 deg bar, warn (amber) and stop (red) zones
+  const pos = (a) => 50 + Math.max(-45, Math.min(45, a)) / 45 * 50;
+  const zone = (a, b, color) => `<div class="zone" style="left:${pos(a)}%;width:${pos(b) - pos(a)}%;background:${color}"></div>`;
+  $(id).innerHTML = zone(-45, -stop, 'rgba(255,93,93,.35)') + zone(-stop, -warn, 'rgba(245,185,66,.3)')
+    + zone(warn, stop, 'rgba(245,185,66,.3)') + zone(stop, 45, 'rgba(255,93,93,.35)')
+    + '<div class="mid"></div>' + `<div class="needle" style="left:${pos(value)}%"></div>`;
+}
+$('tiltGuard').onchange = async () => {
+  if (!$('tiltGuard').checked && !confirm('Turn the tilt guard OFF? The rover will no longer slow down or back off on slopes.')) {
+    $('tiltGuard').checked = true; return;
+  }
+  await post('/config', { tilt_guard: $('tiltGuard').checked ? 1 : 0 });
+  await loadConfig();
+};
+$('bPeaks').onclick = () => post('/tilt', { reset_peaks: true });
+$('bRecord').onclick = () => post('/record', { on: $('bRecord').textContent.includes('Record') });
+const simSlope = () => post('/sim', { roll: +$('simRoll').value, pitch: +$('simPitch').value });
+$('simRoll').onchange = simSlope; $('simPitch').onchange = simSlope;
+
 // ---------------------------------------------------------------- real / simulation
 let modeNow = null;
 $('bMode').onclick = async () => {
@@ -408,6 +467,7 @@ $('seq').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('bSeq').c
 async function loadConfig() {
   cfg = await (await fetch('/config')).json();
   $('assist').checked = !!cfg.assist;
+  $('tiltGuard').checked = !!cfg.tilt_guard;
   const box = $('settings'); box.innerHTML = '';
   for (const [k, v] of Object.entries(cfg)) {
     const l = document.createElement('label');
@@ -449,6 +509,42 @@ function render(s) {
   $('bMode').title = $('bMode').disabled ? 'No real rover on this computer' : 'Switch between the real rover and the simulated one';
   $('camInfo').textContent = s.camera.error ? '— ' + s.camera.error : s.camera.fps ? `— ${s.camera.fps} fps` : '';
   if (s.camera.error) { $('videoMsg').hidden = false; $('videoMsg').textContent = s.camera.error; }
+
+  // tilt safety
+  const T = s.tilt;
+  if (T) {
+    const G = c.guard || {};
+    $('tRoll').textContent = fmt(T.roll, 1) + '°'; $('tPitch').textContent = fmt(T.pitch, 1) + '°';
+    $('tRollRate').textContent = fmt(T.roll_rate, 0) + '°/s'; $('tPitchRate').textContent = fmt(T.pitch_rate, 0) + '°/s';
+    $('tRollAcc').textContent = fmt(T.roll_accel, 0) + '°/s²'; $('tPitchAcc').textContent = fmt(T.pitch_accel, 0) + '°/s²';
+    gauge('gRoll', T.roll, cfg.roll_warn_deg, cfg.roll_stop_deg);
+    gauge('gPitch', T.pitch, cfg.pitch_warn_deg, cfg.pitch_stop_deg);
+    const P = T.peaks;
+    $('tiltPeaks').textContent = `Peaks: roll ${fmt(P.roll, 1)}°, pitch ${fmt(P.pitch, 1)}°, rates ${fmt(P.roll_rate, 0)} / ${fmt(P.pitch_rate, 0)}°/s`;
+    const st = G.state || 'off';
+    const way = G.blocked_dir > 0 ? 'backward' : 'forward';  // the only way still allowed
+    const blocked = G.blocked_dir && st === 'caution';
+    $('guardInfo').innerHTML = !cfg.tilt_guard ? 'off'
+      : st === 'ok' ? 'watching'
+      : blocked ? `<b>only ${way}</b> · ${G.reason}`
+      : `<b>${st === 'caution' ? 'slowing down' : st === 'backoff' ? 'backing off' : st}</b>` + (G.reason && st !== 'caution' ? ' · ' + G.reason : '');
+    const bad = st === 'backoff' || st === 'hold' || G.blocked_dir;
+    $('pTilt').hidden = !cfg.tilt_guard || st === 'ok' || st === 'off';
+    pill('pTilt', blocked ? `TILT: drive ${way} only` : st === 'caution' ? 'TILTED: slowing down'
+      : st === 'backoff' ? 'TILT: backing off' : 'TILT: ' + (G.reason || st), bad ? 'bad' : 'warn');
+    const sc = T.sign_check;
+    const signs = ['roll', 'pitch'].filter(k => sc[k] === 'wrong');
+    $('tiltSigns').textContent = signs.length
+      ? `⚠ Gyro ${signs.join(' and ')} sign looks wrong: set imu_${signs[0]}_sign to -1 in the settings.` : '';
+    const R = s.recording;
+    $('bRecord').textContent = R.on ? '■ Stop recording' : '● Record';
+    $('bRecord').classList.toggle('stop', R.on);
+    $('recInfo').textContent = R.rows ? `${R.rows} rows (${fmt(R.rows / 20, 0)} s)` : '';
+  }
+  $('simTiltRow').hidden = !s.sim;
+  if (s.sim_truth && document.activeElement !== $('simRoll') && document.activeElement !== $('simPitch')) {
+    $('simRoll').value = s.sim_truth.roll; $('simPitch').value = s.sim_truth.pitch;
+  }
 
   // steering assist and pan-tilt
   const a = c.assist;

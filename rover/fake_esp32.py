@@ -59,6 +59,13 @@ class FakeEsp32:
         self.blocked = False  # True: wheels stuck (tests the stall detection)
         self.hand_rate = 0.0  # rad/s: someone turns the rover by hand, wheels still
         self.lifted = False  # True: on its stand, the wheels turn in the air
+        # Slopes: the rover's roll (left side up) and pitch (nose up) move towards these
+        # targets at slope_rate deg/s. Past tip_angle it falls over by itself.
+        self.roll = self.pitch = 0.0  # deg
+        self.roll_target = self.pitch_target = 0.0
+        self.roll_rate = self.pitch_rate = 0.0  # deg/s
+        self.slope_rate = 20.0
+        self.tip_angle = 40.0
         self.booted = True  # FakeSerial sets it False while "booting"
 
         self.x = self.y = self.yaw = 0.0  # true pose
@@ -133,6 +140,17 @@ class FakeEsp32:
             self.trail.append((self.x, self.y))
             del self.trail[:-2000]
         self.battery = max(10.5, self.battery - 1e-6 * dt)
+        for axis in ('roll', 'pitch'):
+            angle, target = getattr(self, axis), getattr(self, axis + '_target')
+            if abs(angle) > self.tip_angle:  # falling: gravity takes over
+                rate = getattr(self, axis + '_rate') + math.copysign(400.0, angle) * dt
+            else:
+                rate = max(
+                    -self.slope_rate, min(self.slope_rate, (target - angle) / max(dt, 1e-3))
+                )
+            new = max(-90.0, min(90.0, angle + rate * dt))
+            setattr(self, axis + '_rate', (new - angle) / dt if dt > 0 else 0.0)
+            setattr(self, axis, new)
 
         out = []
         if self.booted and self.feedback_on and self.t >= self._next_feedback:
@@ -150,15 +168,18 @@ class FakeEsp32:
     def _chassis(self) -> dict:
         g = self.rng.gauss
         gz = math.degrees(self.yaw_rate) * GYRO_LSB_PER_DPS + self.gyro_bias_raw
+        r, p = math.radians(self.roll), math.radians(self.pitch)
+        one_g = ACC_LSB_PER_G * 1.03
         return {
             'T': 1001,
             'L': self._speed(self.wl),
             'R': self._speed(self.wr),
-            'ax': round(g(-80, 60)),
-            'ay': round(g(-70, 60)),
-            'az': round(ACC_LSB_PER_G * 1.03 + g(0, 30)),
-            'gx': round(g(-12, 8)),
-            'gy': round(g(1, 4)),
+            # gravity in the body frame, for roll + = left side up and pitch + = nose up
+            'ax': round(-math.sin(p) * one_g + g(0, 60)),
+            'ay': round(math.sin(r) * math.cos(p) * one_g + g(0, 60)),
+            'az': round(math.cos(r) * math.cos(p) * one_g + g(0, 30)),
+            'gx': round(self.roll_rate * GYRO_LSB_PER_DPS - 12 + g(0, 8)),
+            'gy': round(self.pitch_rate * GYRO_LSB_PER_DPS + 1 + g(0, 4)),
             'gz': round(gz + g(0, self.gyro_noise_raw)),
             'mx': -660,
             'my': -90,
