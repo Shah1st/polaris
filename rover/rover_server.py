@@ -15,7 +15,8 @@ HTTP API (JSON bodies). The first two match the shared simulation in sim/run_wor
                        anything else is forwarded to the ESP32 as is.
                        Speed commands last `manual_timeout` (0.5 s): repeat them at >= 5 Hz.
   GET  /state          telemetry: link, battery, pose, wheel speeds, gyro, current step;
-                       boot_id (changes when the server restarts) and uptime_s
+                       boot_id (changes when the server restarts) and uptime_s;
+                       stop_count: stops received since start (/stop, /cmd {"T":0})
   GET  /snapshot.jpg   one camera picture, its age in the X-Age-Ms header; 503 when the
                        camera gives no picture newer than SNAPSHOT_MAX_AGE
   POST /move           {"distance": m}            (+ forward, - backward)
