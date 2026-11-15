@@ -199,9 +199,33 @@ def jamais_touchee(banc, boite):
 # ---- les scenarios ---------------------------------------------------------------------------
 
 
+def ligne_de_commande(camera_url, rover_url, fichier):
+    """Ce qu'un humain tape cet apres-midi (lancer_overhead.py, sans --dry-run)."""
+    return [
+        '--camera',
+        camera_url,
+        '--metres-par-pixel',
+        str(br.METRES_PAR_PIXEL),
+        '--marqueur',
+        str(br.MARQUEUR),
+        '--rover',
+        rover_url,
+        '--victime',
+        *map(str, VICTIME),
+        '--suivi',
+        str(fichier),
+    ]
+
+
 def test_nominal_mission_reaches_the_victim(banc, suivi) -> None:
+    """Par main() : la ligne de commande, camera_reader(--latence), OverheadSettings, client_http
+    (--delai-http) sont ceux du vrai essai."""
     fichier, documents = suivi
-    resultat, _ = lancer_mission(banc, [BOITE, DECOR], fichier)
+    camera = CameraDessus(banc.pose_vraie, [BOITE, DECOR])
+    try:
+        resultat = lancer_overhead.main(ligne_de_commande(camera.url, banc.url, fichier))
+    finally:
+        camera.fermer()
 
     assert resultat['etat'] == 'arrive'
     assert math.dist(banc.pose_vraie()[:2], VICTIME) < lancer_overhead.TOLERANCE_PETITE_ZONE + 0.05
@@ -275,29 +299,15 @@ def test_rover_server_restart_between_steps(banc, suivi) -> None:
 
 
 @pytest.mark.parametrize('panne', ['trou_noir', 'refuse'])
-def test_unreachable_rover_fails_fast_and_sends_nothing(panne, tmp_path, capsys) -> None:
+def test_unreachable_rover_fails_fast_and_sends_nothing(panne, tmp_path) -> None:
     camera = CameraDessus(lambda: (0.6, 0.6, 0.3), [BOITE, DECOR])
     trou = TrouNoir() if panne == 'trou_noir' else None
     url = trou.url if trou else f'http://127.0.0.1:{br.port_libre()}'
     fichier = tmp_path / 'suivi.json'
-    argv = [
-        '--camera',
-        camera.url,
-        '--metres-par-pixel',
-        str(br.METRES_PAR_PIXEL),
-        '--marqueur',
-        str(br.MARQUEUR),
-        '--rover',
-        url,
-        '--victime',
-        *map(str, VICTIME),
-        '--suivi',
-        str(fichier),
-    ]
     debut = time.monotonic()
     try:
         with pytest.raises(SystemExit) as fin:
-            lancer_overhead.main(argv)
+            lancer_overhead.main(ligne_de_commande(camera.url, url, fichier))
         duree = time.monotonic() - debut
     finally:
         camera.fermer()
