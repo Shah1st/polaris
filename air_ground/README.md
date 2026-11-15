@@ -6,19 +6,54 @@ every picture. Everything is then measured in ONE frame fixed to the floor, what
 camera's movements: the rover, the obstacles, the goal. Plain Python (numpy, OpenCV), no ROS.
 
 ```
-iPhone (CamStream, ARKit mode)  --/stream: JPEG + X-Pose-->  camstream.py   picture + pose
-                                                             pose_camera.py pixels <-> metres
+iPhone (CamStream, ARKit mode)  --/stream: JPEG + X-Pose-->  camstream.py    picture + pose
+                                                             pose_camera.py  pixels <-> metres
                                                              rover_marker.py the rover: x, y, heading
+rover (rover/rover_server.py)   <--GET /state, POST /path--  guidance.py     floor <-> odometry, steering
+you, in a browser               --click on the top view-->   guide_rover.py  the loop and its page
 ```
 
-Not there yet: the obstacle grid that accumulates, the path sent to the rover, the rover's
-D405 proximity beam, the panels in the rover dashboard.
+Not there yet: the obstacle grid that accumulates and the planner around obstacles (the rover
+goes straight to the point), the rover's D405 proximity beam, the panels in the rover
+dashboard.
+
+## Run
+
+```bash
+python air_ground/guide_rover.py --phone http://<iPhone>:8080 --rover http://<rover>:8080     --marker-size 0.10 --marker-height 0.12
+```
+
+Open `http://127.0.0.1:8097`: the top view of the floor, which stays put while the phone
+moves; the rover where the guide believes it is (green arrow) and where the last picture saw
+it (yellow ring); a click sets the goal, "Stop" cancels it.
+
+![the top view after a drive in simulation](top_view_example.jpg)
+
+How it steers:
+
+* each sighting of the marker corrects the transform floor <- odometry (`OdomLink`) a little;
+  between sightings the rover's own odometry carries the estimate;
+* the goal becomes a path in the odometry frame for the rover's own follower (`POST /path`,
+  20 Hz on the robot). It is sent again only when the correction moved its end by more than
+  3 cm: a handful of requests per drive, the Wi-Fi is not in the fast loop;
+* the rover is stopped when the air camera has not seen it for 3 s, and goes on when it is
+  seen again;
+* the guide gives way: manual driving or a STOP from anyone else ends its goal. It appears as
+  `air-guide` in the rover's command log (`GET /commands`).
+
+Before driving the real rover, look at who else is using it (`GET /commands` on the rover):
+the team shares it.
 
 ## State
 
 * The geometry is tested on a synthetic camera that moves, tilts (to about 30 degrees) and
   turns: the floor's top view is the same from every pose, and the rover's marker is found
   within 5 mm and 2 degrees (`pytest air_ground`).
+* The steering is tested on a fake rover whose odometry is wrong on purpose (10 % short,
+  drifting): it ends within 5 cm of the goal, against more than 10 cm on odometry alone.
+* The whole chain runs on one computer in the tests: a fake phone films the simulated rover
+  of `rover/rover_server.py` from a camera that keeps circling, real HTTP on both sides, real
+  marker detection; a click sends the rover within 5 cm of the point.
 * **Nothing has run on a real iPhone.** The app's ARKit mode compiles on GitHub's Mac (see
   `iphone-camera/README.md`); the conventions below are Apple's documented ones, the first
   real picture will tell whether an axis is flipped.
