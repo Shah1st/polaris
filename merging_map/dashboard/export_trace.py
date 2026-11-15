@@ -235,6 +235,29 @@ def textes(type_, simu, carte, infos, distance):
             "Après 5 minutes sans drone, le rover reste à l'arrêt en lieu sûr et l'ordinateur "
             "alerte l'équipe."
         )
+    # Issues du vrai rover (cerveau.mission) : la raison vient de la mission (infos['message'])
+    raison = infos.get('message') or 'non précisée'
+    if type_ == 'erreur_robot':
+        return 'Erreur du rover', (
+            f'Le serveur du rover a signalé une erreur ({raison}). Le rover est arrêté, puis '
+            "l'ordinateur réessaie ; après plusieurs erreurs de suite, la mission s'arrête et "
+            "l'ordinateur alerte l'équipe."
+        )
+    if type_ == 'rover_injoignable':
+        return 'Rover injoignable : arrêt', (
+            f"L'ordinateur n'a plus de nouvelles du rover ({raison}). La mission s'arrête et "
+            "l'ordinateur alerte l'équipe."
+        )
+    if type_ == 'sans_progres':
+        return "Le rover n'avance plus : arrêt", (
+            f'Le rover ne progresse plus ({raison}) : ses chenilles sont peut-être bloquées. '
+            "La mission s'arrête au lieu d'insister, et l'ordinateur alerte l'équipe."
+        )
+    if type_ == 'max_tours':
+        return 'Trop de tours : arrêt', (
+            f'La mission a atteint sa limite ({raison}) sans arriver près de la victime. Elle '
+            "s'arrête et l'ordinateur alerte l'équipe."
+        )
     raise ValueError(type_)
 
 
