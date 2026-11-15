@@ -55,6 +55,10 @@ class OverheadCamera:
             return None  # two rovers and no marker id: the camera cannot tell them apart
         return self.camera.rover_pose()
 
+    def zone(self):
+        """The image bounds (what lancer_overhead plans in), not the 1.6 m tiles around it."""
+        return self.camera.zone()
+
     def refresh(self):
         self.camera.refresh(force=True)
 

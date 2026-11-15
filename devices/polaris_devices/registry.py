@@ -176,7 +176,7 @@ class Fleet:
         self.skipped: dict[str, str] = {}  # device id -> why it is not plugged
         self.shared: dict = {}  # state shared by adapters of one kind (simulated worlds...)
         self.ids = fusion_accepts_ids(carte)
-        self._rects: list[tuple[float, float, float]] = []
+        self._rects: dict[str, list[tuple[float, float, float, float]]] = {}
 
     # ---- naming -------------------------------------------------------------------------
     def tag(self, spec: DeviceSpec) -> str:
@@ -222,7 +222,8 @@ class Fleet:
         for msg in messages or []:
             self.carte.recevoir({**msg, 'source': self.tag(spec)})
             if spec.role == 'drone':
-                self._rects.append(self.carte.rect_tuile((int(msg['z']), msg['x'], msg['y'])))
+                x, y, side = self.carte.rect_tuile((int(msg['z']), msg['x'], msg['y']))
+                self._rects.setdefault(spec.id, []).append((x, y, x + side, y + side))
             n += 1
         return n
 
@@ -239,16 +240,16 @@ class Fleet:
         return counts
 
     def zone(self):
-        """Area covered by the drones' tiles (x0, y0, x1, y1), or None. Computed here because
+        """Planning area (x0, y0, x1, y1): the union of what the drones cover, or None. A
+        drone that knows its own area (OverheadCamera.zone(): the image bounds) gives it;
+        otherwise the bounds of the tiles it published. Computed here because
         CarteFusion.zone_survolee() only looks at the plain 'drone' layer."""
-        if not self._rects:
-            return self.carte.zone_survolee()
-        return (
-            min(x for x, _, _ in self._rects),
-            min(y for _, y, _ in self._rects),
-            max(x + c for x, _, c in self._rects),
-            max(y + c for _, y, c in self._rects),
-        )
+        boxes = []
+        for device_id, rects in self._rects.items():
+            own = getattr(self.devices.get(device_id), 'zone', None)
+            box = own() if callable(own) else None
+            boxes.append(box or _union(rects))
+        return _union(boxes) if boxes else self.carte.zone_survolee()
 
     # ---- where things are ----------------------------------------------------------------------
     def pose_of(self, device_id: str):
@@ -304,6 +305,15 @@ class Fleet:
             zone=zone or self.zone(),
             **kwargs,
         )
+
+
+def _union(boxes):
+    return (
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    )
 
 
 def load_config(config) -> dict:
