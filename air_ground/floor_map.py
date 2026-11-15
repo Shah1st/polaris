@@ -34,7 +34,7 @@ import numpy as np
 from pose_camera import Pose
 
 HEIGHTS = (0.0, 0.03, 0.06, 0.09, 0.12, 0.16, 0.20, 0.25, 0.30, 0.36)  # m, the swept planes
-COLOUR_CELL = 0.05  # m, the cells of the colour detection (the team's grid)
+CELL = 0.03  # m, the cells the map decides on (obstacle or floor); the team's grid is 5 cm
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -97,6 +97,7 @@ class FloorMap:
         cell_aging: float = 0.004,
         max_votes: float = 4.0,
         colour: bool = False,
+        cell: float = CELL,
         follow: bool = False,
         depth_res: float = 0.02,
         min_obstacle_m: float = 0.04,
@@ -121,11 +122,13 @@ class FloorMap:
         self.keyframe_step, self.max_keyframes = keyframe_step, keyframes
         self.decay = decay
         self.rover_radius = rover_radius
+        self.rover_size = 0.35  # m: a patch touching the rover and no larger is the rover
+        self.rover_body = 0.10  # m: around its centre, what it drives over is floor
         self.rover_height = rover_height  # its top: where it leans to once laid flat
         # what each new view takes off the advantage of the views kept in the floor's
         # picture: 0.03 = after about 10 views, the current one wins wherever it sees well
         self.view_aging = view_aging
-        # the same for what each 5 cm cell is (obstacle or floor), much slower: the view that
+        # the same for what each cell is (obstacle or floor), much slower: the view that
         # saw a cell most from above keeps speaking for it (a view 0.2 more to the side takes
         # over after about 50 views, some 10 s); views from the side, which see tall things
         # lean and box edges spill over, take over only when nothing better comes
@@ -138,7 +141,12 @@ class FloorMap:
         self.max_votes = max_votes
         # the team's colour detection on each view (off: heights only)
         self.colour_on = colour
-        self.colour_k = max(1, round(COLOUR_CELL / res))
+        # The cells the map decides on: obstacle or floor. Smaller than the team's 5 cm (the
+        # export, `grid(0.05)`, is still in 5 cm): a cell touched by an obstacle is an
+        # obstacle, so its size is margin added to the rover's radius; 3 cm cells add 1.5 cm
+        # on average instead of 2.5.
+        self.colour_k = max(1, round(cell / res))
+        self.cell = self.colour_k * res
         self.crows = -(-self.rows // self.colour_k)
         self.ccols = -(-self.cols // self.colour_k)
         self.follow = follow
@@ -161,8 +169,9 @@ class FloorMap:
         self.dweight = np.zeros((self.drows, self.dcols), np.float32)
         self.depth_maps = 0
         self.floor_offset = 0.0  # m: where the LiDAR sees the floor, against ARKit's floor
-        # the team's colour detection, in 5 cm cells: how far from straight below the view
+        # the team's colour detection, per decision cell: how far from straight below the view
         # that last spoke for each cell saw it, and how many views in a row saw an obstacle
+        self.rover_now: tuple[float, float] | None = None  # the rover's centre (set_rover)
         self.colour_q = np.full((self.crows, self.ccols), np.inf, np.float32)
         self.colour_hits = np.zeros((self.crows, self.ccols), np.int8)
         # the same for the heights of the pairs of views
@@ -429,7 +438,7 @@ class FloorMap:
         return True
 
     def _height_cells(self, good, best_i, roi, pose: Pose) -> None:
-        """What this pair says of each 5 cm cell: an obstacle (enough of its points measured
+        """What this pair says of each decision cell: an obstacle (enough of its points measured
         high), floor (enough measured at floor height), or nothing. As for the colours, what
         the camera sees again REPLACES what was said, the views seeing a cell most from above
         winning: votes added pair after pair would grow the edges of the boxes (where the two
@@ -447,15 +456,23 @@ class FloorMap:
         def count(m):
             return m.reshape(rows, k, cols, k).sum(axis=(1, 3))
 
-        high = count(g & (h >= self.obstacle_m))
+        # The matching window spreads every high patch by half its width (it still sees the
+        # box top from just outside it): its holes filled first (a box top matches in places
+        # only), it is shrunk back by as much, to its true size.
+        up = (g & (h >= self.obstacle_m)).astype(np.uint8)
+        half = self.window // 2
+        if half:
+            square = np.ones((2 * half + 1, 2 * half + 1), np.uint8)
+            up = cv2.erode(cv2.morphologyEx(up, cv2.MORPH_CLOSE, square), square)
+        high = count(up > 0)
         floor = count(g & (h < self.obstacle_m))
         n = k * k
         # high on a quarter of the cell at least, and more than at floor height: the edge of a
         # box top, where the matching window spills over, says nothing rather than "obstacle"
         says_obstacle = (high >= max(2, n // 4)) & (high >= 2 * floor)
         says_floor = (floor >= max(3, n // 5)) & (high <= max(1, n // 25))
-        ys = (np.arange(ra // k, rb // k) + 0.5) * COLOUR_CELL
-        xs = (np.arange(ca // k, cb // k) + 0.5) * COLOUR_CELL
+        ys = (np.arange(ra // k, rb // k) + 0.5) * self.cell
+        xs = (np.arange(ca // k, cb // k) + 0.5) * self.cell
         x0, _, _, y1 = self.bounds
         q = (np.hypot(x0 + xs[None, :] - pose.c[0], y1 - ys[:, None] - pose.c[1])
              / float(pose.c[2])).astype(np.float32)  # fmt: skip
@@ -469,7 +486,7 @@ class FloorMap:
         hits[take] = np.clip(hits[take] + step[take], 0, 3)
 
     def _up(self, cells: np.ndarray) -> np.ndarray:
-        """5 cm cells -> the map's own cells."""
+        """decision cells -> the map's own cells."""
         k = self.colour_k
         up = np.repeat(np.repeat(cells, k, axis=0), k, axis=1)
         out = np.zeros((self.rows, self.cols), bool)
@@ -493,7 +510,7 @@ class FloorMap:
         return height, known
 
     def obstacles(self, min_votes: float = 0.6) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """(height, known, obstacle) per cell: the 5 cm cells two views in a row found high
+        """(height, known, obstacle) per cell: the decision cells two views in a row found high
         (`_height_cells`), the LiDAR's high cells, and the team's colour detection; known:
         where any of them has spoken."""
         height, known = self.height_map(min_votes)
@@ -506,7 +523,57 @@ class FloorMap:
         if colour is not None:  # what the team's colour detection sees counts too
             obstacle |= colour
             known = known | colour
-        return height, known, obstacle
+        return height, known, self._clean(obstacle)
+
+    def _clean(self, obstacle: np.ndarray) -> np.ndarray:
+        """Without what is the rover itself and without specks: a patch no larger than one
+        decision cell (a bad match, a reflection) is dropped; so is any patch touching the
+        rover's place and no larger than the rover (`rover_size`, the team's idea: free the
+        blob under the tag), whatever its parts and cables look like from above."""
+        if not obstacle.any():
+            return obstacle
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(
+            obstacle.astype(np.uint8), connectivity=8
+        )
+        k = self.colour_k
+        drop = stats[:, cv2.CC_STAT_AREA] <= k * k
+        disc = None
+        if self.rover_now is not None:
+            rc, rr = self._cells(np.asarray([self.rover_now], float))[0]
+            r = self.rover_radius / self.res
+            r0, r1 = max(0, int(rr - r)), min(self.rows, int(rr + r) + 1)
+            c0, c1 = max(0, int(rc - r)), min(self.cols, int(rc + r) + 1)
+            if r0 < r1 and c0 < c1:
+                cols = np.arange(c0, c1)[None, :]
+                rows = np.arange(r0, r1)[:, None]
+                disc = np.hypot(cols - rc, rows - rr) <= r
+                small = np.maximum(stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT])
+                small = small * self.res <= self.rover_size
+                touching = np.unique(labels[r0:r1, c0:c1][disc])
+                drop[touching[small[touching]]] = True
+        drop[0] = False  # the background
+        out = obstacle & ~drop[labels]
+        if disc is not None:
+            out[r0:r1, c0:c1] &= ~disc  # under the rover: the rover, not an obstacle
+        return out
+
+    def set_rover(self, x: float, y: float) -> None:
+        """Where the rover's centre is now, on the floor. It is not an obstacle (`_clean`),
+        and where it drives is floor: the cells under its body forget what was said of them
+        (a view will say again whether something is there once it has gone)."""
+        self.rover_now = (float(x), float(y))
+        k = self.colour_k
+        cx, cy = self._cells(np.asarray([self.rover_now], float))[0] / k
+        r = self.rover_body / self.cell
+        r0, r1 = max(0, int(cy - r)), min(self.crows, int(cy + r) + 1)
+        c0, c1 = max(0, int(cx - r)), min(self.ccols, int(cx + r) + 1)
+        if r0 >= r1 or c0 >= c1:
+            return
+        cols = np.arange(c0, c1)[None, :] + 0.5
+        rows = np.arange(r0, r1)[:, None] + 0.5
+        under = np.hypot(cols - cx, rows - cy) <= r
+        for hits in (self.colour_hits, self.height_hits):
+            hits[r0:r1, c0:c1][under] = 0
 
     # -- the team's colour detection ------------------------------------------------------
 
@@ -517,7 +584,7 @@ class FloorMap:
         line taped on the floor is not. It sees what has no texture to measure a height on
         (a plain box, a dark bag); the heights see what has the floor's colour.
 
-        Each 5 cm cell keeps what the view that saw it most from above said, the kept views
+        Each decision cell keeps what the view that saw it most from above said, the kept views
         losing their advantage view after view; what the camera sees again is replaced, not
         added to (the team's --drone-cumul rule). Seen from the side, a tall box lands
         farther out once laid flat; adding views would grow it into the union of all its
@@ -528,7 +595,7 @@ class FloorMap:
         roi = self._roi(pose)
         if roi is None:
             return
-        c0, r0, c1, r1 = roi  # widened to whole 5 cm cells
+        c0, r0, c1, r1 = roi  # widened to whole decision cells
         c0, r0 = (c0 // k) * k, (r0 // k) * k
         c1, r1 = min(self.ccols * k, -(-c1 // k) * k), min(self.crows * k, -(-r1 // k) * k)
         if c1 - c0 < 4 * k or r1 - r0 < 4 * k:
@@ -557,12 +624,12 @@ class FloorMap:
         if inside.any():
             filled = top.copy()
             filled[~inside] = np.median(top[inside], axis=0)  # outside the view: no shadow
-            m[(m == 1) & (part_ombre(filled, self.res, m.shape, COLOUR_CELL) > 0.6)] = 0
-        m = sans_traits(m, 0.15 / COLOUR_CELL)
+            m[(m == 1) & (part_ombre(filled, self.res, m.shape, self.cell) > 0.6)] = 0
+        m = sans_traits(m, 0.15 / self.cell)
         obstacle = m[::-1] == 1
         # how far from straight below each cell is seen in this view (distance / height)
-        ys = (np.arange(r0 // k, r1 // k) + 0.5) * COLOUR_CELL
-        xs = (np.arange(c0 // k, c1 // k) + 0.5) * COLOUR_CELL
+        ys = (np.arange(r0 // k, r1 // k) + 0.5) * self.cell
+        xs = (np.arange(c0 // k, c1 // k) + 0.5) * self.cell
         x0, _, _, y1 = self.bounds
         q = (np.hypot(x0 + xs[None, :] - pose.c[0], y1 - ys[:, None] - pose.c[1])
              / float(pose.c[2])).astype(np.float32)  # fmt: skip

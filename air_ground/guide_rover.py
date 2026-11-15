@@ -177,9 +177,14 @@ class MapWorker:
                 self.error = f'{type(e).__name__}: {e}'
             self.last_s = time.monotonic() - t0
 
-    def grid(self) -> dict:
+    def grid(self, cell: float | None = None) -> dict:
+        """The grid the route is planned on (the map's own decision cells), or `cell` m."""
         with self.lock:
-            return self.fmap.grid(0.05)
+            return self.fmap.grid(cell or self.fmap.cell)
+
+    def set_rover(self, x: float, y: float) -> None:
+        with self.lock:
+            self.fmap.set_rover(x, y)
 
     def stats(self) -> dict:
         with self.lock:
@@ -379,6 +384,8 @@ class GuideService:
         with self.lock:
             self.guide.on_state(state, (t0 + t1) / 2)
             here = self.guide.rover_on_floor()
+        if here is not None:
+            self.mapper.set_rover(here.x, here.y)
         if here and (not self.trail or math.dist(self.trail[-1], (here.x, here.y)) > 0.01):
             self.trail.append((here.x, here.y))
 
@@ -426,7 +433,15 @@ class GuideService:
             return
         seen = self.finder(image, pose)
         self._seen = seen
-        self.mapper.offer(image, pose, None if seen is None else (seen.x, seen.y))
+        # where the rover is, left out of the map: seen in this picture, or else where the
+        # guide puts it (a blurred marker must not turn the rover into an obstacle)
+        if seen is not None:
+            rover_xy = (seen.x, seen.y)
+        else:
+            with self.lock:
+                est = self.guide.rover_on_floor()
+            rover_xy = None if est is None else (est.x, est.y)
+        self.mapper.offer(image, pose, rover_xy)
         if seen is not None:
             self.seen_at = time.monotonic()
             self.marker = {
@@ -494,6 +509,9 @@ class GuideService:
             self.plan_note = None
         self._replan(force=True)  # the route before anything is sent to the rover
         if self.guide.goal is None and self.plan_note:
+            if self.log is not None:  # refused at once: the loop never saw this goal
+                self.log.write('end', at=self.clock(), status=f'refused: {self.plan_note}')
+                self._logged = (None, self.guide.paths_sent, self.guide.status)
             raise ValueError(f'{self.plan_note}: pick another point')
         return x, y
 
@@ -597,7 +615,7 @@ class GuideService:
                     else:
                         self._send(200, service.view_jpg, 'image/jpeg')
                 elif path == '/map.json':
-                    self._json(service.mapper.grid())
+                    self._json(service.mapper.grid(0.05))  # the team's 5 cm format
                 elif path == '/state':
                     self._json(service.state())
                 elif path.startswith('/rover/') and path[6:] in ROVER_GET:

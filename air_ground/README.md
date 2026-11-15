@@ -129,6 +129,18 @@ the team shares it.
   deployed on it**.
 * The grid on the real recording replayed four times: it stops changing after the second pass
   (980, 1016, 1008 obstacle cells); it used to keep everything it had ever seen.
+* **First real ARKit test** (15 Nov 2026, evening, `runs/20261115-231847.jsonl`, rover code not
+  yet deployed): 34 clicks on the map; most refused or stopped with "no way to the goal around
+  the obstacles" (margins and specks closing the passages); one drive of 2.69 m in 33 s,
+  arrived 2.5 cm from the point, 6 paths sent, 1 pause, 6.8 s without seeing the rover;
+  odometry alone worked well, the rover was sometimes an obstacle on its own map.
+* After it: the rover is left out of the map wherever the guide puts it when its marker is not
+  read, the cells it drives over become floor, a patch touching it and no larger than 35 cm is
+  the rover (the team's proposal in `docs/overhead-camera.md`); specks of one cell are
+  dropped; the high patches are shrunk back by half the matching window (two 25 cm boxes
+  measured 0.23 m2 instead of 0.125, now 0.125); the map decides on 3 cm cells (a touched cell
+  is an obstacle: 1.5 cm of extra margin on average instead of 2.5), the team's 5 cm grid is
+  still exported on `/map.json`. `rover_core.py` deployed on the robot (15 Nov, 23:5x).
 * **On a real iPhone** (15 Nov 2026, PC hotspot): the axes are right, the top views of 18
   pictures taken while moving agree within 3 mm; the map of a real scene (boxes, a jacket,
   people) grows as the phone moves, the rover's marker is found, the dashboard reaches the

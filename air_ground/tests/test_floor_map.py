@@ -219,8 +219,38 @@ def test_tall_boxes_do_not_grow_until_the_passage_closes() -> None:
         pose = Pose.from_arkit(d)
         fmap.add(syn.render(pose, floor, None, boxes), pose)
         if k % 20 == 19:
-            g = fmap.grid(0.05)
-            sizes.append(int((np.array(g['cells']) == 1).sum()))
+            g = fmap.grid(fmap.cell)  # the grid the route is planned on
+            sizes.append(float((np.array(g['cells']) == 1).sum()) * fmap.cell**2)
             route = planner.route(g, (0.0, -0.45), (0.0, 0.45))
             assert route is not None and len(route) <= 2, (k, sizes)  # straight through
-    assert max(sizes[2:]) <= 1.2 * sizes[2], sizes  # once built, it no longer creeps (+20 %)
+    # about their true size (2 x 0.0625 m2), no halo, and no creeping growth once built
+    assert 0.10 <= sizes[2] <= 0.16 and max(sizes) <= 0.20, sizes
+
+
+def test_the_rover_is_never_an_obstacle_even_unseen() -> None:
+    """The rover as an obstacle on its own map: when its marker is not read in a picture,
+    or its parts stick out. Its place (from the guide) frees the patch it stands in, and
+    where it drove becomes floor; a speck elsewhere is dropped, a box is kept."""
+    fmap = FloorMap((-0.8, -0.7, 0.8, 0.7), res=0.01)
+    k = fmap.colour_k
+
+    def cell(x, y):
+        c, r = fmap._cells(np.asarray([[x, y]], float))[0] / k
+        return int(r), int(c)
+
+    for x, y in ((0.0, 0.0), (0.03, 0.0), (0.0, 0.03), (0.03, 0.03)):  # the rover, 6 x 6 cm
+        fmap.height_hits[cell(x, y)] = 3
+    for dx in range(6):  # a box, 18 x 18 cm, 40 cm away
+        for dy in range(6):
+            fmap.height_hits[cell(0.4 + 0.03 * dx, 0.03 * dy)] = 3
+    fmap.height_hits[cell(-0.5, -0.4)] = 3  # a speck
+    _, _, before = fmap.obstacles()
+    assert before[fmap._cells(np.asarray([[0.01, 0.01]]))[0][::-1].astype(int).tolist()[0],
+                  fmap._cells(np.asarray([[0.01, 0.01]]))[0].astype(int)[0]]  # fmt: skip
+    fmap.set_rover(0.02, 0.02)
+    _, _, after = fmap.obstacles()
+    rc, rr = fmap._cells(np.asarray([[0.02, 0.02]]))[0].astype(int)
+    bc, br = fmap._cells(np.asarray([[0.47, 0.07]]))[0].astype(int)
+    sc, sr = fmap._cells(np.asarray([[-0.49, -0.39]]))[0].astype(int)
+    assert not after[rr, rc] and after[br, bc] and not after[sr, sc]
+    assert fmap.height_hits[cell(0.0, 0.0)] == 0  # where it drove: floor until seen again
