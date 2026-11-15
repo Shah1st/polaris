@@ -59,6 +59,10 @@ seconds while the mapper calibrates (logged); the cloud includes the floor, so s
 `publish_tf`. Wire format: `guidance_rover_vo/protocol.py`. `guidance.launch.py` starts it only
 with `rover_vo:=true`, so launches that do not use the mapper are unchanged.
 
+The mapper itself is in `rover_mapper/` (`run.py`, see its README; plain Python with PyTorch,
+outside the container). `teleop/` is the web dashboard used with the real rover: keyboard
+driving through `rover/rover_server.py` next to the mapper's live 3D view (see `teleop/README.md`).
+
 ## Dev environment
 
 The Docker image is based on the official `ros:jazzy` image and adds Nav2, robot_localization,

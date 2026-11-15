@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polaris — téléop rover</title>
+<style>
+  :root { --bg:#111417; --panel:#191d22; --line:#2a3038; --fg:#e6e9ee; --dim:#8b95a3;
+          --acc:#19c2ff; --ok:#3ecf73; --warn:#f2b233; --bad:#ff5a52; }
+  * { box-sizing: border-box; }
+  [hidden] { display:none !important; }
+  html, body { height:100%; margin:0; background:var(--bg); color:var(--fg);
+               font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .app { display:grid; grid-template-columns: 400px 1fr; height:100%; }
+  .side { background:var(--panel); border-right:1px solid var(--line); padding:14px;
+          display:flex; flex-direction:column; gap:12px; overflow:auto; outline:none; }
+  h1 { font-size:15px; margin:0; display:flex; justify-content:space-between; align-items:center; }
+  .tag { font-size:11px; padding:2px 8px; border-radius:10px; background:var(--bad); color:#fff; font-weight:600; }
+  .tag.on { background:var(--ok); color:#06210f; }
+  .video { position:relative; background:#000; border-radius:6px; overflow:hidden; aspect-ratio:4/3; flex:none; }
+  .video canvas, .video img { width:100%; height:100%; object-fit:contain; display:block; }
+  .video span { position:absolute; left:8px; bottom:6px; font-size:12px; color:#fff;
+                text-shadow:0 0 4px #000; font-variant-numeric:tabular-nums; }
+  .pad { display:grid; grid-template-columns:repeat(3,56px); gap:6px; justify-content:center; }
+  .key { height:52px; border-radius:8px; border:1px solid var(--line); background:#20262d; color:var(--fg);
+         font-size:17px; font-weight:600; cursor:pointer; user-select:none; touch-action:none; }
+  .key small { display:block; font-size:10px; font-weight:400; color:var(--dim); }
+  .key.held { background:var(--acc); color:#03202b; border-color:var(--acc); }
+  .key.held small { color:#03202b; }
+  .stop { width:100%; height:44px; border:0; border-radius:8px; background:var(--bad); color:#fff;
+          font-size:15px; font-weight:700; cursor:pointer; }
+  label { display:flex; justify-content:space-between; align-items:center; color:var(--dim); font-size:12px; }
+  select { background:#20262d; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:3px 6px; }
+  input[type=range] { width:100%; accent-color:var(--acc); }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  td { padding:3px 0; border-bottom:1px solid var(--line); }
+  td:first-child { color:var(--dim); }
+  td:last-child { text-align:right; }
+  .warn { color:var(--warn); } .bad { color:var(--bad); } .ok { color:var(--ok); }
+  .hint { color:var(--dim); font-size:12px; }
+  .focus { padding:8px 10px; border-radius:6px; background:#3a2a10; color:var(--warn); font-size:13px; }
+  .focus.on { background:#10301c; color:var(--ok); }
+  iframe { width:100%; height:100%; border:0; background:#111; }
+  @media (max-width: 820px) { .app { grid-template-columns:1fr; grid-template-rows:auto 60vh; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="side" id="side" tabindex="0">
+    <h1>Rover réel — téléop <span class="tag" id="link">hors ligne</span></h1>
+    <div class="video"><canvas id="cam" width="640" height="480"></canvas><img id="camDirect" alt="" hidden>
+      <span id="vinfo"></span></div>
+    <label>Liaison <span id="route">–</span>
+      <select id="link">
+        <option value="auto" selected>automatique</option>
+        <option value="direct">directe (Wi-Fi du robot)</option>
+        <option value="vm">via la VM</option>
+      </select></label>
+    <label>Image
+      <select id="preset">
+        <option value="ld">légère (320 px)</option>
+        <option value="sd" selected>normale (480 px)</option>
+        <option value="hd">pleine (640 px)</option>
+      </select></label>
+    <label>Cadence
+      <select id="fluid">
+        <option value="0" selected>économe (4 img/s)</option>
+        <option value="1">fluide (20 img/s, bonne connexion)</option>
+      </select></label>
+    <div class="focus" id="focus">Clique ici pour piloter au clavier</div>
+    <div class="pad">
+      <span></span><button class="key" data-k="f">Z<small>avancer</small></button><span></span>
+      <button class="key" data-k="l">Q<small>gauche</small></button>
+      <button class="key" data-k="b">S<small>reculer</small></button>
+      <button class="key" data-k="r">D<small>droite</small></button>
+    </div>
+    <button class="stop" id="stop">STOP (Espace)</button>
+    <div>
+      <label>Vitesse <span id="vlab"></span></label>
+      <input type="range" id="speed" min="0.05" max="0.20" step="0.01" value="0.10">
+      <label>Rotation <span id="wlab"></span></label>
+      <input type="range" id="turn" min="0.4" max="1.5" step="0.1" value="0.9">
+    </div>
+    <table>
+      <tr><td>Batterie</td><td id="bat">–</td></tr>
+      <tr><td>Position (odométrie)</td><td id="odo">–</td></tr>
+      <tr><td>Vitesse mesurée</td><td id="vel">–</td></tr>
+      <tr><td>Commande envoyée</td><td id="cmd">–</td></tr>
+      <tr><td>Délai des commandes</td><td id="lat">–</td></tr>
+      <tr><td>Caméra (robot / VM / écran)</td><td id="fps">–</td></tr>
+      <tr><td>Aller-retour navigateur ↔ VM</td><td id="ping">–</td></tr>
+    </table>
+    <div class="hint">ZQSD ou flèches (positions physiques des touches, AZERTY ou QWERTY). Le rover
+      s'arrête dès que la touche est relâchée, que cette page perd le focus (clic dans la vue 3D)
+      ou que la liaison tombe. La liaison a un délai : avance par petites touches.</div>
+  </div>
+  <iframe id="map" title="carte 3D"></iframe>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+$('map').src = location.protocol + '//' + location.hostname + ':__MAP_PORT__/';
+
+// Camera: a few /frame.jpg requests kept open in parallel. Each returns one new
+// frame, so a slow link gives fewer frames, never an old picture.
+const ctx = $('cam').getContext('2d');
+// Frames come from the other loopback name: its own pool of connections,
+// so six pending frames never delay a driving command.
+const other = { 'localhost': '127.0.0.1', '127.0.0.1': 'localhost' }[location.hostname];
+const frameHost = other ? `${location.protocol}//${other}:${location.port}` : '';
+const viewer = Math.random().toString(36).slice(2);
+let shownSeq = 0, shown = 0, shownFps = 0, frameAge = null;
+async function frameLoop(i) {
+  for (;;) {
+    try {
+      // On a slow link only two requests stay open, so each picture arrives sooner.
+      if (i >= 2 && pingMs !== null && pingMs > 700) { await new Promise(ok => setTimeout(ok, 1000)); continue; }
+      if (direct) { await new Promise(ok => setTimeout(ok, 500)); continue; }
+      const r = await fetch(`${frameHost}/frame.jpg?c=${viewer}&p=${$('preset').value}&f=${$('fluid').value}`, { cache: 'no-store' });
+      if (r.status !== 200) { await new Promise(ok => setTimeout(ok, 200)); continue; }
+      const seq = +r.headers.get('X-Seq'), age = +r.headers.get('X-Age-Ms');
+      const bmp = await createImageBitmap(await r.blob());
+      if (seq > shownSeq) {  // parallel requests can finish out of order: never go back in time
+        shownSeq = seq; frameAge = age; shown++;
+        if ($('cam').width !== bmp.width) { $('cam').width = bmp.width; $('cam').height = bmp.height; }
+        ctx.drawImage(bmp, 0, 0);
+      }
+      bmp.close();
+    } catch (e) { await new Promise(ok => setTimeout(ok, 500)); }
+  }
+}
+for (let i = 0; i < 6; i++) frameLoop(i);
+setInterval(() => { shownFps = shown; shown = 0; }, 1000);
+// How late this page's own timers run (a busy 3D view slows the whole tab), and a report to the server log.
+let jank = 0, lastTick = performance.now();
+setInterval(() => { const n = performance.now(); jank = Math.max(jank, n - lastTick - 100); lastTick = n; }, 100);
+setInterval(() => {
+  postVM('/api/client', { direct, shownFps, frameAge, pingMs: pingMs && Math.round(pingMs), jankMs: Math.round(jank),
+                          preset: $('preset').value, fluid: $('fluid').value, focus: document.hasFocus() });
+  jank = 0;
+}, 5000);
+setInterval(async () => {
+  const t = performance.now();
+  try { await fetch('/api/ping', { cache: 'no-store' }); pingMs = performance.now() - t; } catch (e) { pingMs = null; }
+  // A slow link: smaller pictures, fewer at a time.
+  if (pingMs !== null && pingMs > 700 && $('preset').value !== 'ld') $('preset').value = 'ld';
+}, 2000);
+
+const CODES = { KeyW:'f', ArrowUp:'f', KeyS:'b', ArrowDown:'b', KeyA:'l', ArrowLeft:'l', KeyD:'r', ArrowRight:'r' };
+const held = new Set();
+let driving = false, pingMs = null;
+
+const postVM = (path, body) => fetch(path, { method:'POST', headers:{'Content-Type':'application/json'},
+                                             body: JSON.stringify(body || {}), keepalive:true }).catch(() => {});
+// Direct link: when this computer is on the robot's network, camera and commands
+// go straight to the robot (no trip through the cloud). Checked every few seconds.
+const LAN = '__ROBOT_LAN__';
+let direct = false, directFail = 0;
+async function probe() {
+  const want = $('link').value;
+  let ok = false;
+  if (LAN && want !== 'vm') {
+    const c = new AbortController(), t = setTimeout(() => c.abort(), 1500);
+    try { await fetch(LAN + '/state', { mode:'no-cors', cache:'no-store', signal:c.signal }); ok = true; } catch (e) {}
+    clearTimeout(t);
+  }
+  if (ok !== direct) {
+    direct = ok; directFail = 0;
+    $('camDirect').hidden = !direct; $('cam').hidden = direct;
+    $('camDirect').src = direct ? LAN + '/video_feed?t=' + Date.now() : '';
+  }
+  $('route').textContent = direct ? 'directe' : (want === 'direct' ? 'robot injoignable en direct' : 'via la VM');
+  $('route').className = direct ? 'ok' : (want === 'direct' ? 'bad' : 'warn');
+}
+$('link').onchange = probe; setInterval(probe, 5000); probe();
+$('camDirect').onerror = () => { if (direct) setTimeout(() => { $('camDirect').src = LAN + '/video_feed?t=' + Date.now(); }, 1500); };
+// The robot's API reads the JSON whatever the content type: a "simple" request needs no CORS.
+const postRobot = (path, body) => fetch(LAN + path, { method:'POST', mode:'no-cors', keepalive:true,
+    headers:{'Content-Type':'text/plain'}, body: JSON.stringify(body || {}) })
+  .then(() => { directFail = 0; }, () => { if (++directFail >= 3) { direct = false; probe(); } });
+function post(path, body) {
+  if (direct && path === '/api/cmd') return postRobot('/cmd', body);
+  if (direct && path === '/api/stop') { postRobot('/stop'); }   // and through the VM too, below
+  return postVM(path, body);
+}
+function command() {
+  const f = (held.has('f') ? 1 : 0) - (held.has('b') ? 1 : 0);
+  const t = (held.has('l') ? 1 : 0) - (held.has('r') ? 1 : 0);
+  // Turning while moving: a gentler curve than a pivot (same rule as the rover's own page).
+  return { v: f * +$('speed').value, omega: t * +$('turn').value * (f ? 0.6 : 1), t: Date.now() };
+}
+// Through the VM, a round trip of more than a second makes driving blind: refuse it.
+const tooSlow = () => !direct && pingMs !== null && pingMs > 1000;
+function paint() {
+  document.querySelectorAll('.key').forEach(b => b.classList.toggle('held', held.has(b.dataset.k)));
+}
+function release() { held.clear(); paint(); if (driving) { post('/api/cmd', { v:0, omega:0 }); driving = false; } }
+function stopAll() { held.clear(); paint(); driving = false; post('/api/stop'); }
+
+setInterval(() => {  // repeat while held: the server drops a command after 0.45 s of silence
+  if (held.size) { post('/api/cmd', command()); driving = true; }
+  else if (driving) { post('/api/cmd', { v:0, omega:0 }); driving = false; }
+}, 100);
+
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' || e.code === 'Escape') { e.preventDefault(); stopAll(); return; }
+  const k = CODES[e.code];
+  if (!k || e.ctrlKey || e.metaKey || e.altKey) return;
+  e.preventDefault();
+  if (tooSlow()) return;
+  if (!held.has(k)) { held.add(k); paint(); post('/api/cmd', command()); driving = true; }
+});
+document.addEventListener('keyup', (e) => {
+  const k = CODES[e.code];
+  if (k) { held.delete(k); paint(); if (!held.size) release(); }
+});
+document.querySelectorAll('.key').forEach(b => {
+  b.addEventListener('pointerdown', (e) => { e.preventDefault(); if (tooSlow()) return;
+                                              b.setPointerCapture(e.pointerId); held.add(b.dataset.k); paint(); });
+  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture'])
+    b.addEventListener(ev, () => { held.delete(b.dataset.k); paint(); if (!held.size) release(); });
+});
+$('stop').addEventListener('click', stopAll);
+
+// Keys only reach this page while it has the focus (not while the 3D view has it).
+function focusState() {
+  const on = document.hasFocus() && document.activeElement !== $('map');
+  const slow = tooSlow();
+  $('focus').classList.toggle('on', on && !slow);
+  $('focus').textContent = slow ? `Liaison trop lente pour piloter (${(pingMs / 1000).toFixed(1)} s aller-retour)`
+    : on ? 'Clavier actif : ZQSD pour piloter' : 'Clique ici pour piloter au clavier';
+  if (!on || slow) release();
+}
+window.addEventListener('blur', focusState);
+window.addEventListener('focus', focusState);
+document.addEventListener('visibilitychange', () => { if (document.hidden) release(); });
+window.addEventListener('pagehide', release);
+$('side').addEventListener('pointerdown', () => { $('side').focus(); setTimeout(focusState, 0); });
+setInterval(focusState, 500);
+
+function sliders() {
+  $('vlab').textContent = (+$('speed').value).toFixed(2) + ' m/s';
+  $('wlab').textContent = (+$('turn').value).toFixed(1) + ' rad/s';
+}
+$('speed').oninput = $('turn').oninput = sliders; sliders();
+
+const cls = (el, c) => { el.className = c || ''; };
+async function poll() {
+  try {
+    const s = await (await fetch('/api/state')).json();
+    const r = s.robot || {}, o = r.odom || {};
+    const fresh = s.state_age !== null && s.state_age < 3 && r.link && r.link.connected;
+    $('link').textContent = fresh ? 'en ligne' : 'hors ligne'; $('link').classList.toggle('on', !!fresh);
+    const b = r.battery_v;
+    $('bat').textContent = b == null ? '–' : b.toFixed(2) + ' V' + (b < 9 ? ' (valeur douteuse)' : '');
+    cls($('bat'), b == null ? '' : b < 9 ? 'warn' : b < 10.5 ? 'bad' : 'ok');
+    $('odo').textContent = o.x == null ? '–' :
+      `x ${o.x.toFixed(2)} m · y ${o.y.toFixed(2)} m · ${(((o.heading_deg % 360) + 540) % 360 - 180).toFixed(0)}°`;
+    $('vel').textContent = o.v == null ? '–' : `${o.v.toFixed(2)} m/s · ${(o.yaw_rate_dps || 0).toFixed(0)} °/s`;
+    $('cmd').textContent = `v ${s.want[0].toFixed(2)} · ω ${s.want[1].toFixed(2)}` + (s.cmd_err ? ' · erreur' : '');
+    cls($('cmd'), s.cmd_err ? 'bad' : '');
+    const ms = s.cmd_ms ?? s.state_ms;
+    $('lat').textContent = ms == null ? '–' : ms.toFixed(0) + ' ms';
+    cls($('lat'), ms == null ? '' : ms > 400 ? 'bad' : ms > 250 ? 'warn' : 'ok');
+    const cf = r.camera ? r.camera.fps : null;
+    $('fps').textContent = `${cf ?? '–'} / ${s.video.fps} / ${direct ? 'direct' : shownFps} img/s`;
+    $('vinfo').textContent = direct ? 'direct' : s.video.error ? 'vidéo : ' + s.video.error : shownFps + ' img/s';
+    $('ping').textContent = pingMs == null ? '–' : pingMs.toFixed(0) + ' ms';
+    cls($('ping'), pingMs == null ? '' : pingMs > 400 ? 'bad' : pingMs > 200 ? 'warn' : 'ok');
+  } catch (e) { $('link').textContent = 'serveur injoignable'; $('link').classList.remove('on'); }
+}
+setInterval(poll, 500); poll();
+</script>
+</body>
+</html>

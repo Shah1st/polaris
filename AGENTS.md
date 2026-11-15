@@ -29,6 +29,8 @@ secrets (cloud credentials, API keys, passwords): use environment variables or a
 | `mergingmap` | `merging_map/` | drone + rover map fusion in tiles, A*, blocking decisions |
 | `depth-camera-exp` | `camera-test/` | Intel RealSense D405 tests |
 | `Romain` | `src/guidance_rover_vo/`, `sim/` | rover monocular 3D mapping bridge; shared simulation |
+| `Romain` | `rover_mapper/`, `teleop/` | the rover monocular 3D mapper itself; web dashboard to drive the real rover and watch its map |
+| `rover-teleop` | `rover/` | rover-side server and test bench (teleop, camera, measured moves) |
 
 Suggestions, not rules (nothing has been agreed yet): keep `main` building, work on your own
 branch, open pull requests, run the tests and `ruff` (see the README) before asking for a merge.

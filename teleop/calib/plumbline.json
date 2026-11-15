@@ -1,0 +1,16 @@
+{
+ "model": "theta_d = theta*(1+k1*theta^2), r = f*theta_d",
+ "f": 272.2169471366606,
+ "k1": -0.0339636704760227,
+ "cx": 345.87564760330736,
+ "cy": 213.9312661359995,
+ "size": [
+  640,
+  480
+ ],
+ "cost": 0.012097857278493242,
+ "cost_raw": 0.05172165553071763,
+ "frames": 6,
+ "chains": 241,
+ "method": "plumb-line on Canny edge chains, no calibration target"
+}
