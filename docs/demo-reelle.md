@@ -1,25 +1,48 @@
 # Démo réelle : marche à suivre (15 nov. 2026)
 
-Pour l'équipe sur place cet après-midi. **Rien de ce qui suit n'a encore tourné sur le vrai
-robot ni sur une vraie caméra** : les commandes ont été vérifiées sur la VM (`--help`, essais à
-blanc sur une photo, faux rover), pas sur le matériel. Ce qui n'a pas été vérifié est marqué
-*non vérifié*. Gardez toujours quelqu'un la main sur le Ctrl-C (voir « Arrêter »).
+Pour l'équipe sur place cet après-midi. **`lancer_overhead.py` (mission avec la caméra du
+dessus) n'a encore tourné ni sur le vrai robot ni sur une vraie caméra** : les commandes ont été
+vérifiées sur la VM (`--help`, essais à blanc sur une photo, faux rover), pas sur le matériel.
+Ce qui n'a pas été vérifié est marqué *non vérifié*. Ce qui a déjà roulé en vrai : section 1 bis.
+Gardez toujours quelqu'un la main sur le Ctrl-C (voir « Arrêter »).
 
 ## 1. Qui tourne où
 
 | Programme | Où | Pourquoi |
 |---|---|---|
 | Caméra du dessus (téléphone avec une appli caméra IP, ou caméra USB) | dans la salle, fixée au-dessus de l'arène, objectif vers le bas | c'est le « drone » |
-| `merging_map/lancer_overhead.py` (la mission) | **un portable sur le Wi-Fi de la salle**, le même réseau que le téléphone et le rover | il doit lire le flux du téléphone et parler au rover ; la VM Google Cloud ne peut pas ouvrir le téléphone sur le Wi-Fi de la salle |
+| `merging_map/lancer_overhead.py` (la mission) | **un portable sur le Wi-Fi de la salle**, le même réseau que le téléphone et le rover, ou la VM par les tunnels du robot (section 1 bis) | il doit lire le flux du téléphone et parler au rover ; la VM ne voit le téléphone que par le tunnel 18092 |
 | `rover/rover_server.py` | sur le rover (RDK X5), service `polaris-rover-api` | seul programme qui parle à l'ESP32 |
 | `teleop/server.py --suivi` (page du jury, `/mission`) | le **même portable** que la mission | il lit le fichier `--suivi` écrit par la mission, en local |
 | `rover_mapper/perception_service.py` (option) | la VM (il faut le GPU) | voir l'étape 9 ; pas pour la première démo |
 
-Faire tourner la mission sur la VM demanderait un tunnel pour la caméra, par exemple depuis le
-portable `ssh -R 8170:<IP du téléphone>:8080 <vous>@<VM>` (le flux devient
-`http://127.0.0.1:8170/video` sur la VM), et le rover joint par son propre tunnel
-(`http://127.0.0.1:18080` sur la VM, hors ligne ce matin). Avec 160-700 ms d'aller-retour vers
-le robot et 0,5 s de retard vidéo, c'est plus lent et moins sûr : *non vérifié*, à éviter.
+## 1 bis. La mission sur la VM (ce qui a tourné le 15 nov.)
+
+La mission peut aussi tourner **sur la VM**. Le robot y garde deux tunnels SSH sortants :
+
+| Sur la VM | Quoi |
+|---|---|
+| `127.0.0.1:18080` | l'API du rover (le serveur de RBDRB, voir ci-dessous) |
+| `127.0.0.1:18091` | le serveur de capture de la caméra de profondeur D405 |
+| `127.0.0.1:18092` | réservé à la caméra du téléphone ; ouvert par `/home/romaindcrl/polaris-reel-run/robot_extra_tunnel.sh <IP du téléphone> <port>` |
+
+Scripts dans `/home/romaindcrl/polaris-reel-run` : `mission.sh essai` (`--dry-run`) puis
+`mission.sh vrai` (variables `MPP`, `VICTIME`, `MARQUEUR`, `CAMERA`, `EXTRA` : voir l'en-tête du
+script).
+
+- **Le lien est lent** : 1,3 à 4 s par requête (`GET /state`), et il a coupé deux fois quelques
+  minutes. Passer `--delai-http 6` (avec `mission.sh` : `EXTRA="--delai-http 6"`, la dernière
+  valeur l'emporte sur le `--delai-http 2` du script).
+- **Le robot fait tourner le serveur plus récent de RBDRB** : pas de `boot_id` ni de
+  `stop_count` dans `/state` pour l'instant (section 3.4) ; un STOP donné entre deux pas n'est
+  donc pas vu par la mission.
+- **Premier trajet autonome réel** (`polaris-reel-run/avance_esquive.py`) : caméra du rover
+  seule (service de perception sur la VM), odométrie comme position, sans caméra du dessus ;
+  environ 3,5 m en 20 pas en contournant des cartons, arrêté par l'opérateur. Il a fallu
+  `delai_liaison=10`, `periode=0.5`, 6 s de délai client, et donner à la perception le vrai
+  panoramique de la tourelle (-4,5°).
+- Le `lancer_overhead.py` complet (caméra du dessus + rover) n'a pas encore tourné : *non
+  vérifié*.
 
 ## 2. Installer sur le portable (pas de ROS)
 
@@ -122,8 +145,9 @@ curl -s http://<IP du rover>:8080/state
 | `stop_count` | nombre de STOP reçus (`POST /stop`, `/cmd {"T":0}`) depuis le démarrage du serveur ; la mission s'en sert pour voir un STOP entre deux pas. **Absent** = ancien serveur : ce STOP n'est pas vu (section 4) |
 | `loop_errors`, `link.handler_errors` | erreurs de la boucle de commande ; doivent rester à 0 |
 
-(Champs vérifiés sur `rover_server.py --sim` du dépôt ; la version du robot n'a jamais été
-comparée.)
+(Champs vérifiés sur `rover_server.py --sim` du dépôt. Le 15 nov., le robot fait tourner le
+serveur plus récent de RBDRB : `boot_id` et `stop_count` y sont **absents** ; la mission fait
+sans, et voit un redémarrage à la baisse de `odom.odometer` ou `link.rx_count`.)
 
 ### 3.5 Essai à blanc (`--dry-run`) : aucun POST ne part
 
