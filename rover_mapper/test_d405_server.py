@@ -78,6 +78,7 @@ class World:
         self.n = 0
         self.history = {}
         self.starts, self.refused, self.stops = [], [], 0
+        self.queries = []           # heure (monotonic) de chaque énumération USB (query_devices)
         self.lock = threading.Lock()
 
 
@@ -141,6 +142,7 @@ def make_fake_rs(world):
 
     class context:  # noqa: N801
         def query_devices(self):
+            world.queries.append(time.monotonic())
             return [Device()] if world.plugged else []
 
     class config:  # noqa: N801
@@ -452,3 +454,24 @@ def test_cpu_per_request(world, serve):
     print(f"\nCPU par requête (ms) : {cpu} ; par image capturée : {h['cpu_ms_per_capture']} ms ; "
           f"taille /frame : {np.median(sizes) / 1024:.0f} Ko", flush=True)
     assert 0 < cpu['/frame'] < 250 and h['cpu_ms_per_capture'] is not None
+
+
+def test_retry_backs_off_without_camera(world, serve):
+    """Sans caméra, chaque essai énumère l'USB (23 % d'un cœur du robot à un essai toutes les
+    2 s) : l'attente double à chaque échec (2, 4, 8, 15 s sur le robot ; ici 0,1 -> 0,8 s) et
+    revient au minimum dès que des images arrivent."""
+    assert ds.Capture().retry_s == 2.0 and ds.Capture().retry_max_s == 15.0  # valeurs du robot
+    world.plugged = False
+    s = serve(retry_s=0.1, retry_max_s=0.8)
+    time.sleep(3.0)
+    gaps = np.diff(world.queries)
+    # 0,1 + 0,2 + 0,4 + 0,8 + 0,8 + ... : 6 essais en 3 s (30 à intervalle fixe)
+    assert 4 <= len(world.queries) <= 8, len(world.queries)
+    assert gaps[0] < 0.25 and gaps[-1] > 0.7 and np.all(gaps < 1.0), gaps
+    assert health(s)['retry_s'] == 0.8
+    world.plugged = True
+    assert wait_for(lambda: health(s)['ok'], 2.0)
+    assert health(s)['retry_s'] == 0.1  # des images sont arrivées : retour au minimum
+    n = len(world.queries)
+    world.plugged = False  # débranchée de nouveau : on la recherche vite d'abord
+    assert wait_for(lambda: len(world.queries) >= n + 2, 1.0), np.diff(world.queries[n - 1:])
