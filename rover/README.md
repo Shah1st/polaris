@@ -127,6 +127,29 @@ corners, a square and a circle, 3 cm on an S curve; the end point is reached wit
 Not yet: obstacles (a planner or the depth camera will have to replace or stop the path), and
 the odometry drifts over long runs (no absolute position until the overhead camera).
 
+## Tilt safety (anti-tipping)
+
+Roll (sideways, + = left side up) and pitch (nose, + = nose up) come from a complementary
+filter: the gyro (gx, gy) for fast changes, the accelerometer for the long term (trusted much
+less during bumps). Their rates and angular accelerations are watched too.
+
+- Between `*_warn_deg` and `*_stop_deg` the rover slows down (down to `tilt_min_scale`).
+- At `*_stop_deg`, or when it is **tipping** (tilted more than `tip_min_deg` and the angle grows
+  faster than `tip_rate_dps`, or accelerates away from level faster than `tip_acc_dps2`), it
+  stops whatever it does (manual, move, path), backs off `tilt_backoff_dist` along the way it
+  came, then refuses to go further that way until the angle is back under the warn angle.
+- **The thresholds are placeholders** (15° warn, 25° stop): set them from the tipping tests.
+- The back-off is a motion like the others: `/stop`, a lost ESP32 link or stale feedback
+  (0.5 s) end it, and it never starts without fresh wheel feedback. A step ended by the guard
+  finishes with the status `tilt: ...` (also in `ctrl.fault`), not an operator stop.
+
+Tipping tests: turn the "Tilt guard" switch off, press "● Record", tilt or drive the rover until
+it tips, stop the recording and download the CSV (20 Hz: commands, wheel speeds, roll, pitch,
+rates, angular accelerations, raw IMU). The page also shows the peaks since the last reset.
+The page warns if the gyro axes turn the wrong way compared with the accelerometer (fix with
+`imu_roll_sign` / `imu_pitch_sign`). In simulation, the "Sim slope" sliders tilt the rover
+(past 40° it falls over).
+
 ## Gyro steering assist (manual driving)
 
 A software differential: the server adds a small rotation command to yours, which the ESP32
@@ -200,9 +223,10 @@ Checked on our rover (2026-11-15): T:133 moves both servos although the boot mis
 
 ## Deploying to the robot
 
-The copy on the robot (`~/rover` on the RDK, started by the `polaris-rover-api` unit with
-`--fps 40`) **differs from this repository** (its `rover_server.py` had another md5 on
-2026-11-14; nobody has diffed them). Before copying:
+The robot's own code as deployed on 2026-11-15 at 11:15 UTC (tilt guard, recorder, `/mode`)
+is merged here with the safety changes above. The copy on the robot (`~/rover` on the RDK,
+started by the `polaris-rover-api` unit with `--fps 40`) may have moved on since. Before
+copying:
 
 ```bash
 scp -r sunrise@<RDK IP>:~/rover /tmp/rover-robot      # keep the robot's version
@@ -228,6 +252,9 @@ To try by hand after this change, **wheels off the ground first**, then on the f
    stop at once (log line "Stopping the rover.").
 6. `curl -sD - http://<RDK IP>:8080/snapshot.jpg -o /dev/null` after 10 s without viewer:
    200 with a small `X-Age-Ms` (it waits for the camera), or 503 if the camera is broken.
+7. Tilt guard: drive slowly onto a slope steeper than `pitch_stop_deg` (or lift the nose by
+   hand while driving): the rover stops and backs off; press STOP during the back-off: it must
+   stop at once. A step ended this way shows `tilt: ...` in the history and in `ctrl.fault`.
 
 ## Not handled yet
 

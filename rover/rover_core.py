@@ -68,6 +68,31 @@ class Config:
     settle: float = 0.4  # s, pause after each move/turn before measuring the result
     task_timeout: float = 20.0  # s, give up a move/turn after this long
     stall_time: float = 1.5  # s, give up if the wheels do not move while commanded
+    # Give up a turn (or a pivot on a path) when the wheels turn in opposite directions but
+    # the gyro sees less than no_rotation_rate for no_rotation_time: rover lifted or stuck.
+    no_rotation_time: float = 2.0  # s
+    no_rotation_rate: float = 0.1  # rad/s
+
+    # Tilt safety. Roll = sideways (+ = left side up), pitch = nose (+ = nose up), degrees.
+    # PROVISIONAL thresholds: to be set from the tipping tests (record them on the page).
+    tilt_guard: int = 1  # 1 on, 0 off (off while tipping the rover on purpose)
+    roll_warn_deg: float = 15.0  # from here the rover slows down...
+    roll_stop_deg: float = 25.0  # ... and here it stops and backs off
+    pitch_warn_deg: float = 15.0
+    pitch_stop_deg: float = 25.0
+    tilt_min_scale: float = 0.3  # speed fraction left at the stop angle (linear from warn)
+    # Tipping in progress, before the stop angle: once tilted more than tip_min_deg, the
+    # angle grows faster than tip_rate_dps, or accelerates away from level faster than
+    # tip_acc_dps2.
+    tip_min_deg: float = 8.0
+    tip_rate_dps: float = 40.0
+    tip_acc_dps2: float = 400.0
+    tilt_backoff_dist: float = 0.15  # m, reverse this far along the way the rover came
+    tilt_backoff_speed: float = 0.12  # m/s
+    tilt_backoff_time: float = 3.0  # s, at most
+    tilt_filter_tau: float = 0.5  # s, gyro/accelerometer blend (higher: trust the gyro more)
+    imu_roll_sign: int = 1  # -1 if the gyro's roll rate has the wrong sign (see /state tilt)
+    imu_pitch_sign: int = 1
 
     # Calibration
     dist_scale: float = 1.0  # real distance / distance measured by the encoders
@@ -77,6 +102,12 @@ class Config:
     gyro_scale: float = math.radians(1.0) / 16.4
     track: float = 0.125  # m, wheel track used by the ESP32 firmware for the RaspRover
     bias_calib_time: float = 2.0  # s of stillness to measure the gyro bias
+    # rad/s: a gyro reading further than this from the bias is a real rotation (the rover
+    # carried or pushed by hand, wheels still), never learned as bias. Noise is ~0.008.
+    bias_max_rate: float = 0.03
+    # rad/s: a gyro bias is small (ours: ~0.004). A larger average during the start-up
+    # measure means the rover was turning (carried): measure again.
+    bias_limit: float = 0.05
 
     # Gyro steering assist for manual driving (a software differential): when the input is
     # "straight", hold the heading; when it is a turn, make the measured rotation follow it.
@@ -177,7 +208,7 @@ class Config:
                 x = int(x)
             new[fld.name] = x
         merged = {**dataclasses.asdict(self), **new}
-        for name in ('yaw_sign', 'pan_sign', 'tilt_sign'):
+        for name in ('yaw_sign', 'pan_sign', 'tilt_sign', 'imu_roll_sign', 'imu_pitch_sign'):
             if merged[name] not in (-1, 1):
                 raise ValueError(f'{name} must be 1 or -1')
         for lo_name, hi_name in (
@@ -185,6 +216,8 @@ class Config:
             ('w_min', 'w_max'),
             ('pan_min', 'pan_max'),
             ('tilt_min', 'tilt_max'),
+            ('roll_warn_deg', 'roll_stop_deg'),
+            ('pitch_warn_deg', 'pitch_stop_deg'),
         ):
             if merged[lo_name] > merged[hi_name]:
                 raise ValueError(f'{lo_name} must not be above {hi_name}')
@@ -216,11 +249,30 @@ CONFIG_LIMITS: dict[str, tuple[float, float]] = {
     'settle': (0.0, 5.0),
     'task_timeout': (1.0, 120.0),
     'stall_time': (0.2, 10.0),
+    'no_rotation_time': (0.2, 30.0),
+    'no_rotation_rate': (0.01, 2.0),  # 0 would never see "not rotating"
+    'tilt_guard': (0, 1),
+    'roll_warn_deg': (0.0, 90.0),
+    'roll_stop_deg': (1.0, 90.0),
+    'pitch_warn_deg': (0.0, 90.0),
+    'pitch_stop_deg': (1.0, 90.0),
+    'tilt_min_scale': (0.0, 1.0),
+    'tip_min_deg': (0.0, 90.0),
+    'tip_rate_dps': (1.0, 2000.0),  # the gyro's range
+    'tip_acc_dps2': (1.0, 100000.0),
+    'tilt_backoff_dist': (0.0, 1.0),
+    'tilt_backoff_speed': (0.0, 1.0),
+    'tilt_backoff_time': (0.0, 10.0),
+    'tilt_filter_tau': (0.01, 10.0),
+    'imu_roll_sign': (-1, 1),
+    'imu_pitch_sign': (-1, 1),
     'dist_scale': (0.5, 2.0),
     'yaw_sign': (-1, 1),
     'gyro_scale': (1e-5, 1e-2),
     'track': (0.05, 1.0),  # divides the wheel speed difference
     'bias_calib_time': (0.2, 30.0),
+    'bias_max_rate': (0.005, 1.0),  # the start-up measure needs a spread under half of it
+    'bias_limit': (0.001, 1.0),
     'assist': (0, 1),
     'assist_hz': (0.5, 50.0),
     'assist_deadband_deg': (0.0, 30.0),
@@ -286,6 +338,142 @@ def clamp(x: float, lo: float, hi: float) -> float:
 # --------------------------------------------------------------------------------------
 
 
+class TiltMonitor:
+    """Roll and pitch of the rover, their rates and angular accelerations, from the IMU.
+
+    The accelerometer alone gives the tilt only when the rover does not accelerate; the gyro
+    alone drifts. A complementary filter blends them: the gyro rates (gx roll, gy pitch,
+    16.4 raw per deg/s like gz) follow fast changes, the accelerometer pulls the angle back
+    over `tilt_filter_tau`. While the measured acceleration is far from 1 g (bumps, braking)
+    the accelerometer is trusted much less.
+
+    Conventions: roll + = left side up, pitch + = nose up (from the accelerometer formulas
+    below). Whether the board's gyro axes agree is checked live (`sign_check`), and fixed
+    with imu_roll_sign / imu_pitch_sign.
+    """
+
+    def __init__(self, cfg: Config) -> None:
+        self.cfg = cfg
+        self.ready = False
+        self.roll = self.pitch = 0.0  # deg, filtered
+        self.roll_acc_deg = self.pitch_acc_deg = 0.0  # deg, accelerometer only
+        self.roll_rate = self.pitch_rate = 0.0  # deg/s
+        self.roll_accel = self.pitch_accel = 0.0  # deg/s^2
+        self.bias = [0.0, 0.0]  # gyro bias, deg/s (roll, pitch)
+        self.g_ref: float | None = None  # accelerometer norm at rest (raw)
+        self.peaks = {'roll': 0.0, 'pitch': 0.0, 'roll_rate': 0.0, 'pitch_rate': 0.0}
+        self._t: float | None = None
+        self._prev_acc_angles: tuple[float, float] | None = None
+        self._agree = [[0, 0], [0, 0]]  # per axis: [samples where signs agree, disagree]
+
+    def reset_peaks(self) -> None:
+        self.peaks = dict.fromkeys(self.peaks, 0.0)
+
+    def update(self, ax, ay, az, gx, gy, t: float, still: bool) -> None:
+        c = self.cfg
+        dt = 0.0 if self._t is None else clamp(t - self._t, 0.0, 0.2)
+        self._t = t
+        roll_a = math.degrees(math.atan2(ay, az))
+        pitch_a = math.degrees(math.atan2(-ax, math.hypot(ay, az)))
+        dps = math.degrees(c.gyro_scale)  # raw -> deg/s
+        rates = [gx * dps * c.imu_roll_sign, gy * dps * c.imu_pitch_sign]
+        norm = math.sqrt(ax * ax + ay * ay + az * az)
+
+        if still:  # learn the gyro biases and the 1 g norm while standing still
+            for i in (0, 1):
+                if abs(rates[i] - self.bias[i]) < 3.0:
+                    self.bias[i] += 0.02 * (rates[i] - self.bias[i])
+            self.g_ref = norm if self.g_ref is None else self.g_ref + 0.02 * (norm - self.g_ref)
+        rr, pr = rates[0] - self.bias[0], rates[1] - self.bias[1]
+
+        if not self.ready:
+            self.roll, self.pitch = roll_a, pitch_a
+            self.ready = True
+        elif dt > 0:
+            k = c.tilt_filter_tau / (c.tilt_filter_tau + dt)
+            if self.g_ref and abs(norm / self.g_ref - 1.0) > 0.15:
+                k = 0.995  # bump or hard braking: the accelerometer is not the gravity now
+            self.roll = k * (self.roll + rr * dt) + (1 - k) * roll_a
+            self.pitch = k * (self.pitch + pr * dt) + (1 - k) * pitch_a
+            # angular accelerations from the (smoothed) rates
+            new_rr = 0.5 * self.roll_rate + 0.5 * rr
+            new_pr = 0.5 * self.pitch_rate + 0.5 * pr
+            self.roll_accel = 0.5 * self.roll_accel + 0.5 * (new_rr - self.roll_rate) / dt
+            self.pitch_accel = 0.5 * self.pitch_accel + 0.5 * (new_pr - self.pitch_rate) / dt
+            self.roll_rate, self.pitch_rate = new_rr, new_pr
+            # do the gyro rates agree with the accelerometer angles' changes?
+            if self._prev_acc_angles is not None:
+                d = (roll_a - self._prev_acc_angles[0], pitch_a - self._prev_acc_angles[1])
+                for i, (rate, change) in enumerate(zip((rr, pr), d, strict=False)):
+                    if abs(rate) > 10 and abs(change) > 0.2:
+                        self._agree[i][0 if rate * change > 0 else 1] += 1
+        self._prev_acc_angles = (roll_a, pitch_a)
+        self.roll_acc_deg, self.pitch_acc_deg = roll_a, pitch_a
+        p = self.peaks
+        p['roll'] = max(p['roll'], abs(self.roll))
+        p['pitch'] = max(p['pitch'], abs(self.pitch))
+        p['roll_rate'] = max(p['roll_rate'], abs(self.roll_rate))
+        p['pitch_rate'] = max(p['pitch_rate'], abs(self.pitch_rate))
+
+    def sign_check(self) -> dict:
+        """Per axis: 'ok', 'wrong' (flip imu_*_sign) or None (not enough tilting seen)."""
+        out = {}
+        for i, name in enumerate(('roll', 'pitch')):
+            agree, disagree = self._agree[i]
+            if agree + disagree < 10:
+                out[name] = None
+            else:
+                out[name] = 'ok' if agree >= disagree else 'wrong'
+        return out
+
+    def danger(self) -> str | None:
+        """Why the rover must stop now, or None."""
+        c = self.cfg
+        if abs(self.roll) >= c.roll_stop_deg:
+            return f'side tilt {self.roll:+.0f} deg'
+        if abs(self.pitch) >= c.pitch_stop_deg:
+            return f'{"nose up" if self.pitch > 0 else "nose down"} {self.pitch:+.0f} deg'
+        for name, angle, rate, acc in (
+            ('side', self.roll, self.roll_rate, self.roll_accel),
+            ('front/back', self.pitch, self.pitch_rate, self.pitch_accel),
+        ):
+            if abs(angle) > c.tip_min_deg:
+                away = 1.0 if angle > 0 else -1.0  # direction away from level
+                if rate * away > c.tip_rate_dps:
+                    return f'tipping {name}: {angle:+.0f} deg at {rate:+.0f} deg/s'
+                if acc * away > c.tip_acc_dps2 and rate * away > 0:
+                    return f'tipping {name}: {angle:+.0f} deg, accelerating {acc:+.0f} deg/s2'
+        return None
+
+    def caution_scale(self) -> float:
+        """Speed factor between the warn and stop angles (1 = no limit)."""
+        c = self.cfg
+        worst = 0.0
+        for angle, warn, stop in (
+            (self.roll, c.roll_warn_deg, c.roll_stop_deg),
+            (self.pitch, c.pitch_warn_deg, c.pitch_stop_deg),
+        ):
+            if stop > warn:
+                worst = max(worst, clamp((abs(angle) - warn) / (stop - warn), 0.0, 1.0))
+        return 1.0 - worst * (1.0 - c.tilt_min_scale)
+
+    def snapshot(self) -> dict:
+        r = lambda x: round(x, 2)  # noqa: E731
+        return {
+            'ready': self.ready,
+            'roll': r(self.roll),
+            'pitch': r(self.pitch),
+            'roll_rate': r(self.roll_rate),
+            'pitch_rate': r(self.pitch_rate),
+            'roll_accel': r(self.roll_accel),
+            'pitch_accel': r(self.pitch_accel),
+            'roll_from_acc': r(self.roll_acc_deg),
+            'pitch_from_acc': r(self.pitch_acc_deg),
+            'peaks': {k: r(v) for k, v in self.peaks.items()},
+            'sign_check': self.sign_check(),
+        }
+
+
 class Odometry:
     """Rover pose from the wheel encoders (distance) and the gyro (heading)."""
 
@@ -307,6 +495,7 @@ class Odometry:
         self.commanded = False  # set by the rover loop: a non-zero speed is commanded
         self.counters: tuple[float, float] | None = None  # firmware wheel counters, cm
         self._counters0: tuple[float, float] | None = None
+        self.tilt = TiltMonitor(cfg)
         self.reset()
 
     def reset(self) -> None:
@@ -340,6 +529,9 @@ class Odometry:
         elif self._still_since is None:
             self._still_since = t
 
+    def on_imu(self, ax, ay, az, gx, gy, t: float) -> None:
+        self.tilt.update(ax, ay, az, gx, gy, t, still=self._still_since is not None)
+
     def on_counters(self, odl: float, odr: float) -> None:
         """Firmware wheel counters (cm): a 1 cm resolution cross-check of the distance."""
         self.counters = (odl, odr)
@@ -369,8 +561,10 @@ class Odometry:
             self._calibrate_bias(gz, t)
             return
 
-        # Slowly re-learn the bias whenever the rover has been still for a while.
-        if self._still_since is not None and t - self._still_since > 0.5:
+        # Slowly re-learn the bias whenever the rover has been still for a while, but only
+        # from readings that look like noise: wheels still does not mean not rotating.
+        still = self._still_since is not None and t - self._still_since > 0.5
+        if still and abs(gz - self.bias) < self.cfg.bias_max_rate:
             self.bias += 0.02 * (gz - self.bias)
 
         self.yaw_rate = gz - self.bias
@@ -385,9 +579,15 @@ class Odometry:
             self._bias_start = t
         self._bias_samples.append(gz)
         if t - self._bias_start >= self.cfg.bias_calib_time and len(self._bias_samples) >= 5:
-            self.bias = sum(self._bias_samples) / len(self._bias_samples)
-            self.bias_ready = True
+            n = len(self._bias_samples)
+            mean = sum(self._bias_samples) / n
+            spread = math.sqrt(sum((g - mean) ** 2 for g in self._bias_samples) / n)
             self._bias_samples.clear()
+            self._bias_start = None
+            if spread > self.cfg.bias_max_rate / 2 or abs(mean) > self.cfg.bias_limit:
+                return  # turned during the measure: start over
+            self.bias = mean
+            self.bias_ready = True
 
     def recalibrate_gyro(self) -> None:
         self.bias_ready = False
@@ -805,6 +1005,10 @@ class Controller:
         self._pending_result: dict | None = None
         self.assist = SteeringAssist(cfg, odom)
         self.fault: str | None = None  # why the controller last stopped by itself
+        self.guard_state = 'off'  # off | ok | caution | backoff | hold
+        self.guard_reason: str | None = None
+        self._guard: dict = {'blocked_dir': 0.0}
+        self._last_v = (0.0, -1e9)  # last non-zero speed command and when
 
     # -- commands -------------------------------------------------------------------
 
@@ -848,10 +1052,16 @@ class Controller:
         self._manual = (0.0, 0.0)
         self.mode = 'idle'
         self.v_cmd = self.w_cmd = 0.0
+        if self.guard_state == 'backoff':  # the tilt guard's back-off is a motion too
+            self.guard_state, self._guard['hold_until'] = 'hold', t + 1.0
+
+    def busy(self) -> bool:
+        """Something drives the rover: a step, the queue, manual driving or a tilt back-off."""
+        return self.mode != 'idle' or bool(self.queue) or self.guard_state == 'backoff'
 
     def fail(self, reason: str, t: float) -> None:
         """Safety stop decided here (lost feedback or link, error): drop everything, say why."""
-        if self.mode == 'idle' and not self.queue:
+        if not self.busy():
             return
         self.stop(t, reason)
         self.fault = reason
@@ -862,7 +1072,7 @@ class Controller:
         dt = 0.05 if self._t_last is None else clamp(t - self._t_last, 0.0, 0.2)
         self._t_last = t
 
-        if self.mode != 'idle' or self.queue:
+        if self.busy():
             age = self.odom.feedback_age(t)
             if age is None or age > self.FEEDBACK_TIMEOUT:
                 self.fail('no ESP32 feedback', t)
@@ -902,6 +1112,9 @@ class Controller:
         elif self.mode == 'path':
             v, w = self._path(t, dt)
 
+        if abs(v) > 0.01:
+            self._last_v = (v, t)
+        v, w = self._tilt_guard(v, w, t)
         self.v_cmd, self.w_cmd = v, w
         return v, w
 
@@ -989,7 +1202,73 @@ class Controller:
             return self._done('done', t)
         if self._failed(t):
             return 0.0, 0.0
-        return 0.0, direction * clamp(c.k_turn * remaining, c.w_min, c.w_max)
+        w = direction * clamp(c.k_turn * remaining, c.w_min, c.w_max)
+        if self._not_rotating(t, 0.0, w):
+            return 0.0, 0.0
+        return 0.0, w
+
+    def _tilt_guard(self, v: float, w: float, t: float) -> tuple[float, float]:
+        """Slow down when tilted, stop and back off when about to tip over."""
+        c, o, g = self.cfg, self.odom, self._guard
+        tilt = o.tilt
+        if not c.tilt_guard or not tilt.ready:
+            self.guard_state = 'off'
+            return v, w
+        if self.guard_state == 'backoff':
+            done = o.odometer - g['odo0'] >= c.tilt_backoff_dist
+            if done or t - g['t0'] > c.tilt_backoff_time:
+                self.guard_state, g['hold_until'] = 'hold', t + 1.0
+                return 0.0, 0.0
+            return g['dir'] * c.tilt_backoff_speed, 0.0
+        if self.guard_state == 'hold' and t < g['hold_until']:
+            return 0.0, 0.0
+
+        reason = tilt.danger()
+        if reason and g['blocked_dir'] == 0.0:  # trip: abort everything and back off
+            last_v, last_t = self._last_v
+            self.guard_reason = reason
+            self._abort(f'tilt: {reason}', t)
+            self.queue.clear()
+            self._manual = (0.0, 0.0)
+            self.mode = 'idle'
+            self.fault = f'tilt: {reason}'
+            # Never back off blind: without fresh wheel feedback the odometer cannot end it.
+            age = o.feedback_age(t)
+            fresh = age is not None and age <= self.FEEDBACK_TIMEOUT
+            moving = fresh and t - last_t < 1.0
+            g['blocked_dir'] = math.copysign(1.0, last_v) if moving else 0.0
+            if moving:
+                self.guard_state = 'backoff'
+                g.update(dir=-g['blocked_dir'], odo0=o.odometer, t0=t)
+                return g['dir'] * c.tilt_backoff_speed, 0.0
+            self.guard_state, g['hold_until'] = 'hold', t + 1.0
+            return 0.0, 0.0
+
+        scale = tilt.caution_scale()
+        if scale >= 1.0:
+            g['blocked_dir'] = 0.0  # back on safe ground
+            self.guard_state = 'ok'
+            return v, w
+        self.guard_state = 'caution'
+        if g['blocked_dir'] and v * g['blocked_dir'] > 0 and reason:
+            v = 0.0  # still too tilted: only the way back is allowed
+        return v * scale, w * scale
+
+    def _not_rotating(self, t: float, v: float, w: float) -> bool:
+        """Pivoting on the spot, wheels turning, but the gyro sees no rotation: give up."""
+        c, o, k = self.cfg, self.odom, self._task
+        pivot = abs(v) < 0.02 and abs(w) >= 0.9 * c.w_min
+        wheels_turn = abs(o.L) > 0.01 or abs(o.R) > 0.01
+        if not (pivot and wheels_turn and o.gyro_alive(t)) or abs(o.yaw_rate) > c.no_rotation_rate:
+            k['norot_since'] = None
+            return False
+        if k.get('norot_since') is None:
+            k['norot_since'] = t
+            return False
+        if t - k['norot_since'] > c.no_rotation_time:
+            self._done('no rotation (lifted or blocked?)', t)
+            return True
+        return False
 
     def _path(self, t: float, dt: float) -> tuple[float, float]:
         c, o, k = self.cfg, self.odom, self._task
@@ -997,7 +1276,7 @@ class Controller:
         v, w, done = k['follower'].update(o.x, o.y, o.heading, o.v, max(k['v_ramp'], c.v_min), c)
         if done:
             return self._done('done', t)
-        if self._failed(t):
+        if self._failed(t) or self._not_rotating(t, v, w):
             return 0.0, 0.0
         return v, w
 
@@ -1088,6 +1367,11 @@ class Controller:
             'v_cmd': self.v_cmd,
             'w_cmd': self.w_cmd,
             'assist': self.assist.snapshot(),
+            'guard': {
+                'state': self.guard_state,
+                'reason': self.guard_reason,
+                'blocked_dir': self._guard['blocked_dir'],
+            },
             'path': follower.snapshot() if follower else None,
             'history': list(self.history),
             'fault': self.fault,
@@ -1099,12 +1383,18 @@ class Controller:
 # --------------------------------------------------------------------------------------
 
 
-def find_esp32_port() -> str | None:
-    """First USB serial port that looks like the driver board."""
+def find_esp32_port(usb_only: bool = False) -> str | None:
+    """First USB serial port that looks like the driver board.
+
+    usb_only: only the Linux /dev/ttyUSB* and /dev/ttyACM* ports (on the rover), never a
+    guess among a laptop's COM ports.
+    """
     for pattern in ('/dev/ttyUSB*', '/dev/ttyACM*'):
         ports = sorted(glob.glob(pattern))
         if ports:
             return ports[0]
+    if usb_only:
+        return None
     try:  # Windows / macOS
         from serial.tools import list_ports
 
@@ -1306,6 +1596,47 @@ def tilt_deg(msg: dict) -> dict:
     return {'roll_deg': None, 'pitch_deg': None}
 
 
+class Recorder:
+    """20 Hz log of what matters for the tipping tests, downloadable as CSV."""
+
+    COLUMNS = (
+        't', 'mode', 'guard', 'v_cmd', 'w_cmd', 'L', 'R', 'roll', 'pitch', 'roll_rate',
+        'pitch_rate', 'roll_accel', 'pitch_accel', 'roll_from_acc', 'pitch_from_acc',
+        'ax', 'ay', 'az', 'gx', 'gy', 'gz', 'heading', 'x', 'y', 'battery_v',
+    )  # fmt: skip
+    MAX_ROWS = 20 * 60 * 20  # 20 minutes
+
+    def __init__(self) -> None:
+        self.on = False
+        self.rows: list[tuple] = []
+        self._t0 = 0.0
+
+    def start(self, t: float) -> None:
+        self.rows, self._t0, self.on = [], t, True
+
+    def stop(self) -> None:
+        self.on = False
+
+    def add(self, t: float, rover: Rover) -> None:
+        o, tl, ch, c = rover.odom, rover.odom.tilt, rover.chassis, rover.ctrl
+        self.rows.append((
+            round(t - self._t0, 3), c.mode, c.guard_state, round(c.v_cmd, 3), round(c.w_cmd, 3),
+            o.L, o.R, round(tl.roll, 2), round(tl.pitch, 2), round(tl.roll_rate, 2),
+            round(tl.pitch_rate, 2), round(tl.roll_accel, 1), round(tl.pitch_accel, 1),
+            round(tl.roll_acc_deg, 2), round(tl.pitch_acc_deg, 2),
+            ch.get('ax'), ch.get('ay'), ch.get('az'), ch.get('gx'), ch.get('gy'), ch.get('gz'),
+            round(math.degrees(o.heading), 2), round(o.x, 3), round(o.y, 3),
+            battery_volts(ch.get('v')),
+        ))  # fmt: skip
+        if len(self.rows) >= self.MAX_ROWS:
+            self.on = False
+
+    def csv(self) -> str:
+        lines = [','.join(self.COLUMNS)]
+        lines += [','.join('' if v is None else str(v) for v in row) for row in self.rows]
+        return '\n'.join(lines) + '\n'
+
+
 class Rover:
     LOOP_HZ = 20.0
 
@@ -1319,6 +1650,7 @@ class Rover:
         self.imu: dict = {}  # last T:1002
         self._gyro_in_feedback = False  # UGV firmware: gz comes with T:1001
         self.gimbal = Gimbal(cfg)
+        self.recorder = Recorder()
         self._was_connected = False
         self.loop_errors = 0
         self.last_loop_error: str | None = None
@@ -1388,6 +1720,9 @@ class Rover:
                     self.odom.on_gyro(feedback_number(msg, 'gz'), t)
                 if 'odl' in msg and 'odr' in msg:
                     self.odom.on_counters(feedback_number(msg, 'odl'), feedback_number(msg, 'odr'))
+                if all(k in msg for k in ('ax', 'ay', 'az', 'gx', 'gy')):
+                    imu = [feedback_number(msg, k) for k in ('ax', 'ay', 'az', 'gx', 'gy')]
+                    self.odom.on_imu(*imu, t)
             elif kind == 1002:  # other firmwares: gyro only on request (T:126)
                 self.imu = msg
                 if 'gz' in msg and not self._gyro_in_feedback:
@@ -1408,6 +1743,8 @@ class Rover:
                     if connected and not self._was_connected:
                         self.gimbal.resend()  # the ESP32 (re)booted: put the camera back
                     gimbal_cmd = self.gimbal.step(t, period) if connected else None
+                    if self.recorder.on:
+                        self.recorder.add(t, self)
             except Exception as e:  # noqa: BLE001 - this loop must outlive any bug: /stop
                 v, w, gimbal_cmd = 0.0, 0.0, None
                 self._loop_error(e, t)
@@ -1450,7 +1787,13 @@ class Rover:
                 'loop_errors': self.loop_errors,
                 'last_loop_error': self.last_loop_error,
                 'battery_v': battery_volts(self.chassis.get('v')),
-                **tilt_deg(self.chassis),
+                **(
+                    {'roll_deg': self.odom.tilt.roll, 'pitch_deg': self.odom.tilt.pitch}
+                    if self.odom.tilt.ready
+                    else tilt_deg(self.chassis)
+                ),
+                'tilt': self.odom.tilt.snapshot(),
+                'recording': {'on': self.recorder.on, 'rows': len(self.recorder.rows)},
                 'counters_cm': self.odom.counters,
                 'gimbal': self.gimbal.snapshot(),
                 'odom': self.odom.snapshot(now),

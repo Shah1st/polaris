@@ -45,7 +45,8 @@ class Banc:
         camera = rover_server.Camera('none', 640, 480, 15, 70)
         camera.error = 'no camera (bench)'
         camera.request = lambda: None
-        self.app = rover_server.App(self.rover, camera, '/dev/null')
+        self.app = rover_server.App(self.cfg, '/dev/null', None, None)
+        self.app.rover, self.app.camera, self.app.mode = self.rover, camera, 'sim'
         self.server = None
         for port in PORTS:
             try:
