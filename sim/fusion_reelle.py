@@ -1,22 +1,25 @@
 """
-fusion_reelle.py - Les cartes du VRAI rover pour le tableau de bord (teleop/server.py --fusion),
-au meme format que sim/fusion_live.py, et une mission vers un point choisi sur la carte.
+fusion_reelle.py - The maps of the REAL rover for the dashboard (teleop/server.py --fusion), in the
+same format as sim/fusion_live.py, and a mission to a point picked on the map.
 
-    GET  /rover.png /drone.png /fused.png /status.json   les cartes et l'etat
-    POST /reset              cartes videes ; nouveau repere a la position actuelle du rover
-    POST /objectif           {"panneau": "fused"|"drone", "fx": 0..1, "fy": 0..1} : le point
-                             clique sur une carte (fraction de sa largeur et de sa hauteur,
-                             depuis le coin en haut a gauche) ; {} efface le point
-    POST /aller              le rover part seul vers le point (pas bornes, un regard de sa camera
-                             a chaque arret, contournement des obstacles vus)
-    POST /arreter            fin de la mission et POST /stop au rover
+    GET  /rover.png /drone.png /fused.png /status.json   the maps and the state
+    POST /reset              empty maps; new frame at the rover's current position
+    POST /objectif           {"panneau": "fused"|"drone", "fx": 0..1, "fy": 0..1}: the point
+                             clicked on a map (fractions of its width and height, from the top
+                             left corner); {} clears the point
+    POST /aller              the rover drives to the point by itself (bounded steps, one look of
+                             its camera at each stop, around the obstacles it saw)
+    POST /arreter            end of the mission and POST /stop to the rover
 
-Hors mission : lecture seule (GET /state du rover, GET /obstacles du service de perception).
-Repere : celui de l'odometrie au lancement (ou au dernier /reset), origine au point de depart,
-x vers l'avant du rover a ce moment. Une vue n'est fusionnee que rover immobile.
+Outside a mission: read only (GET /state of the rover, GET /obstacles of the perception service).
+Frame: the odometry frame at start (or at the last /reset), origin at the start point, x towards
+the front of the rover at that time. A view is fused only while the rover stands still.
+The drone (--drone-nom: e.g. the iPhone above the area) is declared as the real drone source;
+its picture is not fused into the rover's map until it is calibrated on the floor (scale, and
+the rover located in its picture).
 
     python sim/fusion_reelle.py --rover http://127.0.0.1:18080 \\
-        --perception http://127.0.0.1:8095 --port 8096
+        --perception http://127.0.0.1:8095 --port 8096 [--drone-nom "iPhone (CamStream)"]
 """
 
 import argparse
@@ -43,9 +46,9 @@ from rover_reel import ArretOperateur, RaspRoverReel, ServeurRoverError, client_
 
 import fusion_feed as ff  # noqa: E402
 
-DECALAGE = 20.0  # m : coordonnees positives pour la grille des tuiles
-DEMI = 2.5  # m : fenetre de la carte du rover autour de lui
-TAILLE = 480  # px : cote des images
+DECALAGE = 20.0  # m: positive coordinates for the tile grid
+DEMI = 2.5  # m: window of the rover map around it
+TAILLE = 480  # px: side of the pictures
 
 
 def angle(a):
@@ -53,8 +56,8 @@ def angle(a):
 
 
 class Odometrie:
-    """Tient lieu de camera du dessus pour RaspRoverReel : la pose du rover dans le repere des
-    cartes, tiree de GET /state."""
+    """Stands in for the overhead camera of RaspRoverReel: the rover pose in the frame of the
+    maps, from GET /state."""
 
     def __init__(self, fusion, requete):
         self.fusion, self.requete = fusion, requete
@@ -76,8 +79,8 @@ class Odometrie:
 class FusionReelle:
     def __init__(self, args, requete=None, percevoir=None, percevoir_frais=None):
         self.args = args
-        self.verrou = threading.RLock()  # la carte, le repere et la trace
-        self.lock = threading.Lock()  # les images et l'etat servis
+        self.verrou = threading.RLock()  # the map, the frame and the trail
+        self.lock = threading.Lock()  # the pictures and the state served
         self.images = {}
         self.vues_img = {}
         self.status = {'etat': 'demarrage', 'genere_a': time.time()}
@@ -95,8 +98,8 @@ class FusionReelle:
         self.reinitialiser()
 
     def reinitialiser(self):
-        """Carte vide, trace effacee, nouveau repere : origine = la pose du rover au prochain
-        tour (POST /reset)."""
+        """Empty map, trail cleared, new frame: its origin is the rover pose at the next round
+        (POST /reset)."""
         with self.verrou:
             self.carte = CarteFusion(niveau_plan=4, rayon_robot=self.args.rayon)
             self.origine = None
@@ -113,7 +116,7 @@ class FusionReelle:
     def en_mission(self):
         return self.fil_mission is not None and self.fil_mission.is_alive()
 
-    # ---- repere ----------------------------------------------------------------------
+    # ---- frame -----------------------------------------------------------------------
     def pose_carte(self, etat):
         o = etat['odom']
         x, y, h = float(o['x']), float(o['y']), math.radians(float(o['heading_deg']))
@@ -127,7 +130,7 @@ class FusionReelle:
 
     @staticmethod
     def pan(etat):
-        """Pan de la tourelle de la camera (deg, + = a droite pour le serveur du rover)."""
+        """Pan of the camera turret (deg, + = to the right for the rover server)."""
         return float((((etat or {}).get('gimbal') or {}).get('pan')) or 0.0)
 
     def publier(self, vue):
@@ -143,11 +146,11 @@ class FusionReelle:
                 'obstacle': int((m == 1).sum()),
             }
 
-    # ---- hors mission : observer --------------------------------------------------------
+    # ---- outside a mission: observe --------------------------------------------------------
     def tour(self):
         etat = self.requete('GET', '/state')
         if etat is None:
-            raise RuntimeError('le rover ne repond pas a GET /state')
+            raise RuntimeError('the rover does not answer GET /state')
         pose = self.pose_carte(etat)
         with self.verrou:
             self.pose, self.dernier_etat = pose, etat
@@ -163,16 +166,16 @@ class FusionReelle:
         )
         self.precedente = pose
         if self.en_mission():
-            info = 'mission en cours : le rover regarde a chaque arret'
+            info = 'mission running: the rover looks at each stop'
         elif not immobile:
-            info = 'rover en mouvement : vue non fusionnee'
+            info = 'rover moving: view not fused'
         else:
             vue = self.percevoir(pose[:2], angle(pose[2] - math.radians(self.pan(etat))))
             if vue is None:
-                info = 'perception sans image recente'
+                info = 'perception: no recent picture'
             else:
                 self.publier(vue)
-                info = 'vue fusionnee'
+                info = 'view fused'
         self.dessiner(pose, info, etat)
 
     # ---- mission ---------------------------------------------------------------------
@@ -192,17 +195,17 @@ class FusionReelle:
                 self.mission['etat'] = etat
             if texte is not None:
                 self.mission['texte'] = texte
-                print(time.strftime('%H:%M:%S'), 'mission :', texte, flush=True)
+                print(time.strftime('%H:%M:%S'), 'mission:', texte, flush=True)
             if pas is not None:
                 self.mission['pas'] = pas
 
     def aller(self):
         if self.objectif is None:
-            return 409, {'error': "pas de point d'arrivee : cliquer sur une carte d'abord"}
+            return 409, {'error': 'no goal: click on a map first'}
         if self.en_mission():
-            return 409, {'error': 'une mission est deja en cours'}
+            return 409, {'error': 'a mission is already running'}
         self.arret_demande.clear()
-        self.journal_mission('en_cours', 'depart', 0)
+        self.journal_mission('en_cours', 'start', 0)
         self.fil_mission = threading.Thread(target=self._mission, daemon=True)
         self.fil_mission.start()
         return 200, {'ok': True}
@@ -212,7 +215,7 @@ class FusionReelle:
         ok = arreter_le_rover(self.requete, journal=lambda t: print(t, flush=True))
         if self.fil_mission is not None:
             self.fil_mission.join(timeout=1.0)
-        self.journal_mission('arret', 'arretee depuis le tableau de bord (/stop envoye)')
+        self.journal_mission('arret', 'stopped from the dashboard (/stop sent)')
         return 200, {'ok': True, 'stop_recu': ok}
 
     def _mission(self):
@@ -234,19 +237,19 @@ class FusionReelle:
             )
             depart = odo.pose()
             if depart is None:
-                raise RuntimeError('le rover ne repond pas a GET /state')
+                raise RuntimeError('the rover does not answer GET /state')
             rover.placer(depart[:2])
             rover.recaler()
             issue = self._boucle_mission(rover)
         except ArretOperateur as e:
             issue = 'arret_operateur'
-            self.journal_mission(texte=f'ARRET OPERATEUR : {e}')
+            self.journal_mission(texte=f'OPERATOR STOP: {e}')
         except (ServeurRoverError, RuntimeError) as e:
             issue = 'erreur'
-            self.journal_mission(texte=f'ERREUR : {e}')
-        except Exception as e:  # noqa: BLE001 - la mission s'arrete, le rover aussi
+            self.journal_mission(texte=f'ERROR: {e}')
+        except Exception as e:  # noqa: BLE001 - the mission ends, the rover stops
             issue = 'erreur'
-            self.journal_mission(texte=f'ERREUR : {type(e).__name__}: {e}')
+            self.journal_mission(texte=f'ERROR: {type(e).__name__}: {e}')
         finally:
             if issue != 'arrive':
                 arreter_le_rover(self.requete, journal=lambda t: print(t, flush=True))
@@ -258,19 +261,19 @@ class FusionReelle:
         for k in range(a.max_pas):
             objectif = self.objectif
             if self.arret_demande.is_set() or objectif is None:
-                self.journal_mission(texte='mission arretee')
+                self.journal_mission(texte='mission stopped')
                 return 'arret'
             pos = rover.position()
             reste = math.dist(pos, objectif)
             if reste <= a.tolerance:
-                self.journal_mission(texte=f'ARRIVE a {reste:.2f} m du point, {k} pas')
+                self.journal_mission(texte=f'ARRIVED {reste:.2f} m from the goal, {k} steps')
                 return 'arrive'
             pan = math.radians(self.pan(self.dernier_etat))
             cap = None if rover.cap is None else angle(rover.cap - pan)
             vue = self.percevoir_frais(rover.est, cap)
             if vue is None:
                 sans_vue += 1
-                self.journal_mission(texte=f'perception indisponible ({sans_vue}/3) : on attend')
+                self.journal_mission(texte=f'perception unavailable ({sans_vue}/3): waiting')
                 if sans_vue >= 3:
                     return 'perception_indisponible'
                 time.sleep(1.0)
@@ -289,17 +292,17 @@ class FusionReelle:
             chemin = [tuple(p) for p in dec.get('chemin') or []]
             bloque = dec['action'] == 'OBJECTIF_DEGRADE' and math.dist(dec.get('point', pos), pos)
             if bloque is not False and bloque < 0.05:
-                self.journal_mission(texte='BLOQUE : aucun passage vers le point')
+                self.journal_mission(texte='BLOCKED: no way to the goal')
                 return 'bloque'
             if len(chemin) < 2:
-                if reste <= a.tolerance + 0.1:  # le A* arrive a une case de 5 cm pres
-                    self.journal_mission(texte=f'ARRIVE a {reste:.2f} m du point, {k} pas')
+                if reste <= a.tolerance + 0.1:  # the A* arrives within one 5 cm cell
+                    self.journal_mission(texte=f'ARRIVED {reste:.2f} m from the goal, {k} steps')
                     return 'arrive'
-                self.journal_mission(texte='BLOQUE : pas de chemin')
+                self.journal_mission(texte='BLOCKED: no path')
                 return 'bloque'
             cible, _ = avancer(pos, list(chemin), a.pas)
             self.journal_mission(
-                texte=f'pas {k + 1} : {dec["action"]}, reste {reste:.2f} m', pas=k + 1
+                texte=f'step {k + 1}: {dec["action"]}, {reste:.2f} m to go', pas=k + 1
             )
             if self.arret_demande.is_set():
                 return 'arret'
@@ -307,11 +310,11 @@ class FusionReelle:
             if impact is not None:
                 with self.verrou:
                     rover.signaler_choc(impact)
-                self.journal_mission(texte='CHOC : obstacle note sur la carte')
-        self.journal_mission(texte=f'{a.max_pas} pas sans arriver')
+                self.journal_mission(texte='BUMP: obstacle marked on the map')
+        self.journal_mission(texte=f'{a.max_pas} steps without arriving')
         return 'max_pas'
 
-    # ---- images et etat --------------------------------------------------------------
+    # ---- pictures and state --------------------------------------------------------------
     def zone_vue(self, pose):
         xs = [p[0] for p in self.trail] + [pose[0]]
         ys = [p[1] for p in self.trail] + [pose[1]]
@@ -321,7 +324,7 @@ class FusionReelle:
         m = 2.5
         x0, x1 = min(xs) - m, max(xs) + m
         y0, y1 = min(ys) - m, max(ys) + m
-        cote = max(x1 - x0, y1 - y0, 5.0)  # carre : l'image garde ses proportions
+        cote = max(x1 - x0, y1 - y0, 5.0)  # square: the picture keeps its proportions
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
         return cx - cote / 2, cy - cote / 2, cx + cote / 2, cy + cote / 2
 
@@ -351,13 +354,18 @@ class FusionReelle:
             g.val, g.src, gx0, gy0, vue, pose, objectif, depart, None, path=chemin, trail=trail
         )
         ff.draw_frame(fused, vue, 1.0)
-        # le panneau du drone : meme cadre, seulement ce que le drone a vu (rien aujourd'hui)
+        # the drone panel: same frame, only what the drone saw (nothing until it is calibrated)
         val_drone = np.where(g.src == 1, g.val, -1)
         drone = ff.render_fused_view(
             val_drone, g.src, gx0, gy0, vue, pose, objectif, depart, None, path=chemin
         )
         ff.draw_frame(drone, vue, 1.0)
-        for k, t in enumerate(('Pas de camera du dessus branchee', "Clic : point d'arrivee")):
+        titre = (
+            f'Drone: {self.args.drone_nom} - not calibrated, not fused yet'
+            if self.args.drone_nom
+            else 'No overhead camera fused yet'
+        )
+        for k, t in enumerate((titre, 'Click: goal for the rover')):
             cv2.putText(
                 drone,
                 t,
@@ -399,9 +407,19 @@ class FusionReelle:
             'genere_a': now,
             'rover': {'x': pose[0] - DECALAGE, 'y': pose[1] - DECALAGE, 'cap': pose[2]},
             'objectif': [c - DECALAGE for c in objectif] if objectif else [],
-            'source_rover': 'VRAI rover : camera du rover (perception DA3 sur la VM) et '
-            "odometrie, vues fusionnees a l'arret",
-            'drone': {'source': 'aucune camera du dessus branchee', 'tuiles': 0},
+            'source_rover': 'REAL rover: rover camera (DA3 perception on the VM) and odometry, '
+            'views fused while standing still',
+            'drone': {
+                'source': (
+                    f'{self.args.drone_nom} (REAL drone; not calibrated on the floor yet: '
+                    'its picture is not fused)'
+                )
+                if self.args.drone_nom
+                else 'no overhead camera connected',
+                'reel': bool(self.args.drone_nom),
+                'calibre': False,
+                'tuiles': 0,
+            },
             'tuiles_rover': n_tuiles,
             'scan': self.n_scan,
             'vues_fusionnees': self.vues,
@@ -416,7 +434,7 @@ class FusionReelle:
                 'action': dec.get('action') or 'OBSERVATION',
                 'pourquoi': info
                 if objectif
-                else "pas de point d'arrivee : clic sur la carte du drone ou fusionnee",
+                else 'no goal: click on the drone map or the fused map',
                 'numero': mission.get('pas') or self.vues,
                 'age_s': 0,
                 'longueur_chemin_m': round(longueur, 1),
@@ -437,17 +455,17 @@ class FusionReelle:
         with self.lock:
             v = self.vues_img.get(str(corps['panneau']))
         if v is None:
-            return 409, {'error': "pas encore d'image de cette carte"}
+            return 409, {'error': 'no picture of this map yet'}
         fx, fy = float(corps['fx']), float(corps['fy'])
         if not (0.0 <= fx <= 1.0 and 0.0 <= fy <= 1.0):
-            return 400, {'error': 'fx et fy entre 0 et 1'}
+            return 400, {'error': 'fx and fy must be between 0 and 1'}
         x = v.x0 + fx * (v.x1 - v.x0)
         y = v.y1 - fy * (v.y1 - v.y0)
         with self.verrou:
             self.objectif = (x, y)
         print(
             time.strftime('%H:%M:%S'),
-            f'objectif ({x - DECALAGE:.2f}, {y - DECALAGE:.2f}) m',
+            f'goal ({x - DECALAGE:.2f}, {y - DECALAGE:.2f}) m',
             flush=True,
         )
         return 200, {'ok': True, 'objectif': [x - DECALAGE, y - DECALAGE]}
@@ -461,7 +479,7 @@ class FusionReelle:
             t0 = time.monotonic()
             try:
                 self.tour()
-            except Exception as e:  # noqa: BLE001 - lien lent ou coupe : on reessaie
+            except Exception as e:  # noqa: BLE001 - slow or lost link: try again
                 self.erreur(f'{type(e).__name__}: {e}'[:200])
             time.sleep(max(0.2, self.args.periode - (time.monotonic() - t0)))
 
@@ -492,7 +510,7 @@ def handler(fr):
                 elif nom in fr.images:
                     image = fr.images[nom]
                 else:
-                    return self._json(404, {'error': 'inconnu'})
+                    return self._json(404, {'error': 'unknown'})
             if image is None:
                 return self._json(200, s)
             png, t = image
@@ -510,20 +528,20 @@ def handler(fr):
             try:
                 corps = json.loads(brut or b'{}')
                 if not isinstance(corps, dict):
-                    raise ValueError('objet JSON attendu')
+                    raise ValueError('a JSON object is expected')
             except ValueError as e:
                 return self._json(400, {'error': str(e)[:200]})
             nom = self.path.split('?')[0]
             try:
                 if nom == '/reset':
                     if fr.en_mission():
-                        return self._json(409, {'error': "mission en cours : l'arreter d'abord"})
+                        return self._json(409, {'error': 'a mission is running: stop it first'})
                     fr.reinitialiser()
                     fr.resets += 1
                     with fr.lock:
                         fr.images.clear()
                         fr.status = {'etat': 'reinitialise', 'genere_a': time.time()}
-                    print(time.strftime('%H:%M:%S'), 'cartes reinitialisees', flush=True)
+                    print(time.strftime('%H:%M:%S'), 'maps reset', flush=True)
                     return self._json(200, {'ok': True, 'resets': fr.resets})
                 if nom == '/objectif':
                     return self._json(*fr.poser_objectif(corps))
@@ -533,7 +551,7 @@ def handler(fr):
                     return self._json(*fr.arreter())
             except (KeyError, TypeError, ValueError) as e:
                 return self._json(400, {'error': str(e)[:200]})
-            return self._json(404, {'error': 'inconnu'})
+            return self._json(404, {'error': 'unknown'})
 
     return H
 
@@ -543,21 +561,29 @@ def options(argv=None):
     p.add_argument('--rover', default='http://127.0.0.1:18080')
     p.add_argument('--perception', default='http://127.0.0.1:8095')
     p.add_argument('--port', type=int, default=8096)
-    p.add_argument('--periode', type=float, default=2.0, help='s entre deux lectures')
-    p.add_argument('--delai-http', type=float, default=8.0, help='s par requete au rover')
-    p.add_argument('--delai-liaison', type=float, default=15.0, help='s sans reponse = coupure')
+    p.add_argument('--periode', type=float, default=2.0, help='s between two reads')
+    p.add_argument('--delai-http', type=float, default=8.0, help='s per request to the rover')
     p.add_argument(
-        '--periode-pas', type=float, default=1.0, help='s entre deux GET /state en roulant'
+        '--delai-liaison', type=float, default=15.0, help='s without an answer = link lost'
     )
     p.add_argument(
-        '--age-max', type=float, default=3.0, help='image de perception plus vieille : ignoree'
+        '--periode-pas', type=float, default=1.0, help='s between two GET /state while driving'
     )
-    p.add_argument('--pas', type=float, default=0.25, help='m par pas de la mission')
+    p.add_argument(
+        '--age-max', type=float, default=3.0, help='an older perception picture is ignored (s)'
+    )
+    p.add_argument('--pas', type=float, default=0.25, help='m per mission step')
     p.add_argument('--vitesse', type=float, default=0.12, help='m/s')
-    p.add_argument('--rayon', type=float, default=0.20, help='rayon du rover + marge (m)')
-    p.add_argument('--tolerance', type=float, default=0.25, help='arrivee a moins de (m)')
-    p.add_argument('--marge-zone', type=float, default=1.5, help='m autour du trajet planifie')
-    p.add_argument('--max-pas', type=int, default=80)
+    p.add_argument('--rayon', type=float, default=0.20, help='rover radius + margin (m)')
+    p.add_argument('--tolerance', type=float, default=0.25, help='arrived within (m)')
+    p.add_argument('--marge-zone', type=float, default=1.5, help='m around the planned route')
+    p.add_argument('--max-pas', type=int, default=80, help='steps at most per mission')
+    p.add_argument(
+        '--drone-nom',
+        default=None,
+        help='name of the real drone camera (e.g. the iPhone above the area), shown as the '
+        'drone source; not fused until calibrated',
+    )
     args = p.parse_args(argv)
     args.rover = args.rover.rstrip('/')
     return args
