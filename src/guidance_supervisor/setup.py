@@ -20,6 +20,7 @@ setup(
     entry_points={
         'console_scripts': [
             'supervisor_node = guidance_supervisor.supervisor_node:main',
+            'merging_map_node = guidance_supervisor.merging_map_node:main',
         ],
     },
 )

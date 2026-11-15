@@ -224,6 +224,12 @@ def textes(type_, simu, carte, infos, distance):
             f'interdite (cercle rouge de {infos["zone"][2]:.1f} m), que le A* traite comme un '
             'obstacle, et cherche une nouvelle solution avec la carte globale et le drone.'
         )
+    if type_ == 'link_back':
+        return 'Liaison retrouvée', (
+            "Le rover reprend contact. Dans l'arène, une coupure vient du Wi-Fi et pas d'un "
+            "endroit : aucune zone n'est interdite, l'ordinateur cherche simplement une "
+            'nouvelle solution.'
+        )
     if type_ == 'abandon':
         return 'Drone toujours absent', (
             "Après 5 minutes sans drone, le rover reste à l'arrêt en lieu sûr et l'ordinateur "
