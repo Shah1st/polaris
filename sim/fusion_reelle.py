@@ -310,12 +310,17 @@ class FusionReelle:
             place = None if self.vue_drone is None else self.vue_drone['place']
             if calage is not None:
                 place = self.placer_vue(m, res, calage)
-                self.carte.tuiles['drone'] = {}  # the camera sees its whole area every time
-                self.carte.maj['drone'] = {}
+                if not self.args.drone_cumul:
+                    self.carte.tuiles['drone'] = {}  # a fixed camera sees its whole area
+                    self.carte.maj['drone'] = {}
                 for msg in decouper(
                     place[0], place[1], place[2], 4, self.carte, 'drone', t=time.monotonic()
                 ):
                     self.carte.recevoir(msg)
+                if self.args.drone_cumul:
+                    # a camera that moves: each placed picture adds to the drone map (what it
+                    # sees again is replaced, what it no longer sees is kept)
+                    place = self.matrice_drone()
             self.vue_drone = {'m': m, 'res': res, 'rover': vu, 'place': place}
         self.drone = {
             'etat': 'ok',
@@ -547,6 +552,17 @@ class FusionReelle:
         m[pres & (m == 1)] = 0
         return m, (x, y, cap), round(r.score, 2)
 
+    def matrice_drone(self):
+        """Everything the drone has seen so far, as one matrix: (matrix, x0, y0)."""
+        tuiles = {k: v for k, v in self.carte.tuiles.get('drone', {}).items() if k[0] == 4}
+        n, res = self.carte.n, self.carte.res(4)
+        tx0, tx1 = min(k[1] for k in tuiles), max(k[1] for k in tuiles) + 1
+        ty0, ty1 = min(k[2] for k in tuiles), max(k[2] for k in tuiles) + 1
+        m = np.full(((ty1 - ty0) * n, (tx1 - tx0) * n), -1, np.int8)
+        for (_, tx, ty), data in tuiles.items():
+            m[(ty - ty0) * n : (ty - ty0 + 1) * n, (tx - tx0) * n : (tx - tx0 + 1) * n] = data
+        return m, tx0 * n * res, ty0 * n * res
+
     @staticmethod
     def placer_vue(m, res, calage):
         """The camera's matrix (its own frame: origin bottom left of the picture) resampled on
@@ -709,6 +725,9 @@ class FusionReelle:
         a = self.args
         issue = 'erreur'
         try:
+            if a.segment > 0:
+                issue = self._mission_segments()
+                return
             odo = Odometrie(self, self.requete)
             rover = RaspRoverReel(
                 self.carte,
@@ -744,6 +763,125 @@ class FusionReelle:
             if issue != 'arrive':
                 arreter_le_rover(self.requete, journal=lambda t: print(t, flush=True))
             self.journal_mission(etat=issue)
+
+    def _mission_segments(self):
+        """The mission in long segments (--segment): one POST /path carries several points of
+        the planned path and the rover follows them without stopping (the driver of
+        merging_map/avancer_esquive.py), instead of one stop every --pas m."""
+        import avancer_esquive as ae
+
+        a = self.args
+        odo = ae.Odometrie(self.requete)
+        # its frame is the frame of the maps: the same pose for the same GET /state
+        odo._ancrer(ae.pose_odom(odo.etat), self.pose_carte(odo.etat))
+        rover = ae.RoverSegments(
+            self.carte,
+            self.requete,
+            odo,
+            lambda position, cap: (
+                self.percevoir_frais(position, cap) if self.args.carte_locale else None
+            ),
+            vitesse=a.vitesse,
+            delai_liaison=a.delai_liaison,
+            periode=a.periode_pas,
+            delai_pret=30.0,
+            signaler=lambda t: self.journal_mission(texte=t),
+        )
+        rover.placer(odo.pose()[:2])
+        debut = time.monotonic()
+        while not ae.pret(odo.etat):  # ESP32, gyroscope, nothing running
+            if (odo.etat.get('ctrl') or {}).get('mode') == 'manual':
+                raise ArretOperateur('rover driven by hand (manual command /cmd)')
+            if time.monotonic() - debut > 30.0:
+                raise ServeurRoverError('rover not ready after 30 s (GET /state)')
+            time.sleep(1.0)
+            rover.requete('GET', '/state')
+        rover.recaler_apres()
+        return self._boucle_segments(rover, ae)
+
+    def _boucle_segments(self, rover, ae):
+        a = self.args
+        sans_vue = 0
+        for k in range(a.max_pas):
+            objectif = self.objectif
+            if self.arret_demande.is_set() or objectif is None:
+                self.journal_mission(texte='mission stopped')
+                return 'arret'
+            pos = rover.position()
+            reste = math.dist(pos, objectif)
+            if reste <= a.tolerance:
+                self.journal_mission(texte=f'ARRIVED {reste:.2f} m from the goal, {k} segments')
+                return 'arrive'
+            if a.carte_locale:  # a look of the rover's camera at each stop
+                pan = math.radians(self.pan(self.dernier_etat))
+                cap = None if rover.cap is None else angle(rover.cap - pan)
+                vue = self.percevoir_frais(rover.est, cap)
+                if vue is None:
+                    sans_vue += 1
+                    self.journal_mission(texte=f'perception unavailable ({sans_vue}/3): waiting')
+                    if sans_vue >= 3:
+                        return 'perception_indisponible'
+                    time.sleep(1.0)
+                    continue
+                sans_vue = 0
+                self.publier(vue)
+            with self.verrou:
+                dec = self.carte.decider(
+                    pos,
+                    objectif,
+                    zone=self.zone_mission(pos),
+                    tolerance=a.tolerance,
+                    drone_disponible=False,
+                )
+                self.decision = dec
+                chemin = [tuple(p) for p in dec.get('chemin') or []]
+                # the part of the path that only crosses cells seen free (by the drone, or by
+                # the rover with the local map), in a few points, --segment m at most
+                points, raison = ae.troncon_vu(
+                    chemin or [pos], dec['grille'], self.carte, a.segment, pos
+                )
+            bloque = dec['action'] == 'OBJECTIF_DEGRADE' and math.dist(dec.get('point', pos), pos)
+            if bloque is not False and bloque < 0.05:
+                self.journal_mission(texte='BLOCKED: no way to the goal')
+                return 'bloque'
+            if len(chemin) < 2:
+                if reste <= a.tolerance + 0.1:  # the A* arrives within one 5 cm cell
+                    self.journal_mission(
+                        texte=f'ARRIVED {reste:.2f} m from the goal, {k} segments'
+                    )
+                    return 'arrive'
+                self.journal_mission(texte='BLOCKED: no path')
+                return 'bloque'
+            a_rouler = ae.longueur_chemin(points)
+            if a_rouler < ae.SEGMENT_MIN:
+                if ae.longueur_chemin(chemin) < ae.SEGMENT_MIN and reste <= a.tolerance + 0.1:
+                    self.journal_mission(
+                        texte=f'ARRIVED {reste:.2f} m from the goal, {k} segments'
+                    )
+                    return 'arrive'
+                self.journal_mission(
+                    texte=f'BLOCKED: nothing seen free ahead ({a_rouler:.2f} m): the rover '
+                    'drives only where the map has seen'
+                )
+                return 'bloque'
+            duree = ae.duree_prevue(points, rover.cap, a.vitesse)
+            self.journal_mission(
+                texte=f'segment {k + 1}: {dec["action"]}, {a_rouler:.2f} m in '
+                f'{len(points) - 1} points, {reste:.2f} m to go',
+                pas=k + 1,
+            )
+            if self.arret_demande.is_set():
+                return 'arret'
+            statut, impact = rover.suivre(points[1:], duree)
+            if statut in ('liaison', 'redemarrage'):
+                self.journal_mission(texte=f'ERROR: segment ended on "{statut}" (link or server)')
+                return 'erreur'
+            if impact is not None:
+                with self.verrou:
+                    rover.signaler_choc(impact)
+                self.journal_mission(texte=f'BUMP ({statut}): obstacle marked on the map')
+        self.journal_mission(texte=f'{a.max_pas} segments without arriving')
+        return 'max_pas'
 
     def _boucle_mission(self, rover):
         a = self.args
@@ -812,6 +950,11 @@ class FusionReelle:
         if self.objectif is not None:
             xs.append(self.objectif[0])
             ys.append(self.objectif[1])
+        if getattr(self.args, 'drone_cumul', False):  # the view grows with the drone map
+            for cle in self.carte.tuiles.get('drone', {}):
+                x, y, cote = self.carte.rect_tuile(cle)
+                xs += [x, x + cote]
+                ys += [y, y + cote]
         m = 2.5
         x0, x1 = min(xs) - m, max(xs) + m
         y0, y1 = min(ys) - m, max(ys) + m
@@ -1131,6 +1274,13 @@ def options(argv=None):
         '--age-max', type=float, default=3.0, help='an older perception picture is ignored (s)'
     )
     p.add_argument('--pas', type=float, default=0.25, help='m per mission step')
+    p.add_argument(
+        '--segment',
+        type=float,
+        default=0.0,
+        help='m: drive in segments of this length at most, several points in one command, '
+        'without stopping every --pas m; only through cells seen free. 0: step by step',
+    )
     p.add_argument('--vitesse', type=float, default=0.12, help='m/s')
     p.add_argument('--rayon', type=float, default=0.20, help='rover radius + margin (m)')
     p.add_argument('--tolerance', type=float, default=0.25, help='arrived within (m)')
@@ -1191,6 +1341,13 @@ def options(argv=None):
         '--drone-marqueur-devant',
         action='store_true',
         help='the marker paper is at the front of the rover (default: at the back)',
+    )
+    p.add_argument(
+        '--drone-cumul',
+        action='store_true',
+        help='the drone camera moves: every placed picture adds to the drone map, which '
+        'grows, instead of replacing it (reset the maps to start again). A picture is placed '
+        'only while the rover is in it',
     )
     p.add_argument('--drone-marqueur', type=int, default=10, help="ArUco id on the rover's top")
     p.add_argument(

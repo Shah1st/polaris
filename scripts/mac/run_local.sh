@@ -23,6 +23,8 @@
 #   D405_MOUNT     "TX TY TZ [PITCH [YAW [ROLL]]]" of the D405 seen from the rover camera (with D405)
 #   CAM_HEIGHT     lens height above the floor, m (default 0.22)
 #   FUSION_PERIOD  s between two looks of the fusion (default 1.0)
+#   SEGMENT        m driven in one go during a mission (default 2.0; 0: a stop every 25 cm)
+#   SPEED          m/s during a mission (default 0.30, the rover's own maximum)
 #   DRONE_HEIGHT   height of the phone above the floor, m (default 1.8): scale of the drone map
 #   DRONE_MPP      metres per pixel of the phone's picture, measured (replaces DRONE_HEIGHT)
 #   DRONE_DETECTOR ia (default: a vision model finds the rover, needs transformers) or marqueur
@@ -36,6 +38,8 @@ D405="${D405:-}"
 D405_MOUNT="${D405_MOUNT:-}"
 CAM_HEIGHT="${CAM_HEIGHT:-0.22}"
 FUSION_PERIOD="${FUSION_PERIOD:-1.0}"
+SEGMENT="${SEGMENT:-2.0}"
+SPEED="${SPEED:-0.30}"
 DRONE_HEIGHT="${DRONE_HEIGHT:-1.8}"
 DRONE_MARKER="${DRONE_MARKER:-10}"
 DRONE_MPP="${DRONE_MPP:-}"
@@ -125,12 +129,12 @@ start_one() {
       # --delai-http / --delai-liaison: 8 s and 15 s were for the 4G link to the cloud machine
       set -- "$PY" sim/fusion_reelle.py --port 8096 --rover "$ROVER" \
         --perception http://127.0.0.1:8095 --periode "$FUSION_PERIOD" \
-        --delai-http 3 --delai-liaison 6
+        --delai-http 3 --delai-liaison 6 --segment "$SEGMENT" --vitesse "$SPEED"
       if [ -n "$PHONE" ]; then
         # the phone is read through the dashboard (one connection to the phone)
         set -- "$@" --drone-nom "$PHONE_NAME" --drone-source http://127.0.0.1:8082/drone_feed \
           --drone-hauteur "$DRONE_HEIGHT" --drone-marqueur "$DRONE_MARKER" \
-          --drone-detecteur "$DRONE_DETECTOR"
+          --drone-detecteur "$DRONE_DETECTOR" --drone-cumul
         if [ -n "$DRONE_MPP" ]; then set -- "$@" --drone-mpp "$DRONE_MPP"; fi
       fi
       launch "$name" "$ROOT" "$@"

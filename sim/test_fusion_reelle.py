@@ -377,3 +377,98 @@ def test_the_local_map_can_be_turned_on_and_off_while_running() -> None:
     f.tour()
     assert f.carte.tuiles['rover']
     assert f.regler_carte_locale({'carte_locale': 'no'})[0] == 400
+
+
+# ---- missions in long segments (--segment) and a drone map that grows (--drone-cumul) ------
+
+
+class SegmentRover:
+    """What _boucle_segments asks of avancer_esquive.RoverSegments: it follows the points it
+    is given and remembers them."""
+
+    def __init__(self, x, y):
+        self.est, self.cap, self.segments = (x, y), 0.0, []
+
+    def position(self):
+        return self.est
+
+    def suivre(self, points, duree):
+        self.segments.append([tuple(p) for p in points])
+        self.est = tuple(points[-1])
+        return 'done', None
+
+    def signaler_choc(self, impact):
+        raise AssertionError('no bump expected')
+
+
+def with_a_drone_map(extra=()):
+    """A FusionReelle in segment mode whose drone has seen a free strip 3 m long and 1 m wide
+    along x from the rover, and nothing else. Local map off: the rover's camera is not used."""
+    f = fr.FusionReelle(
+        fr.options(['--segment', '2.0', *extra]),
+        requete=lambda *a: None,
+        percevoir=lambda *a: None,
+        percevoir_frais=lambda *a: None,
+    )
+    strip = np.zeros((20, 60), np.int8)  # 5 cm cells, all free and seen
+    for msg in fr.decouper(strip, 19.5, 19.5, 4, f.carte, 'drone', t=1.0):
+        f.carte.recevoir(msg)
+    return f
+
+
+def test_in_segments_the_rover_reaches_the_goal_in_a_few_commands() -> None:
+    """1.8 m to drive: 8 stops step by step (25 cm each), one or two segments here."""
+    import avancer_esquive as ae
+
+    f = with_a_drone_map()
+    f.objectif = (21.8, 20.0)
+    rover = SegmentRover(20.0, 20.0)
+
+    assert f._boucle_segments(rover, ae) == 'arrive'
+    assert 1 <= len(rover.segments) <= 2
+    assert math.dist(rover.est, f.objectif) <= f.args.tolerance + 0.1
+
+
+def test_in_segments_the_rover_never_leaves_what_has_been_seen() -> None:
+    """The goal is 2 m to the side, where the drone has seen nothing: every point of every
+    segment stays inside the seen strip."""
+    import avancer_esquive as ae
+
+    f = with_a_drone_map()
+    f.objectif = (20.5, 22.0)
+    rover = SegmentRover(20.0, 20.0)
+
+    assert f._boucle_segments(rover, ae) in ('bloque', 'max_pas')
+    points = [p for s in rover.segments for p in s]
+    assert all(19.5 <= x <= 22.5 and 19.5 <= y <= 20.5 for x, y in points)
+
+
+def test_in_segments_without_a_drone_map_the_rover_does_not_move() -> None:
+    import avancer_esquive as ae
+
+    f = with_a_drone_map()
+    with f.verrou:
+        f.carte.tuiles['drone'] = {}
+    f.objectif = (21.8, 20.0)
+    rover = SegmentRover(20.0, 20.0)
+
+    assert f._boucle_segments(rover, ae) == 'bloque'
+    assert rover.segments == []
+
+
+def test_the_drone_map_grows_with_a_camera_that_moves() -> None:
+    """Two placed pictures of a camera that moved 3 m: with --drone-cumul both stay on the
+    drone map; without it the second replaces the first."""
+    for cumul, seen in ((True, 2 * 1600), (False, 1600)):
+        f, _ = fusion()
+        f.args.drone_cumul = cumul
+        for calage in ((0.0, 1.0, 1.0, 20.0, 20.0), (0.0, 1.0, 1.0, 23.0, 20.0)):
+            m = np.zeros((40, 40), np.int8)
+            with f.verrou:
+                place = f.placer_vue(m, 0.05, calage)
+                if not cumul:
+                    f.carte.tuiles['drone'], f.carte.maj['drone'] = {}, {}
+                for msg in fr.decouper(place[0], place[1], place[2], 4, f.carte, 'drone', t=1.0):
+                    f.carte.recevoir(msg)
+        total, x0, y0 = f.matrice_drone()
+        assert int((total != -1).sum()) == seen
