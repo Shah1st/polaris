@@ -1,4 +1,5 @@
-"""Read CamStream (the iPhone app, iphone-camera/) with the pose of each picture.
+"""Read CamStream (the iPhone app, iphone-camera/) with the pose of each picture, and its
+LiDAR depth with the pose of each depth map (Pro iPhones).
 
 In ARKit mode the app adds an `X-Pose` header to every picture of `/stream` (and to
 `/snapshot.jpg`): one line of JSON, the camera's pose when that very picture was taken (see
@@ -7,6 +8,9 @@ README.md). Picture and pose travel together, so a late picture is still placed 
     stream = PoseStream('http://172.20.10.6:8080')   # a thread; keeps the newest picture only
     frame = stream.latest(max_age=1.0)               # None when nothing fresh
     frame.image, frame.pose, frame.received
+
+    depth = read_depth('http://172.20.10.6:8080')    # one LiDAR depth map and its pose
+    depth.metres, depth.k, depth.pose
 
 Standard library only for the network (urllib), OpenCV to decode the JPEG.
 """
@@ -143,3 +147,93 @@ class PoseStream:
             except (OSError, ValueError, urllib.error.URLError) as e:
                 self.error = f'{type(e).__name__}: {e}'
             self._stop.wait(1.0)
+
+
+class DepthUnavailableError(RuntimeError):
+    """The phone gives no LiDAR depth (no LiDAR, depth switched off, or not started yet)."""
+
+
+@dataclass
+class DepthMap:
+    metres: np.ndarray  # float32 (h, w): distance along the optical axis; 0 = no measure
+    k: tuple[float, float, float, float]  # fx, fy, cx, cy in pixels of the depth map
+    pose: Pose | None  # None outside the ARKit mode: the depth cannot be placed on the floor
+    pose_error: str | None
+    age_ms: int | None  # how old the depth was when the phone sent it
+    received: float  # time.monotonic() here
+
+
+def read_depth(base_url: str, timeout: float = 2.0) -> DepthMap:
+    """One LiDAR depth map from /depth, with its pose (X-Pose) in the ARKit mode."""
+    try:
+        with urllib.request.urlopen(base_url.rstrip('/') + '/depth', timeout=timeout) as r:
+            body = r.read()
+            h = r.headers
+    except urllib.error.HTTPError as e:
+        if e.code == 503:
+            raise DepthUnavailableError(e.read().decode('utf-8', 'replace')[:200]) from e
+        raise
+    width, height = int(h['X-Depth-Width']), int(h['X-Depth-Height'])
+    if len(body) != width * height * 4:
+        raise ValueError(f'depth of {len(body)} bytes for {width} x {height}')
+    k = h.get('X-Depth-Intrinsics')
+    if not k:
+        raise ValueError('depth without intrinsics (X-Depth-Intrinsics)')
+    fx, fy, cx, cy = (float(v) for v in k.split(','))
+    pose, error = parse_pose(h.get('X-Pose'))
+    age = h.get('X-Age-Ms')
+    return DepthMap(
+        np.frombuffer(body, '<f4').reshape(height, width).copy(),
+        (fx, fy, cx, cy),
+        pose,
+        error,
+        int(age) if age else None,
+        time.monotonic(),
+    )
+
+
+class DepthPoller:
+    """Asks the phone for its newest depth map a few times a second, in a thread; keeps the
+    newest. Without LiDAR depth it asks again every few seconds only."""
+
+    def __init__(self, base_url: str, period: float = 0.2, start: bool = True) -> None:
+        self.url = base_url.rstrip('/')
+        self.period = period
+        self.error: str | None = 'not asked yet'
+        self.count = 0
+        self._depth: DepthMap | None = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        if start:
+            threading.Thread(target=self._run, daemon=True).start()
+
+    def latest(self, max_age: float | None = None) -> DepthMap | None:
+        with self._lock:
+            d = self._depth
+        if d is None or (max_age is not None and time.monotonic() - d.received > max_age):
+            return None
+        return d
+
+    def close(self) -> None:
+        self._stop.set()
+
+    def _run(self) -> None:
+        last_t = None
+        while not self._stop.is_set():
+            wait = self.period
+            try:
+                d = read_depth(self.url)
+                t = None if d.pose is None else d.pose.t
+                if t is None or t != last_t:  # a new depth map, not the same one again
+                    last_t = t
+                    with self._lock:
+                        self._depth = d
+                    self.count += 1
+                self.error = d.pose_error
+            except DepthUnavailableError as e:
+                self.error = f'no LiDAR depth: {e}'
+                wait = 3.0
+            except (OSError, ValueError, KeyError) as e:
+                self.error = f'{type(e).__name__}: {e}'
+                wait = 1.0
+            self._stop.wait(wait)

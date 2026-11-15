@@ -9,23 +9,68 @@ camera's movements: the rover, the obstacles, the goal. Plain Python (numpy, Ope
 iPhone (CamStream, ARKit mode)  --/stream: JPEG + X-Pose-->  camstream.py    picture + pose
                                                              pose_camera.py  pixels <-> metres
                                                              rover_marker.py the rover: x, y, heading
+                                                             floor_map.py    the grid, built from the video
+                                                             planner.py      the team's A* around obstacles
 rover (rover/rover_server.py)   <--GET /state, POST /path--  guidance.py     floor <-> odometry, steering
-you, in a browser               --click on the top view-->   guide_rover.py  the loop and its page
+you, in a browser               --click on the map-->        guide_rover.py  the loop and its page
 ```
 
-Not there yet: the obstacle grid that accumulates and the planner around obstacles (the rover
-goes straight to the point), the rover's D405 proximity beam, the panels in the rover
-dashboard.
+**The grid** (`floor_map.py`): the phone moves, the grid does not. Every picture is laid on the
+floor with the pose sent with it, into one grid fixed to the floor, in the team's format (5 cm
+cells, `1` obstacle / `0` free / `-1` unknown, row 0 = south; `GET /map.json`). An obstacle is:
+
+* what the team's colour detection sees (`guidance_global_map.segment_obstacles` on the floor's
+  picture, then the shadow and thin-line filters of `sim/fusion_reelle.py`): a plain box, a dark
+  bag; it cannot tell a flat colour on the floor (rug, tape, paint) from an object
+  (`--no-colour` leaves it out);
+* what stands higher than 4.5 cm: what stands up shifts between two views laid on the floor,
+  the floor does not (plane sweep over pairs of views a few tens of cm apart); it sees what has
+  the floor's colour, but needs texture and many views taken while moving.
+
+The rover itself is left out of both. **The route** (`planner.py`) is the team's: obstacles grown
+by the rover's radius (exact Minkowski sum, 0.15 m as tested in the small arena, commit a7d09cc)
+and `CarteFusion.astar` from `merging_map/fusion_carte.py`, pulled straight where the way is
+clear. The guide checks the route being driven every 0.5 s and plans again when the grid blocks
+it; with no way left, it stops the rover. A click on a point that cannot be reached is refused.
+
+Not there yet: the rover's D405 proximity beam. The LiDAR depth with the pose (Pro iPhones) is
+read (`camstream.read_depth`, `FloorMap.add_depth`) but not wired into the dashboard nor tried on
+a real iPhone.
 
 ## Run
 
 ```bash
-python air_ground/guide_rover.py --phone http://<iPhone>:8080 --rover http://<rover>:8080     --marker-size 0.10 --marker-height 0.12
+python air_ground/guide_rover.py --phone http://<iPhone>:8080 --rover http://<rover>:8080
 ```
 
-Open `http://127.0.0.1:8097`: the top view of the floor, which stays put while the phone
-moves; the rover where the guide believes it is (green arrow) and where the last picture saw
-it (yellow ring); a click sets the goal, "Stop" cancels it.
+Without `--rover` it only maps. The defaults are the real rover's marker (AprilTag 25h9 id 10,
+14 cm, 26 cm above the floor) and a 6 m map at 1 cm, centred where the phone first looks.
+Open `http://127.0.0.1:8097` (`--port` for another one: on Windows a second server may share a
+busy port without an error, check with `netstat -ano`).
+
+* **Map**: the floor as seen from the air, built up as the phone moves; "Grid view" shows the
+  grid the route is planned on. Obstacles in red, the zone too close for the rover's centre in
+  violet, the route in red; the rover where the guide believes it is (green arrow) and where the
+  last picture saw it (yellow ring), where it has been (blue); a click sets the goal, "Cancel
+  goal" forgets it, "Reset map" starts the map again.
+* **Cameras**: the phone's stream and the rover's camera, read by the browser straight from
+  the phone and from the rover (no relay, no processing in between), and the rover's D405.
+* **Air-ground link**: whether the rover is seen from the air, the size of its marker in the
+  picture, how far the last sighting corrected the odometry.
+* **Drive by hand** (arrows, Z/Q/S/D for the camera), **STOP** (Space or Esc: forgets the goal
+  and stops the rover, whoever drives it), the rover's telemetry and **the commands it
+  received** with their latencies: what the rover's own test page shows, which stays one click
+  away ("Rover test bench") for calibration, measured moves and tilt tests.
+
+The browser must reach the phone and the rover by the addresses given to `--phone` and
+`--rover` (it reads their pictures itself). The rover's JSON goes through this server.
+
+Without any hardware, the same dashboard on a simulated rover filmed by a fake phone that keeps
+moving (ports 8097 to 8099 on this computer):
+
+```bash
+python air_ground/demo_sim.py
+```
 
 ![the top view after a drive in simulation](top_view_example.jpg)
 
@@ -33,9 +78,10 @@ How it steers:
 
 * each sighting of the marker corrects the transform floor <- odometry (`OdomLink`) a little;
   between sightings the rover's own odometry carries the estimate;
-* the goal becomes a path in the odometry frame for the rover's own follower (`POST /path`,
-  20 Hz on the robot). It is sent again only when the correction moved its end by more than
-  3 cm: a handful of requests per drive, the Wi-Fi is not in the fast loop;
+* the goal becomes a route around the obstacles (above), then a path in the odometry frame for
+  the rover's own follower (`POST /path`, 20 Hz on the robot). It is sent again only when the
+  correction moved its end by more than 3 cm or the route changed: a handful of requests per
+  drive, the Wi-Fi is not in the fast loop;
 * the rover is stopped when the air camera has not seen it for 3 s, and goes on when it is
   seen again;
 * the guide gives way: manual driving or a STOP from anyone else ends its goal. It appears as
@@ -54,9 +100,14 @@ the team shares it.
 * The whole chain runs on one computer in the tests: a fake phone films the simulated rover
   of `rover/rover_server.py` from a camera that keeps circling, real HTTP on both sides, real
   marker detection; a click sends the rover within 5 cm of the point.
-* **Nothing has run on a real iPhone.** The app's ARKit mode compiles on GitHub's Mac (see
-  `iphone-camera/README.md`); the conventions below are Apple's documented ones, the first
-  real picture will tell whether an axis is flipped.
+* The route: around a wall, around a box put on the way while driving (more than 10 cm from
+  it), a goal behind a closed wall refused (`test_planner.py`, fake rover with wrong odometry).
+* **On a real iPhone** (15 Nov 2026, PC hotspot): the axes are right, the top views of 18
+  pictures taken while moving agree within 3 mm; the map of a real scene (boxes, a jacket,
+  people) grows as the phone moves, the rover's marker is found, the dashboard reaches the
+  rover in 73 ms. Not yet tried: a drive around obstacles on the real rover.
+* Colour against heights on a recorded scene: the colour finds every object, the heights only
+  part of them (few view pairs, low boxes, plain or moving surfaces): hence both together.
 
 ## The floor frame
 
@@ -101,14 +152,15 @@ from camstream import PoseStream
 from rover_marker import RoverFinder
 
 stream = PoseStream('http://<iPhone>:8080')
-finder = RoverFinder(marker_id=0, size=0.10, height=0.12)   # the marker on the rover's roof
+finder = RoverFinder(size=0.14, height=0.26)   # the team's AprilTag 25h9 id 10 on the roof
 frame = stream.latest(max_age=0.5)
 if frame and frame.pose and frame.pose.floor_known:
     top = frame.pose.floor_view(frame.image, (-1, -1, 1, 1), 0.005)   # stable top view
     rover = finder(frame.image, frame.pose)                           # x, y, heading, or None
 ```
 
-The marker is an ArUco 4x4 (`DICT_4X4_50`), flat on the rover's roof, with its white margin.
+The marker is the team's AprilTag 25h9 id 10 (`marqueur_rover_apriltag25h9_id10_10cm.png` to
+print, or drawn by hand as on the real rover), flat on the roof, with its white margin.
 `height` is the roof's height above the floor: without it the rover is seen several
 centimetres off as soon as it is not right under the camera. `RoverSeen.scale_error` compares
 the marker's measured side with the printed one: far from 0 means the pose, the floor height
@@ -122,4 +174,7 @@ or `height` is wrong.
 * ARKit needs texture and light to track: a plain glossy floor, fast moves or the dark give
   `limited:*`. Its frame drifts slowly (centimetres over minutes).
 * The floor is found after a few seconds of slow movement above it.
-* In ARKit mode the app sends no LiDAR depth, and the 1x lens only.
+* In ARKit mode the app stabilizes nothing (a stabilized picture would no longer match its
+  pose); with the LiDAR on, the lens is 1x.
+* People in view are obstacles to both detections; a person moving leaves traces in the map
+  until the place is seen again.

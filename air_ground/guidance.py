@@ -252,6 +252,9 @@ class Guide:
     _near_tries: int = 0
     _blind_stopped: bool = False
     _state_since_command: bool = True  # False until the rover's state is read after a command
+    # False while a planner owes a route for the goal: nothing is sent before (not even the
+    # straight line). Without a planner it stays True.
+    route_ready: bool = True
 
     # -- inputs ---------------------------------------------------------------------------
 
@@ -264,6 +267,13 @@ class Guide:
         self._blind_stopped = False
         self._stop_count = None
         self.status = 'goal set'
+
+    def set_route(self, waypoints) -> None:
+        """A new way to the same goal (the planner went around something new): the rover
+        gets it at the next step, without starting the goal over."""
+        self.waypoints = [(float(a), float(b)) for a, b in waypoints]
+        self.sent = None  # sent again at the next step
+        self.route_ready = True
 
     def cancel(self, why: str = 'cancelled') -> None:
         """Forget the goal and stop the rover if this guide was driving it."""
@@ -362,6 +372,9 @@ class Guide:
             return self.status
         if not self._state_since_command:
             return self.status  # what the rover does with the last command is not known yet
+        if not self.route_ready:
+            self.status = 'planning the route'
+            return self.status
         blind = None if self.last_seen is None else now - self.last_seen
         if blind is None or blind > self.cfg.blind_s:
             if self.mode in MOVING and self.sent is not None and not self._blind_stopped:

@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polaris control</title>
+<style>
+  :root {
+    --bg: #14171c; --panel: #1d2128; --panel2: #252a33; --line: #323843;
+    --text: #e6e9ee; --muted: #8c95a3; --accent: #4ea1ff; --ok: #3ecf8e;
+    --warn: #f5b942; --bad: #ff5d5d;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; position: sticky; top: 0;
+           z-index: 5; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; }
+  .pill { padding: 3px 10px; border-radius: 99px; background: var(--panel2);
+          border: 1px solid var(--line); font-size: 12px; white-space: nowrap; }
+  .pill.ok { border-color: var(--ok); color: var(--ok); }
+  .pill.warn { border-color: var(--warn); color: var(--warn); }
+  .pill.bad { border-color: var(--bad); color: var(--bad); }
+  .spacer { flex: 1; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  main { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+         gap: 12px; padding: 12px 16px; max-width: 1700px; margin: 0 auto; }
+  @media (max-width: 1000px) { main { grid-template-columns: minmax(0, 1fr); } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+            padding: 12px; margin-bottom: 12px; }
+  section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+               color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  section h2 .unit { text-transform: none; letter-spacing: 0; font-weight: 400; }
+  button { background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+           border-radius: 7px; padding: 7px 12px; font: inherit; cursor: pointer;
+           touch-action: manipulation; user-select: none; }
+  button:hover { border-color: var(--accent); }
+  button.stop { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 700; }
+  button.held { background: var(--accent); border-color: var(--accent); color: #fff; }
+  select { background: var(--bg); color: var(--text); border: 1px solid var(--line);
+           border-radius: 7px; padding: 7px 9px; font: inherit; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .row:last-child { margin-bottom: 0; }
+  .unit { color: var(--muted); }
+  .help { color: var(--muted); font-size: 12px; }
+  .status { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; }
+  .status b { color: var(--text); font-weight: 600; }
+  kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px;
+        padding: 0 5px; font-size: 11px; }
+
+  /* the map */
+  .guide { padding: 8px 10px; border-radius: 7px; background: var(--panel2); margin-bottom: 10px;
+           font-variant-numeric: tabular-nums; font-size: 15px; }
+  .guide.ok { color: var(--ok); } .guide.warn { color: var(--warn); } .guide.bad { color: var(--bad); }
+  .map { position: relative; background: #101318; border-radius: 8px; overflow: hidden;
+         aspect-ratio: 1 / 1; max-height: 66vh; width: 100%; display: flex; align-items: center;
+         justify-content: center; }
+  .map img { width: 100%; height: 100%; object-fit: contain; display: block; cursor: crosshair; }
+  .map .msg, .video .msg { position: absolute; color: var(--muted); text-align: center; padding: 16px; }
+  .map .coord { position: absolute; left: 8px; bottom: 8px; padding: 2px 8px; border-radius: 6px;
+                background: rgba(16, 19, 24, .8); font-size: 12px; font-variant-numeric: tabular-nums;
+                pointer-events: none; }
+  .key { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
+  .key i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; }
+  .key i.ring { width: 10px; height: 10px; border-radius: 50%; background: none; border: 2px solid #ffe600; }
+
+  /* cameras */
+  .cams { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  @media (max-width: 560px) { .cams { grid-template-columns: 1fr; } }
+  .cam .cap { display: flex; justify-content: space-between; gap: 8px; font-size: 12px;
+              color: var(--muted); margin-bottom: 4px; }
+  .cam .cap b { color: var(--text); font-weight: 600; }
+  .video { position: relative; background: #000; border-radius: 8px; overflow: hidden;
+           aspect-ratio: 4 / 3; display: flex; align-items: center; justify-content: center; }
+  .video img { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+  /* driving */
+  .pads { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 560px) { .pads { grid-template-columns: 1fr; } }
+  .pad { display: grid; grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(2, 46px);
+         gap: 6px; justify-content: center; margin: 4px 0 8px; }
+  .pad button { font-size: 18px; padding: 0; }
+  .pads .help { text-align: center; }
+  .task { padding: 8px 10px; border-radius: 7px; background: var(--panel2); margin-bottom: 10px;
+          font-variant-numeric: tabular-nums; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px 12px; }
+  .kv .k { color: var(--muted); font-size: 11px; }
+  .kv .v { font-variant-numeric: tabular-nums; font-size: 15px; }
+  .kv .v.warn { color: var(--warn); } .kv .v.bad { color: var(--bad); } .kv .v.ok { color: var(--ok); }
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  .err-ok { color: var(--ok); } .err-warn { color: var(--warn); } .err-bad { color: var(--bad); }
+  details summary { cursor: pointer; color: var(--muted); }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 9;
+           background: var(--bad); color: #fff; padding: 8px 14px; border-radius: 8px;
+           display: none; max-width: 90vw; }
+  #faults { margin: 12px 16px 0; padding: 8px 12px; border: 1px solid var(--bad); border-radius: 10px;
+            background: var(--panel); color: var(--bad); font-weight: 600; white-space: pre-line; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Polaris control</h1>
+  <span id="pAir" class="pill">Air camera …</span>
+  <span id="pLink" class="pill">Rover …</span>
+  <span id="pBatt" class="pill">Battery …</span>
+  <span id="pGyro" class="pill">Gyro …</span>
+  <span id="pCpu" class="pill">CPU …</span>
+  <span id="pMode" class="pill">…</span>
+  <span id="pTilt" class="pill" hidden>…</span>
+  <span id="pSim" class="pill warn" hidden>SIMULATION</span>
+  <span class="spacer"></span>
+  <a id="aBench" target="_blank" rel="noopener" hidden title="Calibration, measured moves, tilt tests, settings">Rover test bench ↗</a>
+  <button class="stop" id="bStop" title="Space or Esc: forgets the goal and stops the rover">STOP</button>
+</header>
+<div id="faults" hidden></div>
+
+<main>
+  <div>
+    <section>
+      <h2>Map <span class="unit">— the floor seen from the air, in metres</span></h2>
+      <div class="guide" id="guide">Connecting to the guide…</div>
+      <div class="map">
+        <img id="top" alt="Top view of the floor from the air camera" hidden>
+        <div class="msg" id="topMsg">No view from the air yet</div>
+        <div class="coord" id="coord" hidden></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <span class="key"><i style="background:#50ff50"></i>rover (estimate)</span>
+        <span class="key"><i class="ring"></i>rover in the last picture</span>
+        <span class="key"><i style="background:#ff3c3c"></i>goal and path</span>
+        <span class="key"><i style="background:#00b4ff"></i>where it has been</span>
+        <span class="key"><i style="background:#ff2828"></i>obstacle (height or colour)</span>
+        <span class="key"><i style="background:#c83ca0"></i>too close for the rover (its radius)</span>
+        <span class="key"><i style="background:#5ac85a"></i>floor, height known</span>
+        <span class="spacer"></span>
+        <button id="bView" title="The photos of the floor, or the 5 cm grid the route is planned on">Grid view</button>
+        <button id="bMapReset" title="Forget the map and build it again">Reset map</button>
+        <button id="bCancel" title="Forget the goal; the rover stops if the guide was driving it">Cancel goal</button>
+      </div>
+      <div class="status" id="mapInfo" style="margin-top:6px">Map: –</div>
+      <div class="help">Move the phone slowly above the scene: the map grows and firms up. Obstacles are found by their height (they shift between two views, the floor does not) and by the team's colour detection. Click on the map: the rover drives there around the obstacles (the team's A*), and the route is planned again when something new blocks it.</div>
+    </section>
+
+    <section>
+      <h2>Air-ground link <span class="unit">— how the air camera and the rover's odometry agree</span></h2>
+      <div class="grid" id="linkGrid"></div>
+      <div class="status" id="linkNote" style="margin-top:8px"></div>
+    </section>
+
+    <section>
+      <details id="cmdBox" open>
+        <summary><b>Commands received by the rover</b> <span class="unit">— who sends what, and how fast the rover acts (measured on the rover)</span></summary>
+        <div class="status" id="rttInfo" style="margin:8px 0">Guide ↔ rover: –</div>
+        <div class="scroll">
+        <table style="margin-bottom:10px">
+          <thead><tr><th>Client</th><th>Req/s</th><th>Usual gap</th><th>Largest gap</th><th>Last</th></tr></thead>
+          <tbody id="cmdClients"></tbody>
+        </table>
+        <table>
+          <thead><tr><th>When</th><th>From</th><th>Command</th><th>→ ESP32</th><th>→ wheels</th><th>Done</th><th>Status</th></tr></thead>
+          <tbody id="cmdLog"><tr><td colspan="7" class="unit">Nothing received yet</td></tr></tbody>
+        </table>
+        </div>
+        <div class="help" style="margin-top:6px">
+          → ESP32: until the rover's 20 Hz loop sent it (≤ 50 ms is normal). → wheels: until the
+          encoders showed it. A held key repeated with more than 500 ms between two commands lets
+          the rover stop (red): that is the network.
+        </div>
+      </details>
+    </section>
+  </div>
+
+  <div>
+    <section>
+      <h2>Cameras <span class="unit">— read by this page straight from the phone and the rover</span></h2>
+      <div class="cams">
+        <div class="cam">
+          <div class="cap"><b>Air camera</b><span id="airInfo">–</span></div>
+          <div class="video"><img id="airCam" alt="" hidden><div class="msg" id="airMsg">Waiting for the phone's address…</div></div>
+        </div>
+        <div class="cam">
+          <div class="cap"><b>Rover camera</b><span id="roverCamInfo">–</span></div>
+          <div class="video"><img id="roverCam" alt="" hidden><div class="msg" id="roverCamMsg">Waiting for the rover's address…</div></div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="bD405">Show D405</button>
+        <span class="unit">Range</span>
+        <select id="d405Max"><option value="0.5">0.5 m</option><option value="1" selected>1 m</option><option value="2">2 m</option></select>
+        <span class="spacer"></span>
+        <span class="status" id="d405Status">D405 depth camera hidden</span>
+      </div>
+      <div class="cams" id="d405Views" hidden>
+        <div class="video"><img id="d405Color" alt=""></div>
+        <div class="video"><img id="d405Depth" alt=""></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Drive by hand <span class="unit">— takes over from the guide</span></h2>
+      <div class="task" id="task">–</div>
+      <div class="pads">
+        <div>
+          <div class="pad" id="dpad">
+            <span></span><button data-key="ArrowUp">▲</button><span></span>
+            <button data-key="ArrowLeft">◀</button><button data-key="ArrowDown">▼</button>
+            <button data-key="ArrowRight">▶</button>
+          </div>
+          <div class="help">Rover: hold <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd>, <kbd>Shift</kbd> = fast</div>
+        </div>
+        <div>
+          <div class="pad" id="gpad">
+            <span></span><button data-gkey="KeyW" title="Tilt up">Z</button><span></span>
+            <button data-gkey="KeyA" title="Pan left">Q</button><button data-gkey="KeyS" title="Tilt down">S</button>
+            <button data-gkey="KeyD" title="Pan right">D</button>
+          </div>
+          <div class="help">Camera: <kbd>Z</kbd><kbd>Q</kbd><kbd>S</kbd><kbd>D</kbd>, <kbd>C</kbd> = centre ·
+            pan <b id="gPan">–</b> tilt <b id="gTilt">–</b></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Rover telemetry <span class="unit" id="telAge"></span></h2>
+      <div class="grid" id="telemetry"></div>
+    </section>
+  </div>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const fmt = (x, d = 2) => (x === null || x === undefined || Number.isNaN(+x)) ? '–' : (+x).toFixed(d);
+const esc = (t) => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function pill(id, text, cls) { const p = $(id); p.textContent = text; p.className = 'pill ' + (cls || ''); }
+const kv = (rows) => rows.map(([k, v, cls]) =>
+  `<div class="kv"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div></div>`).join('');
+
+let cfg = {};       // the rover's settings (manual speeds)
+let guide = null;   // the guide's last /state
+let urls = { phone: null, rover: null };
+
+// ---------------------------------------------------------------- HTTP helpers
+let toastTimer;
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.style.display = 'block';
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = 'none', 3500);
+}
+async function post(path, body = {}) {
+  try {
+    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify(body) });
+    const j = await r.json();
+    if (!r.ok) toast(j.error || r.statusText);
+    return j;
+  } catch (e) { toast('Guide unreachable: ' + e.message); }
+}
+
+// ---------------------------------------------------------------- the map (top view)
+async function topLoop() {
+  const img = $('top');
+  for (;;) {
+    try {
+      const r = await fetch('/top.jpg?view=' + mapView + '&t=' + Date.now());
+      if (r.ok) {
+        const url = URL.createObjectURL(await r.blob()), old = img.src;
+        img.src = url; img.hidden = false; $('topMsg').hidden = true;
+        if (old.startsWith('blob:')) URL.revokeObjectURL(old);
+      } else if (img.hidden) {
+        $('topMsg').textContent = 'No view from the air yet: ' + ((await r.json()).error || '');
+      }
+    } catch (e) { /* the state loop says the guide is unreachable */ }
+    await sleep(150);
+  }
+}
+// The picture is square in a square box only when the bounds are: place clicks on the picture itself.
+function floorPoint(e) {
+  const img = $('top'), r = img.getBoundingClientRect();
+  if (!guide || !img.naturalWidth) return null;
+  const scale = Math.min(r.width / img.naturalWidth, r.height / img.naturalHeight);
+  const w = img.naturalWidth * scale, h = img.naturalHeight * scale;
+  const fx = (e.clientX - r.left - (r.width - w) / 2) / w, fy = (e.clientY - r.top - (r.height - h) / 2) / h;
+  if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return null;
+  const [x0, y0, x1, y1] = guide.bounds;
+  return { fx, fy, x: x0 + fx * (x1 - x0), y: y1 - fy * (y1 - y0) };
+}
+$('top').addEventListener('click', (e) => { const p = floorPoint(e); if (p) post('/goal', { x: p.x, y: p.y }); });
+$('top').addEventListener('mousemove', (e) => {
+  const p = floorPoint(e);
+  $('coord').hidden = !p;
+  if (p) $('coord').textContent = `x ${p.x.toFixed(2)} m · y ${p.y.toFixed(2)} m`;
+});
+$('top').addEventListener('mouseleave', () => $('coord').hidden = true);
+$('bCancel').onclick = () => post('/cancel');
+$('bMapReset').onclick = () => post('/map/reset');
+let mapView = 'photo';  // 'photo': the floor as seen; 'grid': the grid the route is planned on
+$('bView').onclick = () => {
+  mapView = mapView === 'photo' ? 'grid' : 'photo';
+  $('bView').textContent = mapView === 'photo' ? 'Grid view' : 'Photo view';
+};
+
+// ---------------------------------------------------------------- cameras, straight from their source
+function startStream(img, msg, url, what) {
+  img.onload = () => { img.hidden = false; msg.hidden = true; };
+  img.onerror = () => { img.hidden = true; msg.hidden = false;
+    msg.textContent = `No picture from ${what}. Retrying…`;
+    setTimeout(() => startStream(img, msg, url, what), 2000); };
+  img.src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+}
+function startCameras() {
+  if (urls.phone) startStream($('airCam'), $('airMsg'), urls.phone + '/stream', 'the phone (' + urls.phone + ')');
+  else $('airMsg').textContent = 'No phone address';
+  if (urls.rover) {
+    startStream($('roverCam'), $('roverCamMsg'), urls.rover + '/video_feed', 'the rover (' + urls.rover + ')');
+    $('aBench').href = urls.rover; $('aBench').hidden = false;
+  } else $('roverCamMsg').textContent = 'No rover address';
+}
+
+let d405On = false;
+function loadOnce(img, url) {  // one picture at a time: no queue on a slow Wi-Fi
+  return new Promise(res => { img.onload = img.onerror = () => res();
+    img.src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now(); });
+}
+async function d405Loop() {
+  while (d405On && urls.rover) {
+    await loadOnce($('d405Color'), urls.rover + '/d405/color.jpg');
+    await loadOnce($('d405Depth'), urls.rover + '/d405/depth.jpg?max=' + $('d405Max').value);
+    await sleep(200);
+  }
+}
+async function d405StatusLoop() {
+  while (d405On) {
+    try {
+      const s = await (await fetch('/rover/d405/status')).json();
+      if (!s.ok) {
+        $('d405Status').innerHTML = `<b style="color:var(--bad)">${esc(s.error || 'D405 not ready')}</b>`;
+      } else {
+        const d = s.depth || {};
+        $('d405Status').innerHTML = `centre <b>${d.centre_m == null ? '–' : (d.centre_m * 100).toFixed(0) + ' cm'}</b>`
+          + ` · nearest <b>${d.nearest_m == null ? '–' : (d.nearest_m * 100).toFixed(0) + ' cm'}</b>`
+          + ` · ${(100 * (d.valid || 0)).toFixed(0)} % measured · ${d.age_ms ?? '–'} ms old`;
+      }
+    } catch (e) { $('d405Status').textContent = 'guide unreachable'; }
+    await sleep(1000);
+  }
+}
+$('bD405').onclick = () => {
+  d405On = !d405On;
+  $('bD405').textContent = d405On ? 'Hide D405' : 'Show D405';
+  $('d405Views').hidden = !d405On;
+  if (d405On) { d405Loop(); d405StatusLoop(); } else { $('d405Status').textContent = 'D405 depth camera hidden'; }
+};
+
+// ---------------------------------------------------------------- manual driving
+const held = new Set();
+const ARROWS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+let fast = false, wasDriving = false;
+function manualCommand() {
+  const vmax = fast ? cfg.v_manual_fast : cfg.v_manual;
+  const wmax = fast ? cfg.w_manual_fast : cfg.w_manual;
+  const f = (held.has('ArrowUp') ? 1 : 0) - (held.has('ArrowDown') ? 1 : 0);
+  const t = (held.has('ArrowLeft') ? 1 : 0) - (held.has('ArrowRight') ? 1 : 0);
+  return { v: f * (vmax || 0.15), omega: t * (wmax || 1.2) * (f ? 0.6 : 1) };  // gentler curve while moving
+}
+function refreshPad() {
+  document.querySelectorAll('#dpad button').forEach(b => b.classList.toggle('held', held.has(b.dataset.key)));
+}
+setInterval(() => {  // repeat while held: the rover stops by itself after manual_timeout
+  if (held.size) { post('/rover/cmd', manualCommand()); wasDriving = true; }
+  else if (wasDriving) { post('/rover/cmd', { v: 0, omega: 0 }); wasDriving = false; }
+}, 100);
+const typing = (e) => ['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName);
+function stopAll() { held.clear(); refreshPad(); gheld.clear(); refreshGpad(); post('/stop'); }
+$('bStop').onclick = stopAll;
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' || (e.key === ' ' && !typing(e))) { e.preventDefault(); stopAll(); return; }
+  if (typing(e)) return;
+  fast = e.shiftKey;
+  if (ARROWS.includes(e.key)) {
+    e.preventDefault();
+    if (!held.has(e.key)) { held.add(e.key); refreshPad(); post('/rover/cmd', manualCommand()); }
+  }
+});
+document.addEventListener('keyup', (e) => { fast = e.shiftKey; if (held.delete(e.key)) refreshPad(); });
+window.addEventListener('blur', () => { held.clear(); refreshPad(); gheld.clear(); refreshGpad(); });
+document.querySelectorAll('#dpad button').forEach(b => {
+  const on = (e) => { e.preventDefault(); b.setPointerCapture?.(e.pointerId);
+                      held.add(b.dataset.key); refreshPad(); post('/rover/cmd', manualCommand()); };
+  const off = () => { held.delete(b.dataset.key); refreshPad(); };
+  b.addEventListener('pointerdown', on);
+  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(ev, off);
+});
+
+// e.code is the key's position, so Z/Q/S/D on AZERTY and W/A/S/D on QWERTY both work.
+const GKEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD'];
+const gheld = new Set();
+let wasPanning = false;
+const gimbalCommand = () => ({ pan_rate: (gheld.has('KeyD') ? 1 : 0) - (gheld.has('KeyA') ? 1 : 0),
+                               tilt_rate: (gheld.has('KeyW') ? 1 : 0) - (gheld.has('KeyS') ? 1 : 0) });
+function refreshGpad() {
+  document.querySelectorAll('#gpad button').forEach(b => b.classList.toggle('held', gheld.has(b.dataset.gkey)));
+}
+setInterval(() => {  // keep-alive only: presses and releases are sent at once by the handlers
+  if (gheld.size) { post('/rover/gimbal', gimbalCommand()); wasPanning = true; }
+  else if (wasPanning) { post('/rover/gimbal', { pan_rate: 0, tilt_rate: 0 }); wasPanning = false; }
+}, 250);
+document.addEventListener('keydown', (e) => {
+  if (typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (GKEYS.includes(e.code)) {
+    e.preventDefault();
+    if (!gheld.has(e.code)) { gheld.add(e.code); refreshGpad(); post('/rover/gimbal', gimbalCommand()); }
+  } else if (e.code === 'KeyC' && !e.repeat) post('/rover/gimbal', { center: true });
+});
+document.addEventListener('keyup', (e) => {
+  if (gheld.delete(e.code)) { refreshGpad(); post('/rover/gimbal', gimbalCommand()); }
+});
+document.querySelectorAll('#gpad button').forEach(b => {
+  const on = (e) => { e.preventDefault(); b.setPointerCapture?.(e.pointerId);
+                      gheld.add(b.dataset.gkey); refreshGpad(); post('/rover/gimbal', gimbalCommand()); };
+  const off = () => { if (gheld.delete(b.dataset.gkey)) { refreshGpad(); post('/rover/gimbal', gimbalCommand()); } };
+  b.addEventListener('pointerdown', on);
+  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(ev, off);
+});
+
+// ---------------------------------------------------------------- render: the guide
+function renderGuide(g) {
+  const st = g.status || '';
+  const M = g.map || {};
+  $('mapInfo').textContent = M.views == null ? 'Map: –'
+    : `Map: ${M.views} views, ${M.pairs} height pairs · seen ${fmt(M.seen_m2, 2)} m², height known on ${fmt(M.known_m2, 2)} m², obstacles ${fmt(M.obstacle_m2, 3)} m²`
+      + (M.update_s != null ? ` · update ${fmt(M.update_s, 2)} s` : '') + (M.error ? ' · error: ' + M.error : '')
+      + (g.plan ? ` · route: radius ${fmt(g.plan.radius_m, 2)} m, ${g.plan.routes} planned` + (g.plan.note ? ` (${g.plan.note})` : '') : '');
+  const cls = g.rover_error || /^stopped|not reachable|lost/.test(st) ? 'bad'
+    : /^arrived/.test(st) ? 'ok' : /waiting|not seen|blind/.test(st) ? 'warn' : '';
+  $('guide').textContent = st.charAt(0).toUpperCase() + st.slice(1);
+  $('guide').className = 'guide ' + cls;
+  $('bCancel').disabled = !g.goal;
+
+  const a = g.air || {}, phoneOk = /^ok/.test(g.phone || '');
+  pill('pAir', phoneOk ? `Air camera OK · ${fmt(a.height_m, 2)} m up` : 'Air camera: ' + (g.phone || '–'),
+       phoneOk ? (a.marker && a.seen_age_s !== null && a.seen_age_s < 1 ? 'ok' : 'warn') : 'bad');
+  $('airInfo').textContent = a.fps == null ? '–'
+    : `${fmt(a.fps, 0)} fps` + (g.latency_ms != null ? ` · ${g.latency_ms} ms old` : '')
+      + (a.size ? ` · ${a.size[0]}×${a.size[1]}` : '');
+
+  const L = g.link || {}, m = a.marker, r = g.rover;
+  const seen = a.seen_age_s == null ? ['never', 'bad']
+    : a.seen_age_s < 1 ? ['now', 'ok'] : [fmt(a.seen_age_s, 1) + ' s ago', a.seen_age_s > 3 ? 'bad' : 'warn'];
+  const scale = m ? [fmt(m.scale_error * 100, 0) + ' %', Math.abs(m.scale_error) > 0.2 ? 'bad' : Math.abs(m.scale_error) > 0.1 ? 'warn' : ''] : ['–'];
+  const track = a.tracking ? [a.tracking, a.tracking === 'normal' ? 'ok' : 'warn'] : ['–'];
+  $('linkGrid').innerHTML = kv([
+    ['Rover on the floor', r ? `${fmt(r[0], 2)}, ${fmt(r[1], 2)} m` : 'unknown', r ? '' : 'warn'],
+    ['Rover heading', r ? fmt(r[2], 0) + '°' : '–'],
+    ['Goal', g.goal ? `${fmt(g.goal[0], 2)}, ${fmt(g.goal[1], 2)} m` : 'none'],
+    ['Seen from the air', ...seen],
+    ['Marker in the picture', m ? fmt(m.side_px, 0) + ' px' : '–', m && m.side_px < 20 ? 'warn' : ''],
+    ['Marker size error', ...scale],
+    ['Link', L.ready ? 'tied' : 'not tied yet', L.ready ? 'ok' : 'warn'],
+    ['Odometry turned by', L.ready ? fmt(L.theta_deg, 1) + '°' : '–'],
+    ['Last correction', L.updates ? `${fmt(L.last_error_cm, 1)} cm, ${fmt(L.last_error_deg, 1)}°` : '–'],
+    ['Sightings used', `${L.updates ?? 0}` + (L.resets ? ` (${L.resets} restarts)` : '')],
+    ['Phone tracking', ...track],
+    ['Floor', a.floor_known == null ? '–' : a.floor_known ? 'found' : 'not found yet', a.floor_known === false ? 'warn' : ''],
+    ['Paths sent', g.paths_sent ?? 0],
+    ['Driven (seen from the air)', fmt(g.trail_m, 2) + ' m'],
+  ]);
+  $('linkNote').textContent = g.dropped ? 'Last sighting not used: ' + g.dropped : '';
+  const t = g.rover_rtt_ms;
+  $('rttInfo').innerHTML = t ? `Guide ↔ rover: <b>${t.usual} ms</b> usual, `
+    + `<b style="color:${t.worst > 500 ? 'var(--bad)' : 'inherit'}">${t.worst} ms</b> worst (last 100 requests)` : 'Guide ↔ rover: –';
+}
+
+// ---------------------------------------------------------------- render: the rover
+function renderFaults(s, g) {
+  const c = s.ctrl || {}, L = s.link || {}, lines = [];
+  if (g.rover_error) lines.push('Rover not reachable: ' + g.rover_error);
+  if (c.fault) lines.push('Rover stopped by itself: ' + c.fault);
+  if (s.loop_errors) lines.push(`Rover control loop errors: ${s.loop_errors}` + (s.last_loop_error ? ' (last: ' + s.last_loop_error + ')' : ''));
+  if (L.handler_errors) lines.push(`ESP32 message errors: ${L.handler_errors}` + (L.last_handler_error ? ' (last: ' + L.last_handler_error + ')' : ''));
+  $('faults').textContent = lines.join('\n');
+  $('faults').hidden = !lines.length;
+}
+function renderRover(s, g) {
+  renderFaults(s, g);
+  const o = s.odom || {}, c = s.ctrl || {}, L = s.link || {};
+  const stale = g.rover_state_age_s != null && g.rover_state_age_s > 1.5;
+  if (g.rover_error || stale) pill('pLink', 'Rover: no answer', 'bad');
+  else if (L.connected && L.rx_age !== null && L.rx_age < 1) pill('pLink', 'Rover OK', 'ok');
+  else pill('pLink', L.error ? 'ESP32: ' + L.error : 'ESP32: no data', 'bad');
+  if (s.battery_v) {
+    const v = s.battery_v, pct = Math.max(0, Math.min(100, (v - 9.6) / (12.6 - 9.6) * 100));
+    pill('pBatt', `Battery ${fmt(v, 2)} V (${pct.toFixed(0)}%)`, v < 10.2 ? 'bad' : v < 10.8 ? 'warn' : 'ok');
+  } else pill('pBatt', 'Battery –');
+  pill('pGyro', o.gyro_ready ? 'Gyro OK' : 'Gyro calibrating, keep still',
+       o.gyro_ready ? (o.heading_source === 'gyro' ? 'ok' : 'warn') : 'warn');
+  if (s.cpu_temp != null) pill('pCpu', `CPU ${fmt(s.cpu_temp, 0)} °C`, s.cpu_temp > 85 ? 'bad' : s.cpu_temp > 70 ? 'warn' : 'ok');
+  else pill('pCpu', 'CPU –');
+  pill('pMode', (c.mode || '–').toUpperCase(), c.mode && c.mode !== 'idle' ? 'ok' : '');
+  $('pSim').hidden = !s.sim;
+  const G = c.guard || {}, gs = G.state || 'off';
+  $('pTilt').hidden = gs === 'ok' || gs === 'off';
+  if (!$('pTilt').hidden) pill('pTilt', 'TILT: ' + (G.reason || gs), gs === 'caution' ? 'warn' : 'bad');
+
+  const cam = s.camera || {};
+  $('roverCamInfo').textContent = cam.error ? cam.error : cam.fps ? `${cam.fps} fps` : '–';
+  if (s.gimbal) { $('gPan').textContent = fmt(s.gimbal.pan, 0) + '°'; $('gTilt').textContent = fmt(s.gimbal.tilt, 0) + '°'; }
+
+  let t = 'Idle';
+  if (c.current) {
+    const cur = c.current, p = c.progress;
+    t = cur.kind === 'move' ? `Moving ${fmt(cur.value * 100, 0)} cm — ${p === null ? 'settling' : fmt(p * 100, 1) + ' cm'}`
+      : cur.kind === 'path' ? `Following a path — ${p === null ? 'settling' : fmt(p, 2) + ' m done'}`
+      : `Turning ${fmt(cur.value, 0)}° — ${p === null ? 'settling' : fmt(p, 1) + '°'}`;
+  } else if (c.mode === 'manual') t = 'Driven by hand';
+  if ((c.queued || []).length) t += ` · ${c.queued.length} step(s) queued`;
+  const last = (c.history || [])[0];
+  if (!c.current && last) t += ` · last step: ${last.status}`;
+  $('task').textContent = 'Rover: ' + t;
+
+  const rows = [
+    ['Odometry x', fmt(o.x, 3) + ' m'], ['Odometry y', fmt(o.y, 3) + ' m'], ['Heading', fmt(o.heading_deg, 1) + '°'],
+    ['Heading gyro', fmt(o.heading_gyro_deg, 1) + '°'], ['Heading wheels', fmt(o.heading_enc_deg, 1) + '°'],
+    ['Speed', fmt(o.v, 3) + ' m/s'], ['Wheel L', fmt(o.L, 3) + ' m/s'], ['Wheel R', fmt(o.R, 3) + ' m/s'],
+    ['Cmd v', fmt(c.v_cmd, 3) + ' m/s'], ['Cmd ω', fmt(c.w_cmd, 2) + ' rad/s'], ['Yaw rate', fmt(o.yaw_rate_dps, 1) + ' °/s'],
+    ['Roll', fmt(s.roll_deg, 1) + '°'], ['Pitch', fmt(s.pitch_deg, 1) + '°'],
+    ['Distance', fmt(o.distance * 100, 1) + ' cm'], ['Odometer', fmt(o.odometer, 2) + ' m'],
+    ['Stops received', s.stop_count ?? '–'], ['Server up', s.uptime_s == null ? '–' : fmt(s.uptime_s / 60, 0) + ' min'],
+  ];
+  if (s.sim_truth) rows.push(['True x (sim)', fmt(s.sim_truth.x, 3) + ' m'], ['True y (sim)', fmt(s.sim_truth.y, 3) + ' m'],
+                             ['True heading (sim)', fmt(s.sim_truth.heading_deg, 1) + '°']);
+  $('telemetry').innerHTML = kv(rows);
+  $('telAge').textContent = g.rover_state_age_s == null ? '' : stale ? `— ${fmt(g.rover_state_age_s, 1)} s old` : '— live, 10 per second';
+}
+
+async function stateLoop() {
+  for (;;) {
+    try {
+      guide = await (await fetch('/state')).json();
+      if (guide.phone_url !== urls.phone || guide.rover_url !== urls.rover) {
+        urls = { phone: guide.phone_url, rover: guide.rover_url };
+        startCameras();
+      }
+      renderGuide(guide);
+      if (guide.rover_state) renderRover(guide.rover_state, guide);
+      else { pill('pLink', guide.rover_error ? 'Rover: no answer' : 'Rover …', guide.rover_error ? 'bad' : '');
+             renderFaults({}, guide); }
+    } catch (e) {
+      $('guide').textContent = 'Guide not reachable'; $('guide').className = 'guide bad';
+      pill('pAir', 'Air camera ?', 'bad'); pill('pLink', 'Rover ?', 'bad');
+    }
+    await sleep(200);
+  }
+}
+
+// ---------------------------------------------------------------- commands received by the rover
+function msCell(v, warn, bad) {
+  if (v == null) return '<td class="unit">–</td>';
+  return `<td class="${v > bad ? 'err-bad' : v > warn ? 'err-warn' : ''}">${v} ms</td>`;
+}
+const shortClient = (c) => esc(c.replace(/^\S+ /, '').replace('python-urllib', 'python (urllib)').replace('python-requests', 'python (requests)'));
+async function commandsLoop() {
+  for (;;) {
+    if ($('cmdBox').open) {
+      try {
+        const r = await fetch('/rover/commands');
+        const s = await r.json();
+        if (!r.ok) throw new Error(s.error);
+        $('cmdClients').innerHTML = s.clients.map(c => `<tr><td>${esc(c.client)}</td><td>${c.per_s}</td>`
+          + msCell(c.median_gap_ms, 300, 600) + msCell(c.max_gap_ms, 500, 1000)
+          + `<td>${c.last_s == null ? '–' : c.last_s.toFixed(1) + ' s ago'}</td></tr>`).join('');
+        $('cmdLog').innerHTML = s.entries.length ? s.entries.slice(0, 15).map(e => {
+          const rep = e.count > 1 ? ` <span class="unit">×${e.count} over ${e.held_s.toFixed(1)} s, gap ≤</span>`
+            + `<span class="${e.max_gap_ms > 500 ? 'err-bad' : 'unit'}"> ${e.max_gap_ms} ms</span>` : '';
+          const stCls = ['done', 'ok'].includes(e.status) ? '' : ['pending', 'superseded'].includes(e.status) ? 'unit' : 'err-bad';
+          return `<tr><td>${e.ago_s.toFixed(1)} s</td><td>${shortClient(e.client)}</td><td>${esc(e.text)}${rep}</td>`
+            + msCell(e.out_ms, 80, 150) + msCell(e.wheels_ms, 400, 800)
+            + (e.done_ms == null ? '<td class="unit">–</td>' : `<td>${(e.done_ms / 1000).toFixed(1)} s</td>`)
+            + `<td class="${stCls}">${e.code >= 300 ? 'HTTP ' + e.code : e.status === 'pending' ? '…' : esc(e.status)}</td></tr>`;
+        }).join('') : '<tr><td colspan="7" class="unit">Nothing received yet</td></tr>';
+      } catch (err) {
+        $('cmdLog').innerHTML = `<tr><td colspan="7" class="unit">The rover's command log is not reachable</td></tr>`;
+      }
+    }
+    await sleep(700);
+  }
+}
+async function loadConfig() {  // manual speeds; the defaults of manualCommand() until it answers
+  for (;;) {
+    try { const r = await fetch('/rover/config'); if (r.ok) { cfg = await r.json(); return; } } catch (e) { /* retry */ }
+    await sleep(3000);
+  }
+}
+
+topLoop(); stateLoop(); commandsLoop(); loadConfig();
+</script>
+</body>
+</html>

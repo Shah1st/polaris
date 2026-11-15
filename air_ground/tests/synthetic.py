@@ -70,18 +70,20 @@ def arkit_project(d: dict, point) -> tuple[float, float]:
     return fx * cam[0] / -cam[2] + cx, fy * -cam[1] / -cam[2] + cy
 
 
-def render(pose, floor: np.ndarray, marker=None) -> np.ndarray:
-    """The picture a camera at `pose` (a pose_camera.Pose) takes of the floor, and of a
-    marker = (image, x, y, top_edge_angle_rad, side_m, height_m) lying flat above it."""
+def render(pose, floor: np.ndarray, marker=None, patches=()) -> np.ndarray:
+    """The picture a camera at `pose` (a pose_camera.Pose) takes of the floor, and of flat
+    things lying above it: marker = (image, x, y, top_edge_angle_rad, side_m, height_m), and
+    `patches` of the same form (box tops; their sides are not drawn). Higher things are drawn
+    over lower ones."""
     x0, _, _, y1 = FLOOR_BOUNDS
     tex_to_floor = np.array([[FLOOR_RES, 0, x0], [0, -FLOOR_RES, y1], [0, 0, 1.0]])
     out = cv2.warpPerspective(floor, pose.plane_homography(0.0) @ tex_to_floor, SIZE)
-    if marker is not None:
-        img, mx, my, angle, side, height = marker
+    flat = list(patches) + ([marker] if marker is not None else [])
+    for img, mx, my, angle, side, height in sorted(flat, key=lambda f: f[5]):
         s = side / img.shape[0]
         c, sn = math.cos(angle), math.sin(angle)
         half = img.shape[0] / 2
-        # marker pixel (u right, v down) -> its own axes (right, up) -> the floor frame
+        # pixel (u right, v down) -> its own axes (right, up) -> the floor frame
         local = np.array([[s, 0, -half * s], [0, -s, half * s], [0, 0, 1.0]])
         place = np.array([[c, -sn, mx], [sn, c, my], [0, 0, 1.0]])
         h = pose.plane_homography(height) @ place @ local
@@ -91,6 +93,18 @@ def render(pose, floor: np.ndarray, marker=None) -> np.ndarray:
         mask = cv2.warpPerspective(np.full(img.shape[:2], 255, np.uint8), h, SIZE) > 127
         out[mask] = warped[mask]
     return out
+
+
+def box_top(seed: int, px: int = 200) -> np.ndarray:
+    """The top of a box: cardboard with print on it (some texture, as real boxes have)."""
+    rng = np.random.default_rng(seed)
+    img = np.full((px, px, 3), (90, 140, 180), np.uint8)
+    img += rng.integers(0, 25, img.shape, dtype=np.uint8)
+    for _ in range(12):
+        x, y = rng.integers(0, px - 20, 2)
+        cv2.putText(img, 'POLARIS', (int(x), int(y) + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    tuple(int(v) for v in rng.integers(0, 120, 3)), 1)  # fmt: skip
+    return img
 
 
 def marker_image(marker_id: int = 10, px: int = 240, family: str = 'DICT_APRILTAG_25h9'):

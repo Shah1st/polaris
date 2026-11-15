@@ -1,0 +1,515 @@
+"""The map of the floor seen from the air, which grows and firms up as the camera moves.
+
+Two layers, both in the floor frame of pose_camera.py:
+
+- the picture of the floor (`mosaic`): each new view is laid flat on the floor; a place keeps
+  the sharpest view of it (the one taken most from above), slowly giving way to newer ones;
+- the height of what stands on the floor (`heights`): what stands above the floor shifts from
+  one view to the next once laid flat, the floor does not. Two views a few tens of centimetres
+  apart are laid on planes at several heights (plane sweep); where they agree tells the height
+  of the surface there. Each pair of views adds votes; the map keeps the height with the most
+  votes. No model and no colour rule: a box is an obstacle because it is high, whatever its
+  colour or the floor's. A surface with no texture (a plain box top) gives no vote: it stays
+  unknown until its edges or another view decide;
+- with a LiDAR iPhone, the heights measured directly (`add_depth`): each depth map, placed by
+  the pose of its frame, gives the height of every point it sees, in 2 cm cells, averaged over
+  the maps. Where it has measured, it wins over the plane sweep. The floor's height found by
+  ARKit is checked against the points the LiDAR sees near it (`floor_offset`).
+
+    fmap = FloorMap((-1.5, -1.5, 1.5, 1.5))
+    fmap.add(image, pose, rover_xy=(x, y))   # the rover is a moving obstacle: left out
+    fmap.add_depth(metres, k, pose)          # a LiDAR depth map and the pose of its frame
+    picture = fmap.render()                  # BGR top view: floor, obstacles in red, unknown dark
+    cells = fmap.grid(0.05)                  # -1 unknown / 0 free / 1 obstacle, row 0 = south
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from dataclasses import dataclass, replace
+
+import cv2
+import numpy as np
+from pose_camera import Pose
+
+HEIGHTS = (0.0, 0.03, 0.06, 0.09, 0.12, 0.16, 0.20, 0.25, 0.30, 0.36)  # m, the swept planes
+COLOUR_CELL = 0.05  # m, the cells of the colour detection (the team's grid)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _team_colour_detection():
+    """The team's colour segmentation and its filters, imported when first needed."""
+    for sub in ('src/guidance_global_map', 'merging_map', 'sim'):
+        path = os.path.join(ROOT, sub)
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    from fusion_reelle import part_ombre, sans_traits
+
+    from guidance_global_map.segmentation import segment_obstacles
+
+    return segment_obstacles, part_ombre, sans_traits
+
+
+def to_cell_scale(image: np.ndarray, pose: Pose, res: float) -> tuple[np.ndarray, Pose]:
+    """The picture halved (with a blur first) until one of its pixels is about one cell of
+    the map on the floor, and the pose with the intrinsics to match. Without it, a floor with
+    a grain finer than a cell (a carpet) is sampled one point per cell: the two views of a
+    pair then show different noise, and the heights come out wrong."""
+    gsd = float(pose.c[2]) / float(pose.k[0, 0])  # metres of floor per pixel
+    halvings = int(np.floor(np.log2(max(res / gsd, 1.0))))
+    k = pose.k.copy()
+    for _ in range(halvings):
+        image = cv2.pyrDown(image)
+        k[0, 0] /= 2
+        k[1, 1] /= 2
+        k[0, 2] = (k[0, 2] + 0.5) / 2 - 0.5
+        k[1, 2] = (k[1, 2] + 0.5) / 2 - 0.5
+    if not halvings:
+        return image, pose
+    return image, replace(pose, k=k, width=image.shape[1], height=image.shape[0])
+
+
+@dataclass
+class Keyframe:
+    pose: Pose
+    gray: np.ndarray
+
+
+class FloorMap:
+    def __init__(
+        self,
+        bounds=(-1.5, -1.5, 1.5, 1.5),
+        res: float = 0.005,
+        heights=HEIGHTS,
+        obstacle_m: float = 0.045,
+        window: int = 7,
+        min_ncc: float = 0.6,
+        min_margin: float = 0.12,
+        min_texture: float = 25.0,
+        keyframe_step: float = 0.06,
+        keyframes: int = 10,
+        decay: float = 0.985,
+        rover_radius: float = 0.22,
+        follow: bool = False,
+        depth_res: float = 0.02,
+        min_obstacle_m: float = 0.04,
+    ) -> None:
+        """`res`: metres per cell. `obstacle_m`: a surface higher than this is an obstacle.
+        `window`: cells of the matching window. `min_ncc`: how well two views must agree at
+        the chosen height; `min_margin`: by how much better than at the other heights.
+        `min_texture`: grey-level variance below which a window says nothing. `keyframe_step`:
+        metres the camera moves between two kept views. `decay`: what one update leaves of the
+        older votes (an obstacle taken away fades out). `follow`: the map is centred on the
+        point the camera looks at in the first view after a reset or a new floor frame (the
+        floor frame's origin is where the phone started tracking, maybe metres away); `bounds`
+        then only gives the map's size."""
+        self.bounds = tuple(float(v) for v in bounds)
+        self.res = res
+        x0, y0, x1, y1 = self.bounds
+        self.cols, self.rows = round((x1 - x0) / res), round((y1 - y0) / res)
+        self.heights = np.asarray(heights, np.float32)
+        self.obstacle_m = obstacle_m
+        self.window = window
+        self.min_ncc, self.min_margin, self.min_texture = min_ncc, min_margin, min_texture
+        self.keyframe_step, self.max_keyframes = keyframe_step, keyframes
+        self.decay = decay
+        self.rover_radius = rover_radius
+        self.follow = follow
+        self.min_obstacle_m = min_obstacle_m
+        self.depth_f = max(1, round(depth_res / res))  # map cells per depth cell, each way
+        self.depth_res = self.depth_f * res
+        self.drows = -(-self.rows // self.depth_f)
+        self.dcols = -(-self.cols // self.depth_f)
+        self.reset()
+
+    def reset(self) -> None:
+        self.mosaic = np.zeros((self.rows, self.cols, 3), np.uint8)
+        self.view_score = np.full((self.rows, self.cols), np.inf, np.float32)
+        self.votes = np.zeros((len(self.heights), self.rows, self.cols), np.float32)
+        self.keyframes: list[Keyframe] = []
+        self.session: int | None = None
+        self.views = 0
+        self.pairs = 0
+        self.dheight = np.zeros((self.drows, self.dcols), np.float32)
+        self.dweight = np.zeros((self.drows, self.dcols), np.float32)
+        self.depth_maps = 0
+        self.floor_offset = 0.0  # m: where the LiDAR sees the floor, against ARKit's floor
+        self.colour = None  # (5 cm cells, cells per side) of the team's colour detection
+        self._centre_next = self.follow
+
+    def recentre(self, x: float, y: float) -> None:
+        """Move the map (same size) so that (x, y) is its centre; it starts empty."""
+        x0, y0, x1, y1 = self.bounds
+        hw, hh = (x1 - x0) / 2, (y1 - y0) / 2
+        self.bounds = (x - hw, y - hh, x + hw, y + hh)
+        session = self.session
+        self.reset()
+        self.session = session
+        self._centre_next = False
+
+    # -- frames of the grid ---------------------------------------------------------------
+
+    def _grid_to_floor(self, c0: int, r0: int) -> np.ndarray:
+        """3x3 from (col, row) of the grid, counted from (c0, r0), to (x, y, 1) on the floor."""
+        x0, _, _, y1 = self.bounds
+        res = self.res
+        return np.array(
+            [[res, 0, x0 + (c0 + 0.5) * res], [0, -res, y1 - (r0 + 0.5) * res], [0, 0, 1.0]]
+        )
+
+    def _cells(self, xy: np.ndarray) -> np.ndarray:
+        x0, _, _, y1 = self.bounds
+        return np.column_stack([(xy[:, 0] - x0) / self.res, (y1 - xy[:, 1]) / self.res])
+
+    def _roi(self, *poses: Pose, z: float = 0.0) -> tuple[int, int, int, int] | None:
+        """The grid window (c0, r0, c1, r1) all these views see, or None."""
+        box = None
+        for p in poses:
+            corners = p.footprint(z)
+            if not np.isfinite(corners).all():
+                return None  # a view that sees the horizon: too slanted to map
+            cells = self._cells(corners)
+            b = (*cells.min(axis=0), *cells.max(axis=0))
+            box = b if box is None else (
+                max(box[0], b[0]), max(box[1], b[1]), min(box[2], b[2]), min(box[3], b[3])
+            )  # fmt: skip
+        c0, r0 = max(0, int(box[0])), max(0, int(box[1]))
+        c1, r1 = min(self.cols, int(np.ceil(box[2]))), min(self.rows, int(np.ceil(box[3])))
+        if c1 - c0 < 2 * self.window or r1 - r0 < 2 * self.window:
+            return None
+        return c0, r0, c1, r1
+
+    def _warp(self, pose: Pose, image, z: float, roi) -> tuple[np.ndarray, np.ndarray]:
+        """The picture laid on the plane at height z, on the grid window `roi`, and where it
+        is inside the picture."""
+        c0, r0, c1, r1 = roi
+        m = pose.plane_homography(z) @ self._grid_to_floor(c0, r0)
+        size = (c1 - c0, r1 - r0)
+        flags = cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP
+        out = cv2.warpPerspective(image, m, size, flags=flags, borderMode=cv2.BORDER_CONSTANT)
+        inside = cv2.warpPerspective(
+            np.full(image.shape[:2], 255, np.uint8), m, size, flags=flags, borderValue=0
+        )
+        return out, inside > 250
+
+    # -- adding a view --------------------------------------------------------------------
+
+    def _accept(self, pose: Pose) -> str | None:
+        """None when this pose can feed the map (and the map is placed); else why not."""
+        if pose.session != self.session:  # the phone's floor frame started again
+            self.reset()
+            self.session = pose.session
+        if not pose.floor_known or pose.tracking != 'normal' or pose.c[2] < 0.3:
+            return 'no floor, tracking not normal, or camera too low'
+        if self._centre_next:  # where the camera looks now: the middle of the picture
+            aim = pose.pixel_to_floor([[pose.k[0, 2], pose.k[1, 2]]])[0]
+            if not np.isfinite(aim).all() or np.linalg.norm(aim - pose.c[:2]) > 2 * pose.c[2]:
+                aim = pose.c[:2]
+            self.recentre(float(aim[0]), float(aim[1]))
+        return None
+
+    def add_depth(self, metres: np.ndarray, k, pose: Pose, rover_xy=None, max_range=4.0) -> dict:
+        """One LiDAR depth map (metres along the optical axis, 0 = no measure; `k` = fx, fy,
+        cx, cy in its pixels) and the camera's pose for that frame. Every point it sees is
+        placed on the floor; each 2 cm cell takes the mean height of its points, averaged with
+        what earlier maps said (the 8 latest weigh the most: a moved box fades out)."""
+        why = self._accept(pose)
+        if why:
+            return {'used': False, 'why': why}
+        fx, fy, cx, cy = (float(v) for v in k)
+        h, w = metres.shape
+        v, u = np.mgrid[0:h, 0:w]
+        d = metres.astype(np.float32)
+        ok = np.isfinite(d) & (d > 0.15) & (d < max_range)
+        if ok.sum() < 50:
+            return {'used': False, 'why': 'almost no depth measured'}
+        cam = np.column_stack([(u[ok] - cx) / fx * d[ok], (v[ok] - cy) / fy * d[ok], d[ok]])
+        pts = cam @ pose.r.T + pose.c  # the floor frame
+        # ARKit's floor plane may be off by a centimetre or two: the floor is where most of
+        # the points near z = 0 are.
+        near = pts[np.abs(pts[:, 2] - self.floor_offset) < 0.06, 2]
+        if near.size > 200:
+            self.floor_offset = 0.8 * self.floor_offset + 0.2 * float(np.median(near))
+        z = pts[:, 2] - self.floor_offset
+        x0, _, _, y1 = self.bounds
+        col = np.floor((pts[:, 0] - x0) / self.depth_res).astype(np.int64)
+        row = np.floor((y1 - pts[:, 1]) / self.depth_res).astype(np.int64)
+        keep = (col >= 0) & (col < self.dcols) & (row >= 0) & (row < self.drows) & (z > -0.1)
+        if rover_xy is not None:  # the rover moves: its own points say nothing of the floor
+            keep &= np.hypot(pts[:, 0] - rover_xy[0], pts[:, 1] - rover_xy[1]) > self.rover_radius
+        idx = row[keep] * self.dcols + col[keep]
+        n = self.drows * self.dcols
+        count = np.bincount(idx, minlength=n).reshape(self.drows, self.dcols)
+        total = np.bincount(idx, weights=z[keep], minlength=n).reshape(self.drows, self.dcols)
+        seen = count > 0
+        mean = (total[seen] / count[seen]).astype(np.float32)
+        wgt = self.dweight[seen]
+        self.dheight[seen] = (self.dheight[seen] * wgt + mean) / (wgt + 1)
+        self.dweight[seen] = np.minimum(wgt + 1, 8)
+        self.depth_maps += 1
+        return {'used': True, 'points': int(keep.sum()), 'cells': int(seen.sum())}
+
+    def _depth_layer(self) -> tuple[np.ndarray, np.ndarray]:
+        """The LiDAR heights and where they are known, at the map's own cell size."""
+        f = self.depth_f
+        up = np.repeat(np.repeat(self.dheight, f, axis=0), f, axis=1)[: self.rows, : self.cols]
+        known = np.repeat(np.repeat(self.dweight >= 1, f, axis=0), f, axis=1)
+        return up, known[: self.rows, : self.cols]
+
+    def add(self, image: np.ndarray, pose: Pose, rover_xy=None) -> dict:
+        """One picture and the camera's pose for it. `rover_xy`: where the rover is in that
+        picture (floor frame), left out of the heights. Returns what this view did."""
+        why = self._accept(pose)
+        if why:
+            return {'used': False, 'why': why}
+        image, pose = to_cell_scale(image, pose, self.res)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        done = {'used': True, 'pairs': 0}
+        self._lay_flat(image, pose)
+
+        # Heights: against the kept views far enough from this one (a few tens of cm).
+        h = float(pose.c[2])
+        wanted = min(0.5, 0.3 * h)
+        partners = sorted(
+            (k for k in self.keyframes if 0.08 <= np.linalg.norm(k.pose.c - pose.c) <= 0.8),
+            key=lambda k: abs(np.linalg.norm(k.pose.c - pose.c) - wanted),
+        )[:2]
+        if partners:
+            self.votes *= self.decay
+        for k in partners:
+            if self._sweep(k, pose, gray, rover_xy):
+                done['pairs'] += 1
+                self.pairs += 1
+
+        # Keep this view for the next ones when the camera has moved enough since the last.
+        if (
+            not self.keyframes
+            or min(np.linalg.norm(k.pose.c - pose.c) for k in self.keyframes) >= self.keyframe_step
+        ):
+            self.keyframes.append(Keyframe(pose, gray))
+            if len(self.keyframes) > self.max_keyframes:
+                self.keyframes.pop(0)
+        self.views += 1
+        return done
+
+    def _lay_flat(self, image: np.ndarray, pose: Pose) -> None:
+        """The picture of the floor: a place takes this view when it sees it more from above
+        than the view it has (distance to the point under the camera, over the height), the
+        kept views slowly losing their advantage."""
+        roi = self._roi(pose)
+        if roi is None:
+            return
+        c0, r0, c1, r1 = roi
+        top, inside = self._warp(pose, image, 0.0, roi)
+        cols = np.arange(c0, c1, dtype=np.float32)
+        rows = np.arange(r0, r1, dtype=np.float32)
+        cx, cy = self._cells(pose.c[None, :2])[0]
+        d = np.hypot(cols[None, :] - cx, rows[:, None] - cy) * self.res / float(pose.c[2])
+        score = d.astype(np.float32)
+        old = self.view_score[r0:r1, c0:c1]
+        old += 0.002  # every new view: the kept ones lose a little of their advantage
+        take = inside & (score < old)
+        old[take] = score[take]
+        self.mosaic[r0:r1, c0:c1][take] = top[take]
+
+    def _sweep(self, key: Keyframe, pose: Pose, gray: np.ndarray, rover_xy) -> bool:
+        roi = self._roi(key.pose, pose)
+        if roi is None:
+            return False
+        c0, r0, c1, r1 = roi
+        win = (self.window, self.window)
+        best = np.full((r1 - r0, c1 - c0), -2.0, np.float32)
+        best_i = np.zeros(best.shape, np.int32)
+        nccs = []
+        texture = None
+        for i, z in enumerate(self.heights):
+            if min(pose.c[2], key.pose.c[2]) - z < 0.25:
+                nccs.append(np.full(best.shape, -2.0, np.float32))
+                continue
+            a, ina = self._warp(pose, gray, float(z), roi)
+            b, inb = self._warp(key.pose, key.gray, float(z), roi)
+            a, b = a.astype(np.float32), b.astype(np.float32)
+            ma, mb = cv2.boxFilter(a, -1, win), cv2.boxFilter(b, -1, win)
+            va = cv2.boxFilter(a * a, -1, win) - ma * ma
+            vb = cv2.boxFilter(b * b, -1, win) - mb * mb
+            cov = cv2.boxFilter(a * b, -1, win) - ma * mb
+            ncc = cov / np.sqrt(np.maximum(va * vb, 1e-6))
+            valid = cv2.erode((ina & inb).astype(np.uint8), np.ones(win, np.uint8)) > 0
+            ncc[~valid] = -2.0
+            if i == 0:
+                texture = np.minimum(va, vb)
+            nccs.append(ncc)
+            better = ncc > best
+            best[better], best_i[better] = ncc[better], i
+        stack = np.stack(nccs)
+        # how much the chosen height stands out: against the heights two steps away or more
+        n = len(self.heights)
+        idx = np.arange(n)[:, None, None]
+        far = np.abs(idx - best_i[None]) >= 2
+        others = np.where(far, stack, -2.0).max(axis=0)
+        margin = best - others
+        good = (best >= self.min_ncc) & (margin >= self.min_margin)
+        if texture is not None:
+            good &= texture >= self.min_texture
+        if rover_xy is not None:  # the rover moves: what it covers says nothing of the floor
+            rc, rr = self._cells(np.asarray([rover_xy], float))[0]
+            cols = np.arange(c0, c1)[None, :]
+            rows = np.arange(r0, r1)[:, None]
+            good &= np.hypot(cols - rc, rows - rr) * self.res > self.rover_radius
+        if not good.any():
+            return False
+        weight = np.clip(margin, 0, 1) * good
+        votes = self.votes[:, r0:r1, c0:c1]
+        for i in range(n):
+            sel = good & (best_i == i)
+            votes[i][sel] += weight[sel]
+        return True
+
+    # -- what the map says ----------------------------------------------------------------
+
+    def height_map(self, min_votes: float = 0.6) -> tuple[np.ndarray, np.ndarray]:
+        """(height in metres, known) per cell: the LiDAR's height where it has measured, else
+        the plane sweep's height with the most votes."""
+        total = self.votes.sum(axis=0)
+        best = self.votes.argmax(axis=0)
+        height, known = self.heights[best], total >= min_votes
+        if self.depth_maps:
+            dh, dk = self._depth_layer()
+            height = np.where(dk, dh, height)
+            known = known | dk
+        return height, known
+
+    def obstacles(self, min_votes: float = 0.6) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """(height, known, obstacle) per cell, cleaned: an obstacle is a patch of high cells
+        at least `min_obstacle_m` wide; isolated high cells (a bad match, a hand passing by)
+        are dropped."""
+        height, known = self.height_map(min_votes)
+        high = (known & (height >= self.obstacle_m)).astype(np.uint8)
+        size = max(3, round(self.min_obstacle_m / self.res) | 1)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
+        obstacle = cv2.morphologyEx(high, cv2.MORPH_OPEN, kernel) > 0
+        colour = self._colour_layer()
+        if colour is not None:  # what the team's colour detection sees counts too
+            obstacle |= colour
+            known = known | colour
+        return height, known, obstacle
+
+    # -- the team's colour detection ------------------------------------------------------
+
+    def update_colour(self, rover_xy=None) -> None:
+        """Run the team's colour detection (guidance_global_map.segment_obstacles, then the
+        shadow and thin-line filters of sim/fusion_reelle.py, with their defaults) on the
+        floor picture: what differs from the floor's colour around it is an obstacle, a
+        shadow or a line taped on the floor is not. It sees what has no texture to measure a
+        height on (a plain box, a dark bag); the heights see what has the floor's colour.
+        The rover itself (`rover_xy`) is left out. Kept in 5 cm cells."""
+        segment_obstacles, part_ombre, sans_traits = _team_colour_detection()
+        seen = np.isfinite(self.view_score)
+        if seen.sum() < 100:
+            self.colour = None
+            return
+        ignore = None
+        if rover_xy is not None:
+            rc, rr = self._cells(np.asarray([rover_xy], float))[0]
+            cols, rows = np.arange(self.cols)[None, :], np.arange(self.rows)[:, None]
+            ignore = np.hypot(cols - rc, rows - rr) * self.res <= self.rover_radius
+        pixels = segment_obstacles(
+            self.mosaic,
+            seen,
+            ignore,
+            color_threshold=25.0,
+            lightness_weight=0.7,
+            min_area_px=max(1, round(0.0005 / self.res**2)),
+            floor_window_px=round(1.0 / self.res),
+        )
+        k = max(1, round(COLOUR_CELL / self.res))
+        rows, cols = self.rows // k, self.cols // k
+        m = pixels[: rows * k, : cols * k].reshape(rows, k, cols, k).any(axis=(1, 3))
+        m = m.astype(np.int8)[::-1]  # the team's filters want row 0 = south
+        picture = self.mosaic.copy()
+        picture[~seen] = np.median(self.mosaic[seen], axis=0)  # the unseen is not a shadow
+        m[(m == 1) & (part_ombre(picture, self.res, m.shape, COLOUR_CELL) > 0.6)] = 0
+        m = sans_traits(m, 0.15 / COLOUR_CELL)
+        self.colour = (m[::-1] == 1, k)
+
+    def _colour_layer(self) -> np.ndarray | None:
+        """The colour obstacles at the map's own cell size, or None before the first run."""
+        if getattr(self, 'colour', None) is None:
+            return None
+        cells, k = self.colour
+        up = np.repeat(np.repeat(cells, k, axis=0), k, axis=1)
+        out = np.zeros((self.rows, self.cols), bool)
+        out[: up.shape[0], : up.shape[1]] = up
+        return out
+
+    def grid(self, cell: float = 0.05, min_votes: float = 0.6) -> dict:
+        """Cells of `cell` metres: 1 = an obstacle in it, 0 = floor seen, -1 = unknown; row 0
+        is the south (the team's tile convention). Once the colour detection has run, floor
+        seen in the picture and found free by it counts as free."""
+        height, known, high = self.obstacles(min_votes)
+        k = max(1, round(cell / self.res))
+        rows, cols = self.rows // k, self.cols // k
+        h = height[: rows * k, : cols * k].reshape(rows, k, cols, k)
+        kn = known[: rows * k, : cols * k].reshape(rows, k, cols, k)
+        hi = high[: rows * k, : cols * k].reshape(rows, k, cols, k)
+        obstacle = hi.sum(axis=(1, 3)) >= max(1, k * k // 8)
+        seen = kn.sum(axis=(1, 3)) >= k * k // 4
+        if getattr(self, 'colour', None) is not None:
+            pic = np.isfinite(self.view_score)[: rows * k, : cols * k]
+            seen |= pic.reshape(rows, k, cols, k).mean(axis=(1, 3)) >= 0.5
+        cells = np.where(obstacle, 1, np.where(seen, 0, -1)).astype(np.int8)[::-1]
+        top = np.where(kn, h, 0).max(axis=(1, 3))[::-1]
+        return {
+            'res': cell,
+            'x0': self.bounds[0],
+            'y0': self.bounds[1],
+            'cells': cells.tolist(),
+            'height_m': np.round(top, 3).tolist(),
+        }
+
+    def render(self, min_votes: float = 0.6) -> np.ndarray:
+        """The map as a picture: the floor as seen, obstacles tinted red (darker = higher),
+        floor whose height is known slightly green, places never seen dark grey."""
+        out = self.mosaic.copy()
+        never = ~np.isfinite(self.view_score)
+        out[never] = (40, 40, 40)
+        height, known, obstacle = self.obstacles(min_votes)
+        floor = known & ~obstacle & ~never
+        out[floor] = (0.8 * out[floor] + 0.2 * np.array([90, 200, 90])).astype(np.uint8)
+        if obstacle.any():
+            level = np.clip(height[obstacle] / self.heights[-1], 0.2, 1.0)[:, None]
+            red = np.array([40, 40, 255], np.float32)
+            out[obstacle] = (0.35 * out[obstacle] + 0.65 * red * (1.2 - 0.5 * level)).clip(0, 255)
+        return out
+
+    def render_grid(self, cell: float = 0.05, min_votes: float = 0.6) -> np.ndarray:
+        """The grid the planner uses, drawn like the team's drone map, at the picture's size
+        (same pixels as `render`): free light, obstacle dark red, unknown grey, cell lines."""
+        g = self.grid(cell, min_votes)
+        cells = np.array(g['cells'], np.int8)[::-1]  # row 0 = north, as pictures
+        k = max(1, round(cell / self.res))
+        colours = np.zeros((*cells.shape, 3), np.uint8)
+        colours[cells == -1] = (70, 70, 70)
+        colours[cells == 0] = (225, 232, 225)
+        colours[cells == 1] = (40, 40, 190)
+        up = np.repeat(np.repeat(colours, k, axis=0), k, axis=1)
+        out = np.full((self.rows, self.cols, 3), 70, np.uint8)
+        out[: up.shape[0], : up.shape[1]] = up
+        if k >= 4:  # the cell lines, faint
+            out[::k, :] = (out[::k, :] * 0.85).astype(np.uint8)
+            out[:, ::k] = (out[:, ::k] * 0.85).astype(np.uint8)
+        return out
+
+    def stats(self) -> dict:
+        height, known, obstacle = self.obstacles()
+        return {
+            'views': self.views,
+            'pairs': self.pairs,
+            'keyframes': len(self.keyframes),
+            'seen_m2': round(float(np.isfinite(self.view_score).sum()) * self.res**2, 2),
+            'known_m2': round(float(known.sum()) * self.res**2, 2),
+            'obstacle_m2': round(float(obstacle.sum()) * self.res**2, 3),
+            'depth_maps': self.depth_maps,
+            'floor_offset_cm': round(self.floor_offset * 100, 1),
+        }

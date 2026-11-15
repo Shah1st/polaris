@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 
 import cv2
@@ -26,62 +26,11 @@ sys.path.insert(0, os.path.join(ROOT, 'rover'))
 
 import rover_server  # noqa: E402
 import synthetic as syn  # noqa: E402
+from fake_phone import HEIGHT, SIDE, TURN, floor_pose, make_phone  # noqa: E402
 from guidance import RoverClient  # noqa: E402
 from guide_rover import GuideService, draw, to_pixel  # noqa: E402
-from pose_camera import Pose  # noqa: E402
 from rover_core import Config  # noqa: E402
 from rover_marker import RoverFinder  # noqa: E402
-
-BOUNDARY = 'camstreamframe'
-# The floor frame is NOT the simulation's: turned by 40 degrees and shifted. The guide must
-# find that out by itself, from the pictures.
-TURN, SHIFT = math.radians(40), (0.2, -0.3)
-SIDE, HEIGHT = 0.10, 0.12
-
-
-def floor_pose(board) -> tuple[float, float, float]:
-    c, s = math.cos(TURN), math.sin(TURN)
-    return (
-        c * board.x - s * board.y + SHIFT[0],
-        s * board.x + c * board.y + SHIFT[1],
-        board.yaw + TURN,
-    )
-
-
-def make_phone(app, floor):
-    printed = syn.marker_image(0)
-    t0 = time.monotonic()
-
-    class Phone(BaseHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
-
-        def do_GET(self):  # noqa: N802
-            self.send_response(200)
-            self.send_header('Content-Type', f'multipart/x-mixed-replace; boundary={BOUNDARY}')
-            self.end_headers()
-            try:
-                while True:
-                    t = time.monotonic() - t0
-                    x, y, heading = floor_pose(app.sim_board)
-                    # a hand-held phone: it circles above the area and never looks straight down
-                    eye = (0.3 + 0.25 * math.cos(0.7 * t), 0.25 * math.sin(0.7 * t), 1.9)
-                    d = syn.arkit_pose(eye, (0.3, 0.0, 0.0), roll_deg=20 * math.sin(0.4 * t), t=t)
-                    d['sid'] = 7
-                    marker = (printed, x, y, heading - math.pi / 2, SIDE * 1.5, HEIGHT)
-                    image = syn.render(Pose.from_arkit(d), floor, marker)
-                    ok, jpg = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    body = jpg.tobytes()
-                    head = (
-                        f'--{BOUNDARY}\r\nContent-Type: image/jpeg\r\n'
-                        f'Content-Length: {len(body)}\r\nX-Pose: {syn.header(d)}\r\n\r\n'
-                    )
-                    self.wfile.write(head.encode() + body + b'\r\n')
-                    time.sleep(0.05)
-            except OSError:
-                pass
-
-    return Phone
 
 
 def get(url):
@@ -114,6 +63,7 @@ def test_click_on_the_top_view_and_the_simulated_rover_drives_there(tmp_path) ->
         RoverClient(rover_url, name='air-guide-test'),
         RoverFinder(0, SIDE, HEIGHT),
         bounds=(-1.0, -1.0, 1.0, 1.0),
+        colour=False,  # the test floor is painted with coloured squares: not obstacles
         res=0.005,
         port=0,
     )
@@ -155,7 +105,43 @@ def test_click_on_the_top_view_and_the_simulated_rover_drives_there(tmp_path) ->
         ctype, jpg = get(base + '/top.jpg')
         top = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
         assert ctype == 'image/jpeg' and top.shape == (400, 400, 3)
-        assert b'Click on the view' in get(base + '/')[1]
+        assert b'Click on the map' in get(base + '/')[1]
+
+        # what the dashboard needs besides the map: the cameras' addresses (the browser reads
+        # them itself), the rover's own telemetry, what the last picture gave
+        state = json.loads(get(base + '/state')[1])
+        assert state['rover_url'] == rover_url and state['phone_url'].startswith('http://')
+        assert state['rover_state']['odom']['gyro_ready'] and state['rover_state_age_s'] < 1
+        assert state['rover_rtt_ms']['usual'] < 500 and state['trail_m'] > 0.3
+        air = state['air']
+        assert air['tracking'] == 'normal' and air['floor_known'] and air['seen_age_s'] < 1
+        assert air['height_m'] == pytest.approx(1.9, abs=0.01) and air['marker']['side_px'] > 20
+        # the rover's JSON goes through the guide (the rover sends no CORS headers)
+        assert json.loads(get(base + '/rover/config')[1])['v_manual'] > 0
+        assert urllib.request.urlopen(base + '/rover/d405/status', timeout=5).status == 200
+        with pytest.raises(urllib.error.HTTPError) as e:
+            get(base + '/rover/record.csv')
+        assert e.value.code == 404
+        # manual driving from the dashboard: under its own name, refusals passed on, and a goal
+        # gives way to it
+        assert post(base + '/goal', {'x': -0.3, 'y': 0.0})[0] == 200
+        assert post(base + '/rover/cmd', {'v': 'fast'})[0] == 400
+        assert post(base + '/rover/move', {'distance': 1})[0] == 404
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and json.loads(get(base + '/state')[1])['goal']:
+            assert post(base + '/rover/cmd', {'v': 0.1, 'omega': 0.0})[0] == 200  # a held key
+            time.sleep(0.1)
+        state = json.loads(get(base + '/state')[1])
+        assert state['goal'] is None and 'someone else' in state['status']
+        log = json.loads(get(base + '/rover/commands')[1])
+        assert any(c['client'].endswith('dashboard') for c in log['clients'])
+        # STOP: no goal left, and the rover got a stop whoever was driving
+        stops = json.loads(get(rover_url + '/state')[1])['stop_count']
+        assert post(base + '/goal', {'x': 0.0, 'y': 0.0})[0] == 200
+        assert post(base + '/stop', {})[0] == 200
+        state = json.loads(get(base + '/state')[1])
+        assert state['goal'] is None and state['status'] == 'stopped from the dashboard'
+        assert json.loads(get(rover_url + '/state')[1])['stop_count'] == stops + 1
         # the rover's command log names this guide: the team sees who drove
         clients = json.loads(get(rover_url + '/commands')[1])['clients']
         assert any(c['client'].endswith('air-guide-test') for c in clients)
