@@ -1,0 +1,11 @@
+# The mapper was written outside this repository and keeps its own layout: mixed quotes,
+# long hand-aligned lines (so `ruff format` leaves it alone), math notation (K, R, T, P, l),
+# scripts that set sys.path before importing. Only real errors are checked here (pyflakes).
+extend = "../ruff.toml"
+line-length = 120
+
+[lint]
+select = ["F"]
+
+[format]
+exclude = ["*.py"]
