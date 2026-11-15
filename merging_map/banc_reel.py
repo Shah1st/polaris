@@ -125,7 +125,8 @@ class Banc:
         camera = rover_server.Camera('none', 640, 480, 15, 70)
         camera.error = 'no camera (bench)'
         camera.request = lambda: None
-        self.app = rover_server.App(self.rover, camera, '/dev/null')
+        self.app = rover_server.App(self.cfg, '/dev/null', None, None)
+        self.app.rover, self.app.camera, self.app.mode = self.rover, camera, 'sim'
         self.recus = []  # (instant, chemin, corps, (x, y) odometrie a la reception)
         self.poses = []  # (instant, x, y, cap) vrais, repere de la carte
         self.camera_ok = True
