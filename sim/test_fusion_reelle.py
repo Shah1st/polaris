@@ -246,6 +246,7 @@ def test_with_the_vision_model_a_rover_without_heading_is_placed_by_its_move() -
 def test_with_the_vision_model_a_heading_seen_in_the_picture_wins() -> None:
     found = [None]
     f, reader = fusion_ia(found)
+    f.args.drone_sans_marqueur = False  # trust the marker
 
     # heading in the picture: 0 = x right; the maps' frame is the picture's here
     model_stop(f, reader, found, 0.50, (20.0, 20.0, 0.0), cap=0.0)
@@ -276,3 +277,24 @@ def test_with_the_vision_model_a_rover_not_found_changes_nothing() -> None:
     f.tour_drone()  # the model answers None
 
     assert f.drone['etat'] == 'ok' and not f.drone['rover_vu'] and not f.drone['cale']
+
+
+def test_without_a_marker_a_heading_read_in_the_picture_is_ignored() -> None:
+    """--drone-sans-marqueur (on by default): the model reports a heading, from a white patch
+    that is not a marker, and it is wrong. It must not place the map; the rover's move does."""
+    found = [None]
+    f, reader = fusion_ia(found)
+    assert f.args.drone_sans_marqueur
+    heading = math.pi / 2
+
+    model_stop(f, reader, found, 0.50, (20.0, 20.0, heading), cap=2.0)  # a wrong heading
+    assert not f.drone['cale'] and not f.drone['cap_vu']
+
+    model_stop(f, reader, found, 0.70, (20.0, 20.2, heading), cap=2.0)
+    assert f.drone['cale_par'] == 'movement'
+    assert f.rotation_ia == pytest.approx(math.pi / 2, abs=math.radians(3))
+
+
+def test_the_marker_is_off_by_default_and_can_be_turned_back_on() -> None:
+    assert fr.options([]).drone_sans_marqueur is True
+    assert fr.options(['--no-drone-sans-marqueur']).drone_sans_marqueur is False

@@ -17,7 +17,9 @@ the front of the rover at that time. A view is fused only while the rover stands
 The drone (--drone-nom: e.g. the iPhone above the area) is declared as the real drone source;
 its picture is not fused into the rover's map until the rover is located in it. Two ways, both
 passive (this program still sends no motor command outside a mission):
-- the rover's ArUco marker, seen while the rover stands still: one picture is enough;
+- the rover's ArUco marker, seen while the rover stands still: one picture is enough. Off
+  for now: --drone-sans-marqueur is on by default (the marker is hard to detect), so only the
+  rover's move places the map; --no-drone-sans-marqueur brings the marker back;
 - no marker: the rover's own move. The camera's pictures at two stops at least
   --drone-pas-min apart show one object that moved, the rover; the same move in its odometry
   gives the direction of the camera's frame and corrects its scale. Drive the rover a little
@@ -266,6 +268,11 @@ class FusionReelle:
                 vu = (r.rover_position[0], r.rover_position[1], r.rover_heading)
             objets = self.camera.seen_in(r)
         res = self.camera.settings.cell_size
+        if self.args.drone_sans_marqueur and vu is not None:
+            # no marker to trust: the heading read in the picture (the ArUco code, or any
+            # white patch taken for the marker's paper) is dropped; the rover's move gives
+            # the direction instead
+            vu = (vu[0], vu[1], None)
         with self.verrou:
             pose = self.pose
             # The camera may be held by hand: a picture is placed in the frame of the maps by
@@ -1120,6 +1127,14 @@ def options(argv=None):
         help='the marker paper is at the front of the rover (default: at the back)',
     )
     p.add_argument('--drone-marqueur', type=int, default=10, help="ArUco id on the rover's top")
+    p.add_argument(
+        '--drone-sans-marqueur',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="no marker on the rover: the heading read in the drone's picture is ignored, and "
+        "the drone map is placed by the rover's own move (drive it at least --drone-pas-min "
+        'and stop, twice). On for now; --no-drone-sans-marqueur trusts the marker again',
+    )
     p.add_argument(
         '--drone-pas-min',
         type=float,
