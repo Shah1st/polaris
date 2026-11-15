@@ -209,6 +209,23 @@ Plain Python: the fields of `OverheadSettings` (`pipeline.py`). ROS: the same na
     still places the map at once and takes priority.
   It needs the rover in view and away from the obstacles at both stops, and nothing else
   moving in the picture. The ROS nodes cannot do this: they have no odometry.
+- **A camera that moves: the drone map grows** (`sim/fusion_reelle.py --drone-carte
+  cumulee`, the default; branch `drone-map-growth`, 2026-11-15). Each placed picture is added
+  to the drone map instead of replacing it: what the camera saw before stays, what it sees
+  now replaces the same cells. A picture that the rover cannot place (the camera moved to
+  where the rover is not in view, or moved since the rover's move placed it) is placed by
+  matching it to the last placed picture: ORB points on the two top-down views, a rotation and
+  a shift by RANSAC with a 2 cm tolerance (`recaler_images`, `calage_enchaine`), at least
+  `--drone-recalage-min` (12) points agreeing. Only while the rover stands still, like the
+  marker. Each placement by the rover (marker, move, vision model) anchors the chain again;
+  between two, the error adds up from picture to picture. The pictures must overlap and show
+  some texture on the floor: a bare uniform floor gives no points, and the picture is then not
+  placed (the status says why). A match at another scale (the camera's height changed) is
+  refused. The drone and fused pictures show the whole mapped floor, so it gets smaller in
+  the dashboard as the map grows: enlarging the map in the dashboard is still to do.
+  `--drone-carte instantanee` keeps the old way (the last placed picture only). Tested on
+  rendered scenes only (`sim/test_fusion_reelle.py`: a camera slid 0.5 m, a box only seen
+  after the move lands at its place), never with a real phone.
 - **Another phone or lens** changes `focal_length_35mm` (and `sensor_size` if the photo size
   differs). The 0.5x ultrawide lens of an iPhone 14 is 13 mm equivalent, still 4032 x 3024:
   `--focale-35mm 13` for `lancer_overhead.py`, `--focal-length-35mm 13` for `segment_image`,

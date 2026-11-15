@@ -27,6 +27,11 @@ passive (this program still sends no motor command outside a mission):
   --drone-pas-min apart show one object that moved, the rover; the same move in its odometry
   gives the direction of the camera's frame and corrects its scale. Drive the rover a little
   (the dashboard's keys) and stop: the drone map is then placed and fused.
+The drone map grows when the camera moves (--drone-carte cumulee, the default): a picture is
+added to what was mapped before instead of replacing it, and a picture where the rover cannot
+place the camera (the camera moved to where the rover is not in view) is placed by matching
+it to the last placed picture (the same floor seen from another place: ORB points, a rotation
+and a shift found by RANSAC). Each placement by the rover anchors the chain again.
 
     python sim/fusion_reelle.py --rover http://127.0.0.1:18080 \\
         --perception http://127.0.0.1:8095 --port 8096 [--drone-nom "iPhone (CamStream)"]
@@ -95,6 +100,57 @@ def sans_rover(m, res, rover, rayon):
     out = m.copy()
     out[pres & (m == 1)] = 0
     return out
+
+
+def recaler_images(ref_td, ref_bornes, td, bornes, res, min_points=12):
+    """How the floor moved between two top-down views of the overhead camera at the same
+    scale: (rotation, scale, tx, ty, points) such that a point p of `td`'s metric frame (x to
+    the right, y up from the bottom left, metres) is at scale * R(rotation) p + (tx, ty) in
+    `ref_td`'s frame. None when fewer than `min_points` points agree.
+
+    ORB points matched both ways, then a rotation + shift + scale found by RANSAC
+    (cv2.estimateAffinePartial2D) with a 2 cm tolerance: what moved between the two pictures
+    (the rover, a person) is left out as outliers."""
+    gris = [cv2.cvtColor(i, cv2.COLOR_BGR2GRAY) if i.ndim == 3 else i for i in (ref_td, td)]
+    orb = cv2.ORB_create(nfeatures=2000)
+    (ka, da), (kb, db) = (orb.detectAndCompute(g, None) for g in gris)
+    if da is None or db is None or len(ka) < min_points or len(kb) < min_points:
+        return None
+    paires = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True).match(db, da)
+    if len(paires) < min_points:
+        return None
+
+    def metres(points, b):  # top-down pixels -> that picture's metric frame
+        p = np.asarray(points, dtype=np.float64)
+        return np.column_stack([b.x_min + (p[:, 0] + 0.5) * res, b.y_max - (p[:, 1] + 0.5) * res])
+
+    pb = metres([kb[p.queryIdx].pt for p in paires], bornes)
+    pa = metres([ka[p.trainIdx].pt for p in paires], ref_bornes)
+    matrice, gardes = cv2.estimateAffinePartial2D(
+        pb, pa, method=cv2.RANSAC, ransacReprojThreshold=0.02, maxIters=4000, confidence=0.995
+    )
+    if matrice is None or gardes is None:
+        return None
+    n = int(gardes.sum())
+    if n < min_points or n < 0.25 * len(paires):
+        return None
+    echelle = math.hypot(matrice[0, 0], matrice[1, 0])
+    rotation = math.atan2(matrice[1, 0], matrice[0, 0])
+    return rotation, echelle, float(matrice[0, 2]), float(matrice[1, 2]), n
+
+
+def calage_enchaine(calage, recalage):
+    """The placement of a picture on the maps from the placement `calage` of the reference
+    picture and how the floor moved between them (`recaler_images`, same scale).
+
+    A placement (th, cx, cy, mx, my) puts the picture's point p at R(th) (p - c) + m on the
+    maps (see `FusionReelle.placer_vue`). With p_ref = R(rot) p + t:
+    R(th) R(rot) p + R(th) (t - c) + m, which is (th + rot, 0, 0, R(th) (t - c) + m)."""
+    th, cx, cy, mx, my = calage
+    rot, tx, ty = recalage[0], recalage[2], recalage[3]
+    c, s = math.cos(th), math.sin(th)
+    dx, dy = tx - cx, ty - cy
+    return angle(th + rot), 0.0, 0.0, mx + c * dx - s * dy, my + s * dx + c * dy
 
 
 def marqueurs_tolerants(detecter, identifiant):
@@ -251,6 +307,7 @@ class FusionReelle:
                 self.camera.settings = dataclasses.replace(
                     self.camera.settings, metres_per_pixel=mpp
                 )
+        self.vue_dessus = None  # this picture's top-down view, when there is one
         if self.ia is not None:
             trouve = self.tour_drone_ia()
             if trouve is None:
@@ -264,6 +321,7 @@ class FusionReelle:
                 probleme = self.camera.problem or 'no picture'
                 self.drone = {'etat': f'picture not usable: {probleme}'}
                 return
+            self.vue_dessus = r
             m = np.asarray(grid_to_fusion(r.grid), dtype=np.int8)  # row 0 = south, 5 cm cells
             m = sans_traits(m, self.args.drone_largeur_min / self.camera.settings.cell_size)
             vu = None
@@ -302,13 +360,40 @@ class FusionReelle:
                 # paper is hidden or too small): two stops of the rover give the direction
                 calage = self.caler_ia_sur_mouvement(vu, pose)
                 par = None if calage is None else 'movement'
+            cumulee = self.args.drone_carte == 'cumulee'
+            if (
+                calage is None
+                and cumulee
+                and not echelle_changee
+                and self.immobile
+                and self.vue_dessus is not None
+                and self.ref_drone is not None
+            ):
+                # The rover cannot place this picture (the camera moved to where the rover is
+                # not in view, or the rover is not seen): the same floor as the last placed
+                # picture, seen from elsewhere, places it. Only while the rover stands still,
+                # like the marker: its odometry then says where it is in the picture.
+                calage = self.recaler_sur_reference(self.vue_dessus)
+                if calage is not None:
+                    par = 'pictures'
+                    if pose is not None:
+                        vu = self.rover_dans_camera(calage, pose)
+                        m = sans_rover(m, res, vu, self.camera.settings.rover_radius)
             if calage is not None:
                 self.calage, self.t_calage, self.cale_par = calage, time.time(), par
+                if self.vue_dessus is not None:  # the next picture may be matched to this one
+                    self.ref_drone = {
+                        'td': self.vue_dessus.top_down,
+                        'bornes': self.vue_dessus.bounds,
+                        'calage': calage,
+                    }
             place = None if self.vue_drone is None else self.vue_drone['place']
             if calage is not None:
                 place = self.placer_vue(m, res, calage)
-                self.carte.tuiles['drone'] = {}  # the camera sees its whole area every time
-                self.carte.maj['drone'] = {}
+                if not cumulee:  # the camera sees its whole area every time
+                    self.carte.tuiles['drone'] = {}
+                    self.carte.maj['drone'] = {}
+                # cumulee: the cells this picture sees replace the old ones, the rest stays
                 for msg in decouper(
                     place[0], place[1], place[2], 4, self.carte, 'drone', t=time.monotonic()
                 ):
@@ -331,7 +416,66 @@ class FusionReelle:
             'metres_par_pixel': self.camera.settings.metres_per_pixel,
             'hauteur_estimee_m': self.hauteur_estimee(),
             'zone_m': [round(m.shape[1] * res, 2), round(m.shape[0] * res, 2)],
+            'carte': self.args.drone_carte,
+            'recalage': self.info_recalage,
+            'surface_cartee_m2': self.surface_drone(),
         }
+
+    def recaler_sur_reference(self, vue_dessus):
+        """The placement of this picture from the last placed one (`self.ref_drone`), when
+        the two show the same floor at the same scale; None otherwise. Call with self.verrou
+        held."""
+        ref = self.ref_drone
+        rec = recaler_images(
+            ref['td'],
+            ref['bornes'],
+            vue_dessus.top_down,
+            vue_dessus.bounds,
+            self.camera.settings.resolution,
+            self.args.drone_recalage_min,
+        )
+        if rec is None:
+            self.info_recalage = (
+                'not placed: this picture does not match the last placed one (camera moved '
+                'too far, or too little to see on the floor)'
+            )
+            return None
+        rotation, echelle, tx, ty, n = rec
+        if abs(echelle - 1.0) > 0.05:
+            self.info_recalage = (
+                f'not placed: the pictures match at another scale (x{echelle:.2f}): did the '
+                'camera change height? Drive the rover a little and stop to place it again'
+            )
+            return None
+        self.info_recalage = (
+            f'placed on the last placed picture: {n} points, moved '
+            f'{math.hypot(tx, ty) * 100:.0f} cm and {math.degrees(rotation):+.0f} deg'
+        )
+        return calage_enchaine(ref['calage'], rec)
+
+    def surface_drone(self):
+        """m² of floor the drone map knows (free or obstacle)."""
+        with self.verrou:
+            tuiles = list((self.carte.tuiles.get('drone') or {}).values())
+        res = self.carte.res_fine
+        return round(sum(int((t != -1).sum()) for t in tuiles) * res * res, 2)
+
+    def couche_drone(self, z):
+        """The drone's layer alone over the rectangle z = (x0, y0, x1, y1) of the maps:
+        (matrix -1/0/1, x0, y0), row 0 = south, 5 cm cells. Call with self.verrou held."""
+        res, n = self.carte.res_fine, self.carte.n
+        j0, i0 = math.floor(z[0] / res), math.floor(z[1] / res)
+        w, h = math.ceil(z[2] / res) - j0, math.ceil(z[3] / res) - i0
+        out = np.full((h, w), -1, np.int8)
+        for (niveau, tx, ty), data in (self.carte.tuiles.get('drone') or {}).items():
+            if niveau != self.carte.zmax:
+                continue
+            r0, c0 = ty * n - i0, tx * n - j0
+            a0, b0 = max(r0, 0), max(c0, 0)
+            a1, b1 = min(r0 + n, h), min(c0 + n, w)
+            if a0 < a1 and b0 < b1:
+                out[a0:a1, b0:b1] = data[a0 - r0 : a1 - r0, b0 - c0 : b1 - c0]
+        return out, j0 * res, i0 * res
 
     def regler_marqueur(self, corps):
         """POST /marqueur: turn --drone-sans-marqueur on or off while running. (code, answer)
@@ -511,7 +655,9 @@ class FusionReelle:
             self.mpp_auto = False  # the rover's size is a better scale than the lens and height
         reglages = dataclasses.replace(reglages, rover_marker_id=None)
         mpp, res = reglages.metres_per_pixel, reglages.cell_size
-        m = np.asarray(grid_to_fusion(process_image(image, reglages).grid), dtype=np.int8)
+        vue_dessus = process_image(image, reglages)
+        self.vue_dessus = vue_dessus  # for placing the next picture by matching it to this one
+        m = np.asarray(grid_to_fusion(vue_dessus.grid), dtype=np.int8)
         m = sans_traits(m, a.drone_largeur_min / res)
         if r is None:
             return m, None, None
@@ -564,8 +710,13 @@ class FusionReelle:
             self.immobile = False
             self.calage = None  # camera frame -> frame of the maps, of the last placed picture
             self.t_calage = 0.0
-            self.cale_par = None  # 'marker' or 'movement'
+            self.cale_par = None  # 'marker', 'movement' or 'pictures'
             self.calage_mvt = None  # the placement found from a move of the rover
+            # the last placed picture (top-down view, bounds, placement): a picture the rover
+            # cannot place is matched to it (--drone-carte cumulee)
+            self.ref_drone = None
+            self.vue_dessus = None
+            self.info_recalage = None
             self.repere_fixe = []  # what stood still in the camera's view when it was found
             self.appui = None  # (objects the camera saw, rover pose) at the last stop
             self.appui_ia = None  # (rover in the picture, rover pose) at the last stop
@@ -783,6 +934,12 @@ class FusionReelle:
         if self.objectif is not None:
             xs.append(self.objectif[0])
             ys.append(self.objectif[1])
+        if self.args.drone_carte == 'cumulee' and self.carte.tuiles.get('drone'):
+            # all the floor the drone has mapped so far, as it grows with the camera's moves
+            dz = self.carte.zone_survolee()
+            if dz is not None:
+                xs += [dz[0] + 2.5, dz[2] - 2.5]  # the margin below is added to them
+                ys += [dz[1] + 2.5, dz[3] - 2.5]
         m = 2.5
         x0, x1 = min(xs) - m, max(xs) + m
         y0, y1 = min(ys) - m, max(ys) + m
@@ -810,6 +967,8 @@ class FusionReelle:
             trail = list(self.trail)
             n_tuiles = len(self.carte.tuiles['rover'])
             n_tuiles_drone = len(self.carte.tuiles.get('drone') or {})
+            # everything the drone mapped (cumulee), not only its last picture
+            couche = self.couche_drone(z) if self.args.drone_carte == 'cumulee' else None
         gx0, gy0 = g.j0 * g.res, g.i0 * g.res
         vue = ff.View(z[0], z[1], z[2], z[3], TAILLE / (z[2] - z[0]))
         depart = trail[0] if trail else None
@@ -825,14 +984,16 @@ class FusionReelle:
         frais = etat_drone.get('etat') == 'ok' and now0 - etat_drone.get('t', 0) < 10.0
         vue_d = vue
         if vd is not None and vd['place'] is not None:
-            md, dx0, dy0 = vd['place']
+            md, dx0, dy0 = couche if couche is not None else vd['place']
             drone = vue.raster(ff.drone_classes(md), dx0, dy0, vd['res'])
             ff.draw_frame(drone, vue, 1.0)
             ff.draw_polyline(drone, vue, chemin, ff.PATH_C, 2)
             ff.draw_markers(drone, vue, pose, objectif, depart, None)
-            par = 'marker' if etat_drone.get('cale_par') == 'marker' else 'move'
+            par = {'marker': 'by the rover marker', 'pictures': 'on its last picture'}.get(
+                etat_drone.get('cale_par'), 'by the rover move'
+            )
             titres = (
-                f'Drone: placed by the rover {par}'
+                f'Drone: placed {par}'
                 if etat_drone.get('cale_sur_cette_image')
                 else f'Drone: view of {etat_drone.get("age_calage_s")} s ago (not placed now)',
                 'Click: goal for the rover',
@@ -914,7 +1075,18 @@ class FusionReelle:
                 'source': (
                     f'{self.args.drone_nom or "overhead camera"} (REAL drone): '
                     + (
-                        f'placed on the map by the rover {etat_drone.get("cale_par")}, fused'
+                        (
+                            'placed on the map by matching its last picture, fused'
+                            if etat_drone.get('cale_par') == 'pictures'
+                            else f'placed on the map by the rover {etat_drone.get("cale_par")}, '
+                            'fused'
+                        )
+                        + (
+                            f'; {etat_drone.get("surface_cartee_m2")} m² mapped as the camera '
+                            'moved'
+                            if etat_drone.get('carte') == 'cumulee'
+                            else ''
+                        )
                         if etat_drone.get('cale')
                         else 'obstacles seen in its own frame, not fused until the rover has '
                         'moved and stopped in view, or its marker (ArUco '
@@ -1168,6 +1340,20 @@ def options(argv=None):
     )
     p.add_argument(
         '--drone-hauteur-marqueur', type=float, default=0.0, help='marker height above floor (m)'
+    )
+    p.add_argument(
+        '--drone-carte',
+        choices=('cumulee', 'instantanee'),
+        default='cumulee',
+        help='cumulee: the drone map grows as the camera moves (each placed picture is added '
+        'to the map, a picture the rover cannot place is matched to the last placed one). '
+        'instantanee: the drone map is only the last placed picture',
+    )
+    p.add_argument(
+        '--drone-recalage-min',
+        type=int,
+        default=12,
+        help='points that must agree to place a picture on the last placed one',
     )
     args = p.parse_args(argv)
     args.rover = args.rover.rstrip('/')
