@@ -150,8 +150,11 @@ def remaining_path(path, pos, skip: float = 0.3):
 
     The ahead part starts at the path point closest to `pos`, without the points within `skip` m
     of the rover: the simulated rover drives its own route, often closer to a tree than the
-    fusion's safety margin, and its own surroundings must not count as "path blocked" (Paco's
-    mission avoids the same trap with its `sortie` distance in premier_point_bloque).
+    fusion's safety margin, and its own surroundings must not count as "path blocked". Paco's
+    mission now handles this inside premier_point_bloque instead (the `sortie` distance is
+    gone): when the rover starts inside an inflated zone, only cells at least as far from the
+    raw obstacle as the rover are freed (`_liberer_depart`, a monotone exit). This skip is kept
+    so that the live demo behaves as before; it may no longer be needed.
     """
     if not path:
         return [], math.inf
