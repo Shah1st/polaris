@@ -17,6 +17,7 @@ import numpy as np
 class MockRover:
     def __init__(self, port: int, snapshots: bool = True):
         self.log: list[tuple[float, str, dict]] = []
+        self.gets: list[str] = []  # every GET path, with its query
         self.snapshots = snapshots
         self.lock = threading.Lock()
         mock = self
@@ -35,6 +36,12 @@ class MockRover:
                 self.wfile.write(body)
 
             def do_GET(self):
+                with mock.lock:
+                    mock.gets.append(self.path)
+                if self.path.startswith('/d405/status'):
+                    return self._reply(200, b'{"ok": true, "camera": {"name": "RealSense D405"}}')
+                if self.path.startswith(('/d405/color.jpg', '/d405/depth.jpg')):
+                    return self._reply(200, picture('D405 (simulee)'), 'image/jpeg')
                 if self.path.startswith('/state'):
                     return self._reply(
                         200,

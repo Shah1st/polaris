@@ -82,7 +82,17 @@
                      padding:6px 12px; cursor:pointer; }
   .maptools button.go { background:#1f5c36; } .maptools button.halt { background:#7a1f1f; font-weight:bold; }
   #mFused, #mDrone { cursor:crosshair; }
+  .d405 { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:10px; padding:10px; }
+  .d405pics { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px; }
+  .d405pics figure { margin:0; min-width:0; background:var(--panel); border:1px solid var(--line);
+                     border-radius:8px; overflow:hidden; }
+  .d405pics figcaption { padding:5px 10px; color:var(--dim); display:flex; justify-content:space-between;
+                         font-variant-numeric:tabular-nums; }
+  .d405pics figcaption b { color:var(--fg); font-weight:600; }
+  .d405pics canvas { display:block; width:100%; aspect-ratio:4/3; object-fit:contain; background:#000; }
+  #d405Info { font-variant-numeric:tabular-nums; }
   @media (max-width: 1250px) { .pane { grid-template-columns:1fr; } .pane .feed { grid-column:auto; } }
+  @media (max-width: 1000px) { .d405pics { grid-template-columns:1fr; } }
   @media (max-width: 820px) { .app { grid-template-columns:1fr; grid-template-rows:auto 80vh; } }
 </style>
 </head>
@@ -156,6 +166,7 @@
   <div class="right">
     <div class="tabs">
       <button type="button" id="tabMaps" class="on">Drone and maps</button>
+      <button type="button" id="tabD405">Depth camera (D405)</button>
       <button type="button" id="tab3d">Mapper 3D view</button>
       <a href="/mission" target="_blank" rel="noopener">mission page</a>
       <a href="/sim" target="_blank" rel="noopener">simulation</a>
@@ -197,6 +208,31 @@
           <br><span class="sw" style="background:#fcfcfb"></span>free (drone)<span class="sw" style="background:#d3eee2"></span>free (rover)<span class="sw" style="background:#52514e"></span>obstacle (drone)<span class="sw" style="background:#eb6834"></span>obstacle (rover)<span class="sw" style="background:#e1e0d9"></span>unknown<span class="sw" style="background:#2a78d6"></span>planned path<span class="sw" style="background:#5a5a5a"></span>rover track<span class="sw" style="background:#6250d6"></span>tiles to check / drone zoom</div>
       </figure>
     </div>
+    <div class="d405" id="paneD405" hidden>
+      <div class="maptools">
+        <label>Depth colours up to
+          <select id="d405Max">
+            <option value="0.5">0.5 m</option>
+            <option value="1" selected>1 m</option>
+            <option value="2">2 m</option>
+            <option value="3">3 m</option>
+          </select></label>
+        <span id="d405Info">–</span>
+      </div>
+      <div class="d405pics">
+        <figure>
+          <figcaption><b>Colour</b><span id="d405ColorAge">–</span></figcaption>
+          <canvas id="d405Color" width="640" height="480"></canvas>
+        </figure>
+        <figure>
+          <figcaption><b>Depth</b><span id="d405DepthAge">–</span></figcaption>
+          <canvas id="d405Depth" width="640" height="480"></canvas>
+        </figure>
+      </div>
+      <div class="legend">The rover's Intel RealSense D405, relayed from the robot's own server.
+        Depth: red = near, blue = at the chosen range or farther, black = no measure (too near,
+        shiny or very dark surface). The D405 measures best between 7 cm and 1 m.</div>
+    </div>
     <iframe id="map" title="3D map" hidden></iframe>
   </div>
 </div>
@@ -208,16 +244,18 @@ const esc = (t) => String(t ?? '–').replace(/[&<>"]/g, c => ({ '&':'&amp;', '<
 // Right side: "maps" (drone camera + the three maps of the live fusion) or "3d" (the mapper's
 // view, loaded only when first shown: the mapper may not be running).
 let pane = 'maps';
-try { if (localStorage.getItem('teleopPane') === '3d') pane = '3d'; } catch (e) {}
+try { const p = localStorage.getItem('teleopPane'); if (p === '3d' || p === 'd405') pane = p; } catch (e) {}
 function showPane(p) {
   pane = p;
-  $('paneMaps').hidden = p !== 'maps'; $('map').hidden = p !== '3d';
+  $('paneMaps').hidden = p !== 'maps'; $('map').hidden = p !== '3d'; $('paneD405').hidden = p !== 'd405';
   $('tabMaps').classList.toggle('on', p === 'maps'); $('tab3d').classList.toggle('on', p === '3d');
+  $('tabD405').classList.toggle('on', p === 'd405');
   if (p === '3d' && !$('map').src) $('map').src = location.protocol + '//' + location.hostname + ':__MAP_PORT__/';
   try { localStorage.setItem('teleopPane', p); } catch (e) {}
 }
 $('tabMaps').onclick = () => showPane('maps');
 $('tab3d').onclick = () => showPane('3d');
+$('tabD405').onclick = () => showPane('d405');
 showPane(pane);
 
 // Camera: a few /frame.jpg requests kept open in parallel. Each returns one new
@@ -765,6 +803,58 @@ setInterval(() => {
   el.className = a === null || a > 1 ? 'old' : '';
 }, 250);
 setInterval(poll, 500); poll();
+
+// ---- the rover's depth camera (D405), relayed by this server from the robot's /d405/*: one
+// picture at a time per image, about 4 a second, and only while its tab is shown. Each picture
+// is loaded off screen, then drawn: the canvas keeps the last one meanwhile (no black flashes).
+function loadPicture(canvas, src) {
+  return new Promise((ok, ko) => {
+    const img = new Image();
+    img.onload = () => {
+      if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
+        canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+      }
+      canvas.getContext('2d').drawImage(img, 0, 0);
+      ok();
+    };
+    img.onerror = ko;
+    img.src = src;
+  });
+}
+async function d405Loop(img, path, ageId) {
+  let shown = 0, t1 = performance.now(), fails = 0;
+  for (;;) {
+    if (pane !== 'd405') { await sleep(500); continue; }
+    const t0 = performance.now();
+    const q = path === '/d405/depth.jpg' ? '?max=' + $('d405Max').value + '&' : '?';
+    try {
+      await loadPicture(img, frameHost + path + q + 't=' + Date.now());
+      shown++; fails = 0;
+    } catch (e) {
+      fails++;
+    }
+    if (t0 - t1 > 2000) {
+      $(ageId).textContent = fails ? 'no picture' : (shown / ((t0 - t1) / 1000)).toFixed(1) + ' fps';
+      shown = 0; t1 = t0;
+    }
+    await sleep(fails ? 1500 : Math.max(0, 250 - (performance.now() - t0)));
+  }
+}
+d405Loop($('d405Color'), '/d405/color.jpg', 'd405ColorAge');
+d405Loop($('d405Depth'), '/d405/depth.jpg', 'd405DepthAge');
+setInterval(async () => {
+  if (pane !== 'd405') return;
+  try {
+    const s = await (await fetch('/d405/status', { cache: 'no-store' })).json();
+    const c = s.camera || {}, d = s.depth || {};
+    const m = (x) => (x == null ? '–' : x.toFixed(2) + ' m');
+    $('d405Info').textContent = s.ok
+      ? `${c.name || 'D405'} · ${c.mode || ''} · centre ${m(d.centre_m)} · nearest ${m(d.nearest_m)}`
+        + ` · ${Math.round(100 * (d.valid || 0))} % of pixels measured`
+      : 'D405: ' + (s.error || (s.health && s.health.last_error) || 'not ready');
+    $('d405Info').className = s.ok ? '' : 'bad';
+  } catch (e) { $('d405Info').textContent = 'D405: robot unreachable'; $('d405Info').className = 'bad'; }
+}, 1000);
 </script>
 </body>
 </html>

@@ -47,6 +47,8 @@
                      (read from that file) with its age; ?v=<version> -> {"inchange": true}
                      while the file has not changed, so a slow link carries the map once
   GET  /perception/debug.jpg  one picture relayed from --perception-debug (default: none)
+  GET  /d405/color.jpg, /d405/depth.jpg?max=1.0, /d405/status   the rover's depth camera
+                     (Intel RealSense D405), relayed from the robot's own server
 
 Two ways to drive. "Direct": when the browser is on the robot's own network it
 talks to the robot itself (camera and commands), which avoids two trips across
@@ -104,6 +106,10 @@ BOOT = secrets.token_hex(6)
 SESSION_IDLE = 5.0  # s without a command after which a browser's delay reference is relearnt
 KEEPALIVE = 2.0  # s: an MJPEG reader gets a byte this often, so a gone reader is noticed
 MISSION_MAX = 8_000_000  # bytes: larger mission documents are refused
+# The rover's depth camera (Intel RealSense D405), relayed from the robot's own server
+# (rover/rover_server.py): its colour picture, its depth in false colours up to ?max= metres
+# (0.1-10), and its state. Read only.
+D405_GETS = {'/d405/color.jpg', '/d405/depth.jpg', '/d405/status'}
 # What /fusion/ relays from the live fusion process (simulation only).
 FUSION_FILES = {
     'rover.png',
@@ -734,6 +740,31 @@ def make_handler(
                 self.send_header('Cache-Control', 'no-store')
                 if 'X-Age-Ms' in r.headers:
                     self.send_header('X-Age-Ms', r.headers['X-Age-Ms'])
+                self.end_headers()
+                self.wfile.write(r.content)
+            elif path in D405_GETS:  # the rover's depth camera, relayed from its own server
+                q = self.path.partition('?')[2]
+                url = robot.base + path
+                if path == '/d405/depth.jpg':
+                    try:
+                        m = dict(x.split('=', 1) for x in q.split('&') if '=' in x).get('max', '1')
+                        max_m = float(m)
+                    except ValueError:
+                        max_m = math.nan
+                    if not (math.isfinite(max_m) and 0.1 <= max_m <= 10.0):
+                        return self._json({'error': 'max must be between 0.1 and 10 m'}, 400)
+                    url += f'?max={max_m:g}'
+                try:
+                    r = requests.get(url, timeout=5)
+                except requests.RequestException as e:
+                    return self._json({'error': f'robot unreachable: {error_text(e)}'}, 503)
+                self.send_response(r.status_code)
+                self.send_header('Content-Type', r.headers.get('Content-Type', 'image/jpeg'))
+                self.send_header('Content-Length', str(len(r.content)))
+                self.send_header('Cache-Control', 'no-store')
+                for h in ('X-Age-Ms',):
+                    if h in r.headers:
+                        self.send_header(h, r.headers[h])
                 self.end_headers()
                 self.wfile.write(r.content)
             elif path.startswith('/fusion/'):

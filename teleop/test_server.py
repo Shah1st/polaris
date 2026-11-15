@@ -2,7 +2,7 @@
 
     python -m pytest teleop/test_server.py -q -p no:cacheprovider
 
-Needs requests, OpenCV and numpy (the dashboard's own environment). Ports 8151-8160 on
+Needs requests, OpenCV and numpy (the dashboard's own environment). Ports 8151-8161 on
 127.0.0.1. The JavaScript of the pages is parsed with esprima when it is importable.
 """
 
@@ -329,6 +329,43 @@ def test_http_gimbal_and_its_state(http, rover):
     s = requests.get(http['url'] + '/api/state').json()
     assert s['robot']['gimbal'] == {'pan': 0.0, 'tilt': 0.0, 'moving': False}  # the mock's
     assert s['gimbal_err'] is None
+
+
+# --- depth camera (D405) -------------------------------------------------------------------
+
+
+def test_d405_pictures_and_status_are_relayed(http, rover):
+    url = http['url']
+    r = requests.get(url + '/d405/color.jpg', timeout=5)
+    assert r.status_code == 200 and r.content[:2] == b'\xff\xd8'
+    r = requests.get(url + '/d405/depth.jpg?max=2&t=123', timeout=5)
+    assert r.status_code == 200 and r.headers['Content-Type'] == 'image/jpeg'
+    with rover.lock:
+        assert rover.gets[-1] == '/d405/depth.jpg?max=2'  # only the range reaches the robot
+    s = requests.get(url + '/d405/status', timeout=5).json()
+    assert s['ok'] is True and s['camera']['name'] == 'RealSense D405'
+
+
+@pytest.mark.parametrize('q', ['max=abc', 'max=50', 'max=0.01', 'max=nan', 'max=inf'])
+def test_d405_bad_range_is_400_and_never_sent(http, rover, q):
+    with rover.lock:
+        n = len(rover.gets)
+    assert requests.get(http['url'] + '/d405/depth.jpg?' + q, timeout=5).status_code == 400
+    with rover.lock:
+        assert not any(p.startswith('/d405/') for p in rover.gets[n:])
+
+
+def test_d405_without_robot_is_503():
+    handler = server.make_handler(
+        server.Robot(f'http://127.0.0.1:{DEAD_PORT}'), None, 8081, '', {}
+    )
+    srv = serve(handler, 8161)
+    try:
+        r = requests.get('http://127.0.0.1:8161/d405/color.jpg', timeout=10)
+        assert r.status_code == 503 and 'robot unreachable' in r.json()['error']
+    finally:
+        srv.shutdown()
+        srv.server_close()
 
 
 # --- mission page --------------------------------------------------------------------------
