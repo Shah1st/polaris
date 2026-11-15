@@ -432,3 +432,13 @@ def test_javascript_parses(page):
         # esprima 4 predates `??`; same precedence class for a syntax check
         esprima.parseScript(js.replace('??', '||'))
     assert len(re.findall(r'id="([^"]+)"', html)) == len(set(re.findall(r'id="([^"]+)"', html)))
+
+
+def test_snapshot_wait_leaves_the_link_to_the_rover() -> None:
+    """A drone camera asked by snapshots with a share of the link: the slower the picture, the
+    longer the pause, so the camera never takes more than its share of the air time."""
+    assert server.snapshot_wait(0.03, None) == pytest.approx(0.07)  # as before: every 0.1 s
+    assert server.snapshot_wait(0.5, None) == 0.0
+    assert server.snapshot_wait(0.05, 0.25) == pytest.approx(0.15)  # fast link: about 5 a second
+    assert server.snapshot_wait(0.4, 0.25) == pytest.approx(1.2)  # slow link: 3 times the transfer
+    assert server.snapshot_wait(3.0, 0.25) == server.SNAPSHOT_WAIT_MAX  # never longer than that

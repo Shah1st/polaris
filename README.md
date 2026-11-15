@@ -160,7 +160,7 @@ ros2 launch guidance_bringup guidance.launch.py overhead_source:=/ws/data/overhe
 
 **Marker setup (test rig, or a tilted camera).** Set `mode: markers`, `rover_detection: marker`
 and `detection: marker` in the config. Print the markers with `ros2 run guidance_calib
-generate_markers --out markers` (ids 0-3 for the floor, 10 for the rover, `DICT_4X4_50`). Tape
+generate_markers --out markers` (ids 0-3 for the floor, 10 for the rover, AprilTag family `DICT_APRILTAG_25h9`). Tape
 0-3 at the corners of a measured rectangle and enter their positions as `marker_x` / `marker_y`;
 fix 10 on the rover with its top edge facing forward. This also gives the rover's heading.
 `data/overhead/synthetic_scene.png` is a generated scene for this setup.

@@ -143,6 +143,72 @@ def marqueurs_tolerants(detecter, identifiant):
     return detecter_mieux
 
 
+def part_ombre(image, mpp, forme, res=0.05):
+    """For every cell of the drone's grid (`forme`: rows, columns; row 0 = south), the share of
+    its pixels that look like a SHADOW on the floor: darker than the floor around, but still
+    of the floor's colour (same hue, chroma that fell with the light). A black object has no
+    colour left, a box or a railing has another colour: they are not shadows."""
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
+    L, a, b = lab[..., 0], lab[..., 1] - 128.0, lab[..., 2] - 128.0
+    L0 = float(np.median(L))
+    clair = L >= L0 - 6.0  # the lit floor: where the floor's colour is read
+    a0, b0 = float(np.median(a[clair])), float(np.median(b[clair]))
+    c0 = max(1.0, float(np.hypot(a0, b0)))
+    c = np.hypot(a, b)
+    cos = (a * a0 + b * b0) / (np.maximum(c, 1e-3) * c0)  # 1: the floor's hue
+    ombre = (L < L0 - 8.0) & (L > 0.25 * L0) & (cos > 0.9) & (c > 0.45 * c0 * L / L0)
+    k = mpp / res
+    petit = cv2.resize(
+        ombre.astype(np.float32), None, fx=k, fy=k, interpolation=cv2.INTER_AREA
+    )[::-1]
+    out = np.zeros(forme, np.float32)
+    h, w = min(forme[0], petit.shape[0]), min(forme[1], petit.shape[1])
+    out[:h, :w] = petit[:h, :w]
+    return out
+
+
+def mesure_du_mouvement(px_de, pose_de, px_a, pose_a, mini_px=8.0, mini_m=0.08):
+    """What one move of the rover says of the camera, from PIXELS: (rotation of the camera's
+    frame to the maps', metres per pixel), or None when the move is too small to tell. In
+    pixels (x right, y up) so that a wrong scale of the pictures cannot bend it."""
+    vu = (px_a[0] - px_de[0], px_a[1] - px_de[1])
+    roule = (pose_a[0] - pose_de[0], pose_a[1] - pose_de[1])
+    if math.hypot(*vu) < mini_px or math.hypot(*roule) < mini_m:
+        return None
+    rotation = angle(math.atan2(roule[1], roule[0]) - math.atan2(vu[1], vu[0]))
+    return rotation, math.hypot(*roule) / math.hypot(*vu)
+
+
+def troncon(chemin, grille, carte, longueur_max, depart):
+    """The start of the planned path, `longueur_max` m at most, in a few points: each chord
+    stays out of the obstacles grown by the rover's radius. Cells nobody has seen may be
+    crossed, as the planner itself allows (avancer_esquive.troncon_vu is the strict version:
+    only cells seen free)."""
+    import avancer_esquive as ae
+
+    points = ae.couper(chemin, longueur_max)
+    plan = carte.grille_plan(grille)
+    rayon = carte.rayon_effectif
+
+    def libre(a, b):
+        for _, p in ae.echantillons([a, b], grille.res / 2):
+            if math.dist(p, depart) <= rayon:
+                continue  # under the rover at the start
+            i, j = plan.ij(*p)
+            if not plan.dedans(i, j) or plan.bloque[i, j]:
+                return False
+        return True
+
+    simples, i = [points[0]], 0
+    while i < len(points) - 1:
+        j = len(points) - 1
+        while j > i + 1 and not libre(points[i], points[j]):
+            j -= 1
+        simples.append(points[j])
+        i = j
+    return simples
+
+
 class Odometrie:
     """Stands in for the overhead camera of RaspRoverReel: the rover pose in the frame of the
     maps, from GET /state."""
@@ -310,12 +376,17 @@ class FusionReelle:
             place = None if self.vue_drone is None else self.vue_drone['place']
             if calage is not None:
                 place = self.placer_vue(m, res, calage)
-                self.carte.tuiles['drone'] = {}  # the camera sees its whole area every time
-                self.carte.maj['drone'] = {}
+                if not self.args.drone_cumul:
+                    self.carte.tuiles['drone'] = {}  # a fixed camera sees its whole area
+                    self.carte.maj['drone'] = {}
                 for msg in decouper(
                     place[0], place[1], place[2], 4, self.carte, 'drone', t=time.monotonic()
                 ):
                     self.carte.recevoir(msg)
+                if self.args.drone_cumul:
+                    # a camera that moves: each placed picture adds to the drone map (what it
+                    # sees again is replaced, what it no longer sees is kept)
+                    place = self.matrice_drone()
             self.vue_drone = {'m': m, 'res': res, 'rover': vu, 'place': place}
         self.drone = {
             'etat': 'ok',
@@ -527,7 +598,7 @@ class FusionReelle:
             return None
         r = self.ia(image)
         reglages = self.camera.settings
-        if r is not None and a.drone_mpp is None:
+        if r is not None and a.drone_mpp is None and not self.mpp_calibre:
             mpp = a.drone_taille_rover / r.taille
             reglages = dataclasses.replace(reglages, metres_per_pixel=mpp)
             self.camera.settings = reglages  # kept for the pictures where it is not found
@@ -535,6 +606,8 @@ class FusionReelle:
         reglages = dataclasses.replace(reglages, rover_marker_id=None)
         mpp, res = reglages.metres_per_pixel, reglages.cell_size
         m = np.asarray(grid_to_fusion(process_image(image, reglages).grid), dtype=np.int8)
+        if a.drone_ombres:  # a shadow on the floor is not an obstacle
+            m[(m == 1) & (part_ombre(image, mpp, m.shape, res) > 0.6)] = 0
         m = sans_traits(m, a.drone_largeur_min / res)
         if r is None:
             return m, None, None
@@ -546,6 +619,17 @@ class FusionReelle:
         pres = np.hypot(xs[None, :] - x, ys[:, None] - y) <= 0.7 * a.drone_taille_rover + res
         m[pres & (m == 1)] = 0
         return m, (x, y, cap), round(r.score, 2)
+
+    def matrice_drone(self):
+        """Everything the drone has seen so far, as one matrix: (matrix, x0, y0)."""
+        tuiles = {k: v for k, v in self.carte.tuiles.get('drone', {}).items() if k[0] == 4}
+        n, res = self.carte.n, self.carte.res(4)
+        tx0, tx1 = min(k[1] for k in tuiles), max(k[1] for k in tuiles) + 1
+        ty0, ty1 = min(k[2] for k in tuiles), max(k[2] for k in tuiles) + 1
+        m = np.full(((ty1 - ty0) * n, (tx1 - tx0) * n), -1, np.int8)
+        for (_, tx, ty), data in tuiles.items():
+            m[(ty - ty0) * n : (ty - ty0 + 1) * n, (tx - tx0) * n : (tx - tx0 + 1) * n] = data
+        return m, tx0 * n * res, ty0 * n * res
 
     @staticmethod
     def placer_vue(m, res, calage):
@@ -592,6 +676,7 @@ class FusionReelle:
             self.repere_fixe = []  # what stood still in the camera's view when it was found
             self.appui = None  # (objects the camera saw, rover pose) at the last stop
             self.appui_ia = None  # (rover in the picture, rover pose) at the last stop
+            self.mpp_calibre = False  # the scale was measured by /calibrer: kept as it is
             self.rotation_ia = None  # camera frame -> maps, from a move (vision model)
             self.info_mouvement = None
             self.correction_echelle = 1.0  # what the rover's move said of the camera's scale
@@ -709,6 +794,9 @@ class FusionReelle:
         a = self.args
         issue = 'erreur'
         try:
+            if a.segment > 0:
+                issue = self._mission_segments()
+                return
             odo = Odometrie(self, self.requete)
             rover = RaspRoverReel(
                 self.carte,
@@ -744,6 +832,241 @@ class FusionReelle:
             if issue != 'arrive':
                 arreter_le_rover(self.requete, journal=lambda t: print(t, flush=True))
             self.journal_mission(etat=issue)
+
+    # ---- calibration: the rover drives forward and back, seen by the drone ------------------
+    def calibrer(self):
+        """POST /calibrer: the rover drives --calibrage-distance forward, then back. The vision
+        model finds it in the drone's picture at the three stops; the two moves give the
+        direction of the camera's frame and its scale. (code, answer)"""
+        if self.en_mission():
+            return 409, {'error': 'a mission or a calibration is already running'}
+        if self.camera is None or self.ia is None:
+            return 409, {'error': 'needs the drone camera with the vision model (ia)'}
+        self.arret_demande.clear()
+        self.journal_mission('en_cours', 'calibration: start', 0)
+        self.fil_mission = threading.Thread(target=self._calibrage, daemon=True)
+        self.fil_mission.start()
+        return 200, {'ok': True}
+
+    def _rover_dans_l_image(self, apres, delai=12.0):
+        """(rover in the picture in PIXELS (x right, y up), rover pose on the maps) from a drone
+        picture taken after `apres` (time.time()) with the rover standing still and found by
+        the model; None after `delai` s without one."""
+        fin = time.time() + delai
+        while time.time() < fin and not self.arret_demande.is_set():
+            d = self.drone
+            if d.get('etat') == 'ok' and d.get('t', 0.0) > apres and d.get('rover_vu'):
+                with self.verrou:
+                    vd, pose, immobile = self.vue_drone, self.pose, self.immobile
+                mpp = d.get('metres_par_pixel')
+                if immobile and vd is not None and vd['rover'] is not None and pose and mpp:
+                    return (vd['rover'][0] / mpp, vd['rover'][1] / mpp), pose
+            time.sleep(0.2)
+        return None
+
+    def _rouler(self, distance, delai=20.0):
+        """POST /move {distance} (+ forward, - backward) and wait for the rover to stand still.
+        Raises when the rover does not take it or does not finish."""
+        import avancer_esquive as ae
+
+        etat = self.requete('GET', '/state')
+        if etat is None or not ae.pret(etat):
+            raise RuntimeError('rover not ready (GET /state): link, gyro, or a move running')
+        if self.requete('POST', '/move', {'distance': distance}) is None:
+            raise RuntimeError('the rover did not answer POST /move')
+        debut = time.monotonic()
+        time.sleep(0.5)
+        while time.monotonic() - debut < delai:
+            if self.arret_demande.is_set():
+                raise ArretOperateur('calibration stopped')
+            etat = self.requete('GET', '/state')
+            if etat is not None and ae.pret(etat):
+                return
+            time.sleep(0.5)
+        raise RuntimeError(f'the rover did not finish {distance:+.2f} m in {delai:.0f} s')
+
+    def _calibrage(self):
+        a = self.args
+        d = a.calibrage_distance
+        issue = 'erreur'
+        try:
+            p0 = self._rover_dans_l_image(time.time())
+            if p0 is None:
+                raise RuntimeError('the drone does not see the rover standing still')
+            self.journal_mission(texte=f'calibration: {d * 100:.0f} cm forward', pas=1)
+            self._rouler(d)
+            p1 = self._rover_dans_l_image(time.time() + 1.0)
+            self.journal_mission(texte=f'calibration: {d * 100:.0f} cm back', pas=2)
+            self._rouler(-d)
+            p2 = self._rover_dans_l_image(time.time() + 1.0)
+            if p1 is None or p2 is None:
+                raise RuntimeError('the drone lost the rover during the move')
+            mesures = [mesure_du_mouvement(*p0, *p1), mesure_du_mouvement(*p1, *p2)]
+            if any(m is None for m in mesures):
+                raise RuntimeError('the rover hardly moved (in the picture or on its odometry)')
+            (r1, k1), (r2, k2) = mesures
+            ecart = abs(angle(r1 - r2))
+            if ecart > math.radians(a.calibrage_ecart) or not 0.75 <= k1 / k2 <= 1.33:
+                raise RuntimeError(
+                    f'forward and back disagree ({math.degrees(ecart):.0f} deg, scales '
+                    f'{k1 * 1000:.1f} and {k2 * 1000:.1f} mm per pixel): hold the camera still'
+                )
+            rotation = angle(r1 + angle(r2 - r1) / 2)
+            mpp = (k1 + k2) / 2
+            self.fixer_calibrage(rotation, mpp, p2)
+            issue = 'arrive'
+            self.journal_mission(
+                texte=f'CALIBRATED: direction {math.degrees(rotation):+.0f} deg, '
+                f'{mpp * 1000:.1f} mm per pixel (forward and back agree within '
+                f'{math.degrees(ecart):.0f} deg)'
+            )
+        except ArretOperateur as e:
+            issue = 'arret_operateur'
+            self.journal_mission(texte=f'OPERATOR STOP: {e}')
+        except Exception as e:  # noqa: BLE001 - the calibration ends, the rover stops
+            self.journal_mission(texte=f'CALIBRATION FAILED: {e}')
+        finally:
+            if issue != 'arrive':
+                arreter_le_rover(self.requete, journal=lambda t: print(t, flush=True))
+            self.journal_mission(etat=issue)
+
+    def fixer_calibrage(self, rotation, mpp, dernier):
+        """The direction and the scale measured by the calibration become the camera's: the
+        scale is no longer read off the rover's box, the drone map starts again."""
+        import dataclasses
+
+        px, pose = dernier
+        with self.verrou:
+            self.camera.settings = dataclasses.replace(self.camera.settings, metres_per_pixel=mpp)
+            self.mpp_calibre, self.mpp_auto = True, False
+            self.rotation_ia = rotation
+            self.appui_ia = ((px[0] * mpp, px[1] * mpp), pose)
+            self.info_mouvement = 'direction and scale from the calibration (forward and back)'
+            self.calage, self.vue_drone = None, None
+            self.carte.tuiles['drone'] = {}  # placed with the old direction and scale
+            self.carte.maj['drone'] = {}
+
+    def _mission_segments(self):
+        """The mission in long segments (--segment): one POST /path carries several points of
+        the planned path and the rover follows them without stopping (the driver of
+        merging_map/avancer_esquive.py), instead of one stop every --pas m."""
+        import avancer_esquive as ae
+
+        a = self.args
+        odo = ae.Odometrie(self.requete)
+        # its frame is the frame of the maps: the same pose for the same GET /state
+        odo._ancrer(ae.pose_odom(odo.etat), self.pose_carte(odo.etat))
+        rover = ae.RoverSegments(
+            self.carte,
+            self.requete,
+            odo,
+            lambda position, cap: (
+                self.percevoir_frais(position, cap) if self.args.carte_locale else None
+            ),
+            vitesse=a.vitesse,
+            delai_liaison=a.delai_liaison,
+            periode=a.periode_pas,
+            delai_pret=30.0,
+            signaler=lambda t: self.journal_mission(texte=t),
+        )
+        rover.placer(odo.pose()[:2])
+        debut = time.monotonic()
+        while not ae.pret(odo.etat):  # ESP32, gyroscope, nothing running
+            if (odo.etat.get('ctrl') or {}).get('mode') == 'manual':
+                raise ArretOperateur('rover driven by hand (manual command /cmd)')
+            if time.monotonic() - debut > 30.0:
+                raise ServeurRoverError('rover not ready after 30 s (GET /state)')
+            time.sleep(1.0)
+            rover.requete('GET', '/state')
+        rover.recaler_apres()
+        return self._boucle_segments(rover, ae)
+
+    def _boucle_segments(self, rover, ae):
+        a = self.args
+        sans_vue = 0
+        for k in range(a.max_pas):
+            objectif = self.objectif
+            if self.arret_demande.is_set() or objectif is None:
+                self.journal_mission(texte='mission stopped')
+                return 'arret'
+            pos = rover.position()
+            reste = math.dist(pos, objectif)
+            if reste <= a.tolerance:
+                self.journal_mission(texte=f'ARRIVED {reste:.2f} m from the goal, {k} segments')
+                return 'arrive'
+            if a.carte_locale:  # a look of the rover's camera at each stop
+                pan = math.radians(self.pan(self.dernier_etat))
+                cap = None if rover.cap is None else angle(rover.cap - pan)
+                vue = self.percevoir_frais(rover.est, cap)
+                if vue is None:
+                    sans_vue += 1
+                    self.journal_mission(texte=f'perception unavailable ({sans_vue}/3): waiting')
+                    if sans_vue >= 3:
+                        return 'perception_indisponible'
+                    time.sleep(1.0)
+                    continue
+                sans_vue = 0
+                self.publier(vue)
+            with self.verrou:
+                dec = self.carte.decider(
+                    pos,
+                    objectif,
+                    zone=self.zone_mission(pos),
+                    tolerance=a.tolerance,
+                    drone_disponible=False,
+                )
+                self.decision = dec
+                chemin = [tuple(p) for p in dec.get('chemin') or []]
+                # the part of the path that only crosses cells seen free (by the drone, or by
+                # the rover with the local map), in a few points, --segment m at most
+                if a.segment_vu:
+                    points, raison = ae.troncon_vu(
+                        chemin or [pos], dec['grille'], self.carte, a.segment, pos
+                    )
+                else:
+                    points = troncon(chemin or [pos], dec['grille'], self.carte, a.segment, pos)
+            bloque = dec['action'] == 'OBJECTIF_DEGRADE' and math.dist(dec.get('point', pos), pos)
+            if bloque is not False and bloque < 0.05:
+                self.journal_mission(texte='BLOCKED: no way to the goal')
+                return 'bloque'
+            if len(chemin) < 2:
+                if reste <= a.tolerance + 0.1:  # the A* arrives within one 5 cm cell
+                    self.journal_mission(
+                        texte=f'ARRIVED {reste:.2f} m from the goal, {k} segments'
+                    )
+                    return 'arrive'
+                self.journal_mission(texte='BLOCKED: no path')
+                return 'bloque'
+            a_rouler = ae.longueur_chemin(points)
+            if a_rouler < ae.SEGMENT_MIN:
+                if ae.longueur_chemin(chemin) < ae.SEGMENT_MIN and reste <= a.tolerance + 0.1:
+                    self.journal_mission(
+                        texte=f'ARRIVED {reste:.2f} m from the goal, {k} segments'
+                    )
+                    return 'arrive'
+                self.journal_mission(
+                    texte=f'BLOCKED: nothing to drive ahead ({a_rouler:.2f} m)'
+                    + (': --segment-vu, only where the map has seen' if a.segment_vu else '')
+                )
+                return 'bloque'
+            duree = ae.duree_prevue(points, rover.cap, a.vitesse)
+            self.journal_mission(
+                texte=f'segment {k + 1}: {dec["action"]}, {a_rouler:.2f} m in '
+                f'{len(points) - 1} points, {reste:.2f} m to go',
+                pas=k + 1,
+            )
+            if self.arret_demande.is_set():
+                return 'arret'
+            statut, impact = rover.suivre(points[1:], duree)
+            if statut in ('liaison', 'redemarrage'):
+                self.journal_mission(texte=f'ERROR: segment ended on "{statut}" (link or server)')
+                return 'erreur'
+            if impact is not None:
+                with self.verrou:
+                    rover.signaler_choc(impact)
+                self.journal_mission(texte=f'BUMP ({statut}): obstacle marked on the map')
+        self.journal_mission(texte=f'{a.max_pas} segments without arriving')
+        return 'max_pas'
 
     def _boucle_mission(self, rover):
         a = self.args
@@ -812,6 +1135,11 @@ class FusionReelle:
         if self.objectif is not None:
             xs.append(self.objectif[0])
             ys.append(self.objectif[1])
+        if getattr(self.args, 'drone_cumul', False):  # the view grows with the drone map
+            for cle in self.carte.tuiles.get('drone', {}):
+                x, y, cote = self.carte.rect_tuile(cle)
+                xs += [x, x + cote]
+                ys += [y, y + cote]
         m = 2.5
         x0, x1 = min(xs) - m, max(xs) + m
         y0, y1 = min(ys) - m, max(ys) + m
@@ -1099,6 +1427,8 @@ def handler(fr):
                     return self._json(*fr.regler_carte_locale(corps))
                 if nom == '/marqueur':
                     return self._json(*fr.regler_marqueur(corps))
+                if nom == '/calibrer':
+                    return self._json(*fr.calibrer())
             except (KeyError, TypeError, ValueError) as e:
                 return self._json(400, {'error': str(e)[:200]})
             return self._json(404, {'error': 'unknown'})
@@ -1131,6 +1461,32 @@ def options(argv=None):
         '--age-max', type=float, default=3.0, help='an older perception picture is ignored (s)'
     )
     p.add_argument('--pas', type=float, default=0.25, help='m per mission step')
+    p.add_argument(
+        '--segment',
+        type=float,
+        default=0.0,
+        help='m: drive in segments of this length at most, several points in one command, '
+        'without stopping every --pas m. 0: step by step',
+    )
+    p.add_argument(
+        '--calibrage-distance',
+        type=float,
+        default=0.30,
+        help='m driven forward then back by POST /calibrer (the "Calibrate direction" button)',
+    )
+    p.add_argument(
+        '--calibrage-ecart',
+        type=float,
+        default=25.0,
+        help='deg: the calibration is refused when forward and back disagree by more',
+    )
+    p.add_argument(
+        '--segment-vu',
+        action='store_true',
+        help='with --segment: drive only through cells seen free (by the drone, or by the '
+        'rover with the local map); a goal in what nobody has seen is then refused. Default: '
+        'unseen cells may be crossed, as step by step',
+    )
     p.add_argument('--vitesse', type=float, default=0.12, help='m/s')
     p.add_argument('--rayon', type=float, default=0.20, help='rover radius + margin (m)')
     p.add_argument('--tolerance', type=float, default=0.25, help='arrived within (m)')
@@ -1191,6 +1547,20 @@ def options(argv=None):
         '--drone-marqueur-devant',
         action='store_true',
         help='the marker paper is at the front of the rover (default: at the back)',
+    )
+    p.add_argument(
+        '--drone-ombres',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="with the vision model: cells of the drone's picture that are only a shadow on "
+        'the floor (darker, but of the floor colour) are free, not obstacles',
+    )
+    p.add_argument(
+        '--drone-cumul',
+        action='store_true',
+        help='the drone camera moves: every placed picture adds to the drone map, which '
+        'grows, instead of replacing it (reset the maps to start again). A picture is placed '
+        'only while the rover is in it',
     )
     p.add_argument('--drone-marqueur', type=int, default=10, help="ArUco id on the rover's top")
     p.add_argument(

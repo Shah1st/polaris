@@ -237,6 +237,79 @@ class Camera:
         self._stop = True
 
 
+class D405Camera:
+    """The rover's D405 depth camera as the only sensor (--d405 URL, the capture server
+    rover_mapper/d405_server.py): one GET of URL/frame per look, which gives the measured
+    depth (16-bit raw units and their scale), the depth camera's intrinsics and the colour
+    picture. No depth model: what is perceived is what the sensor measured. Same interface as
+    Camera; a frame is a dict instead of an RGB picture."""
+
+    mode = 'snapshot'
+
+    def __init__(self, url: str, timeout: float = 3.0):
+        self.base = url.rstrip('/')
+        if self.base.endswith('/frame'):
+            self.base = self.base[: -len('/frame')]
+        self.timeout = timeout
+        self.error: str | None = None
+        self._lock = threading.Lock()
+        self._frame: tuple[float, int, dict] | None = None
+        self._seq = 0
+        self._fetch_s: dict[int, float] = {}
+
+    def prepare(self, rgb):
+        raise ValueError('with --d405 the service reads the depth camera itself: no POST')
+
+    def fetch_s(self, seq: int) -> float | None:
+        return self._fetch_s.get(seq)
+
+    def grab(self, not_before: float, wait: float):
+        f = self._frame
+        if f is not None and f[0] >= not_before:
+            return f
+        t0 = time.time()
+        try:
+            # fresh=1: a picture captured after the request (the rover has stopped by then)
+            with urllib.request.urlopen(self.base + '/frame?fresh=1', timeout=self.timeout) as r:
+                z = np.load(io.BytesIO(r.read()))
+            raw = cv2.imdecode(z['depth_png'], cv2.IMREAD_UNCHANGED)
+            color = cv2.imdecode(z['color_jpg'], cv2.IMREAD_COLOR)
+            if raw is None or raw.ndim != 2:
+                raise ValueError('no depth picture in the D405 frame')
+            data = {
+                'depth': raw.astype(np.float32) * float(z['depth_scale']),  # metres, 0: no measure
+                'K': np.asarray(z['K_depth'], np.float64),
+                'color': color,
+            }
+        except Exception as e:
+            self.error = f'{type(e).__name__}: {e}'[:200]
+            return None
+        self.error = None
+        with self._lock:
+            self._seq += 1
+            self._frame = (time.time(), self._seq, data)
+            self._fetch_s[self._seq] = self._frame[0] - t0
+            while len(self._fetch_s) > 16:
+                self._fetch_s.pop(min(self._fetch_s))
+            return self._frame
+
+    def last_age(self) -> float | None:
+        f = self._frame
+        return None if f is None else time.time() - f[0]
+
+    def close(self) -> None:
+        pass
+
+
+def depth_picture(depth: np.ndarray, max_m: float) -> np.ndarray:
+    """RGB picture of a metric depth image for /debug.jpg: near = red, far = blue, black where
+    the sensor measured nothing."""
+    near = np.clip(depth / max(max_m, 0.1), 0.0, 1.0)
+    img = cv2.applyColorMap((255 * (1.0 - near)).astype(np.uint8), cv2.COLORMAP_TURBO)
+    img[depth <= 0] = 0
+    return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+
 def known_k(args, w: int, h: int) -> np.ndarray | None:
     """Intrinsics of the source image (pixels) from --K or --fov; None: use DA3's own."""
     if args.k:
@@ -252,16 +325,19 @@ class Perceiver:
     """The model, loaded once, and the last result (a request on the same frame reuses it)."""
 
     def __init__(self, args):
+        self.args = args
+        self.lock = threading.Lock()
+        self.last: dict | None = None  # {'seq', 't', 'result', 'image', 'K', 'dt'}
+        if getattr(args, 'd405', None):
+            self.mapper = None  # the depth is measured: no model to load
+            return
         from rovermap.mapper import Mapper, net_intrinsics
 
-        self.args = args
         self._net_intrinsics = net_intrinsics
         # Only its model loading and _infer are used; no tracking, no moving-object mask.
         self.mapper = Mapper(model_name=args.model, process_res=args.res,
                              cam_height=args.cam_height, mask_moving=False,
                              cpu_threads=args.cpu_threads, device=args.device)
-        self.lock = threading.Lock()
-        self.last: dict | None = None  # {'seq', 't', 'result', 'image', 'K', 'dt'}
 
     def run(self, frame) -> dict:
         t, seq, rgb = frame
@@ -269,11 +345,20 @@ class Perceiver:
             if self.last is not None and self.last['seq'] == seq and self.last['t'] == t:
                 return self.last
             t0 = time.time()
+            a = self.args
+            if self.mapper is None:  # D405: metric depth, scale 1, the floor from the depth itself
+                depth, K = rgb['depth'], rgb['K']
+                valid = per.valid_depth(depth) & (depth >= a.d405_min) & (depth <= a.d405_max)
+                result = per.perceive(depth, K, cam_height=a.cam_height, valid=valid, scale=1.0,
+                                      max_range=a.range, min_range=a.min_range,
+                                      band=(a.band_low, a.band_high))
+                self.last = {'seq': seq, 't': t, 'result': result, 'K': K,
+                             'image': depth_picture(depth, a.range), 'dt': time.time() - t0}
+                return self.last
             depth, conf, _, K_net, imgs = self.mapper._infer([rgb])
             depth, conf, image = depth[0], conf[0], imgs[0]
             K = known_k(self.args, rgb.shape[1], rgb.shape[0])
             K = K_net[0] if K is None else self._net_intrinsics(K, rgb.shape[:2], depth.shape)
-            a = self.args
             result = per.perceive(depth, K, cam_height=a.cam_height, conf=conf,
                                   max_range=a.range, min_range=a.min_range,
                                   band=(a.band_low, a.band_high))
@@ -321,7 +406,8 @@ def make_handler(cam: Camera, perceiver: Perceiver, args):
                 'cam_height': args.cam_height,
                 'range': args.range,
                 'band': [args.band_low, args.band_high],
-                'intrinsics': 'known' if (args.k or args.fov) else 'da3',
+                'intrinsics': 'd405' if getattr(args, 'd405', None) else 'known' if (args.k or args.fov) else 'da3',
+                'sensor': 'd405' if getattr(args, 'd405', None) else 'camera + DA3',
             })
             self._json(body)
 
@@ -377,7 +463,8 @@ def make_handler(cam: Camera, perceiver: Perceiver, args):
                         'calib': args.calib,
                         'source_error': cam.error,
                         'frame_age_s': cam.last_age(),
-                        'model': args.model,
+                        'model': None if getattr(args, 'd405', None) else args.model,
+                        'sensor': 'd405' if getattr(args, 'd405', None) else 'camera + DA3',
                         'last': None if last is None else {
                             't': last['t'], 'dt_s': round(last['dt'], 3),
                             'floor': last['result'].floor, 'scale': last['result'].scale,
@@ -397,7 +484,14 @@ def make_handler(cam: Camera, perceiver: Perceiver, args):
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--source', required=True, help='MJPEG/snapshot URL or image file')
+    ap.add_argument('--source', default=None, help='MJPEG/snapshot URL or image file')
+    ap.add_argument('--d405', default=None, metavar='URL',
+                    help="the rover's D405 capture server (rover_mapper/d405_server.py, e.g. "
+                    'http://127.0.0.1:8091): obstacles from its measured depth ONLY, no camera '
+                    'picture and no depth model. --range, --band-* and --min-range apply')
+    ap.add_argument('--d405-min', type=float, default=0.07, help='D405: nearest depth kept (m)')
+    ap.add_argument('--d405-max', type=float, default=3.0,
+                    help='D405: farthest depth kept (m); its error grows fast with distance')
     ap.add_argument('--cam-height', type=float, default=0.22,
                     help='camera height above the floor (m): sets the metric scale')
     ap.add_argument('--range', type=float, default=1.5,
@@ -428,10 +522,16 @@ def main() -> None:
     ap.add_argument('--device', default=None)
     ap.add_argument('--port', type=int, default=8095)
     args = ap.parse_args()
+    if not args.source and not args.d405:
+        ap.error('--source or --d405 is needed')
 
-    rectify = lens(args)
-    cam = Camera(args.source, args.fetch_timeout, rectify)
-    print(f'Chargement du modele {args.model}...', flush=True)
+    if args.d405:
+        args.source = args.d405.rstrip('/') + '/frame'
+        cam = D405Camera(args.d405, args.fetch_timeout)
+        print('D405 seule : pas de modele de profondeur', flush=True)
+    else:
+        cam = Camera(args.source, args.fetch_timeout, lens(args))
+        print(f'Chargement du modele {args.model}...', flush=True)
     perceiver = Perceiver(args)
     srv = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(cam, perceiver, args))
     print(f'Perception : http://127.0.0.1:{args.port}/obstacles  (source {args.source})',

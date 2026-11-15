@@ -35,6 +35,8 @@
   POST /fusion/carte_locale {"carte_locale": true|false}  build the rover's local map from
                      its own camera, or not (the "Local map" box of the maps)
   POST /fusion/marqueur {"sans_marqueur": true|false}  ignore or trust the rover's marker
+  POST /fusion/calibrer  the rover drives 30 cm forward then back, seen by the drone: direction
+                     and scale of the drone map (the rover MOVES)
                      in the drone's picture (the "No marker" box of the maps)
                      (sim/fusion_reelle.py)
                      (simulation only: never reaches the robot)
@@ -110,9 +112,24 @@ FUSION_POSTS = {
     '/fusion/arreter': (),
     '/fusion/marqueur': ('sans_marqueur',),
     '/fusion/carte_locale': ('carte_locale',),
+    '/fusion/calibrer': (),
 }
 SNAPSHOT_PERIOD = 0.1  # s: a camera that answers one picture per request is asked this often
 SNAPSHOT_MAX = 10_000_000  # bytes: a larger "picture" is refused
+SNAPSHOT_WAIT_MAX = 2.0  # s: with a share of the link, never wait longer before asking again
+
+
+def snapshot_wait(took: float, share: float | None) -> float:
+    """Seconds to wait before asking a snapshot URL again, after a picture that took `took` s
+    to arrive. Without `share`: SNAPSHOT_PERIOD between two requests. With `share` (0-1): the
+    camera's pictures use at most that share of the time on the link, so on a slow shared
+    Wi-Fi the rest of the air time stays free for the rover (a pushed MJPEG stream takes all
+    of it): after a picture that took 1 s and a share of 0.25, wait 3 s, capped at
+    SNAPSHOT_WAIT_MAX; on a fast link the wait is short and the picture rate high."""
+    if not share:
+        return max(0.0, SNAPSHOT_PERIOD - took)
+    share = min(max(share, 0.02), 1.0)
+    return min(SNAPSHOT_WAIT_MAX, max(SNAPSHOT_PERIOD - took, took * (1.0 - share) / share))
 
 
 def camera_label(url: str | None) -> str | None:
@@ -264,7 +281,7 @@ class CameraHub:
             self.fps, self.kbps = n / (now - t0), nbytes / 1024 / (now - t0)
             n, nbytes, t0 = 0, 0, now
         self._snap = (n, nbytes, t0)
-        time.sleep(max(0.0, SNAPSHOT_PERIOD - (now - asked)))
+        time.sleep(snapshot_wait(now - asked, getattr(self, 'share', None)))
 
     def wait(self, last_seq: int, timeout: float = 5.0):
         with self.cond:
@@ -835,6 +852,14 @@ if __name__ == '__main__':
         'http://192.168.1.50:8081/video (default: none)',
     )
     ap.add_argument(
+        '--drone-part',
+        type=float,
+        default=None,
+        help='with a snapshot URL as --drone: share (0-1) of the time the phone may spend '
+        'sending pictures, e.g. 0.25 on a Wi-Fi shared with the rover; default: a picture '
+        'every 0.1 s',
+    )
+    ap.add_argument(
         '--drone-lan',
         default='',
         help="the phone's stream on the robot's network (e.g. http://172.20.10.6:8080/stream), "
@@ -848,6 +873,8 @@ if __name__ == '__main__':
     hub = CameraHub(args.robot.rstrip('/') + '/video_feed', args.calib, args.rect_fov)
     # The phone is read only while someone watches it (the page, /drone_feed readers).
     overhead = CameraHub(args.drone, snapshots=False) if args.drone else None
+    if overhead is not None:
+        overhead.share = args.drone_part
     srv = ThreadingHTTPServer(
         (args.host, args.port),
         make_handler(

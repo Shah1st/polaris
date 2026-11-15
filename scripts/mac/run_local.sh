@@ -18,11 +18,22 @@
 #   POLARIS_PY     python of the rovermap environment (default: ../.venv or .venv next to the repo)
 #   ROVER          rover API                    (default http://172.20.10.2:8080)
 #   PHONE          phone stream, '' = no drone  (default http://172.20.10.6:8080/stream)
+#                  Default: the camera phone plugged into this Mac by USB (its .local name:
+#                  under 1 ms, 15 pictures a second). Over Wi-Fi give its address, and
+#                  .../snapshot.jpg rather than .../stream (a pushed stream takes all the air
+#                  time of a slow Wi-Fi shared with the rover)
+#   PERCEPTION_D405  D405 capture server reachable from this Mac, e.g. http://127.0.0.1:8091
+#                  through `ssh -N -L 8091:127.0.0.1:8091 <user>@<rover>`: the rover's obstacles
+#                  then come from the D405's depth only ('' = rover camera + depth model)
+#   PERCEPTION_RANGE  m kept in front of the rover (default 2.0; the D405 is best under 1 m)
+#   PHONE_SHARE    share of the time the phone may spend sending pictures (default 0.25)
 #   PHONE_NAME     name shown on the drone map  (default: iPhone CamStream (<host>))
 #   D405           D405 server of the rover, e.g. http://172.20.10.2:8091 ('' = rover camera only)
 #   D405_MOUNT     "TX TY TZ [PITCH [YAW [ROLL]]]" of the D405 seen from the rover camera (with D405)
 #   CAM_HEIGHT     lens height above the floor, m (default 0.22)
 #   FUSION_PERIOD  s between two looks of the fusion (default 1.0)
+#   SEGMENT        m driven in one go during a mission (default 2.0; 0: a stop every 25 cm)
+#   SPEED          m/s during a mission (default 0.30, the rover's own maximum)
 #   DRONE_HEIGHT   height of the phone above the floor, m (default 1.8): scale of the drone map
 #   DRONE_MPP      metres per pixel of the phone's picture, measured (replaces DRONE_HEIGHT)
 #   DRONE_DETECTOR ia (default: a vision model finds the rover, needs transformers) or marqueur
@@ -31,11 +42,16 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ROVER="${ROVER:-http://172.20.10.2:8080}"
-PHONE="${PHONE-http://172.20.10.6:8080/stream}"
+PHONE="${PHONE-http://iphone-de-paco.local:8080/stream}"
 D405="${D405:-}"
 D405_MOUNT="${D405_MOUNT:-}"
 CAM_HEIGHT="${CAM_HEIGHT:-0.22}"
 FUSION_PERIOD="${FUSION_PERIOD:-1.0}"
+PHONE_SHARE="${PHONE_SHARE:-0.25}"
+PERCEPTION_D405="${PERCEPTION_D405:-}"
+PERCEPTION_RANGE="${PERCEPTION_RANGE:-2.0}"
+SEGMENT="${SEGMENT:-2.0}"
+SPEED="${SPEED:-0.30}"
 DRONE_HEIGHT="${DRONE_HEIGHT:-1.8}"
 DRONE_MARKER="${DRONE_MARKER:-10}"
 DRONE_MPP="${DRONE_MPP:-}"
@@ -113,24 +129,30 @@ start_one() {
         --map-port 8081 --fusion http://127.0.0.1:8096 --suivi out/suivi.json \
         --perception-debug http://127.0.0.1:8095/debug.jpg
       # no --drone-lan: the browser would open a second full-size stream on the phone
-      if [ -n "$PHONE" ]; then set -- "$@" --drone "$PHONE"; fi
+      if [ -n "$PHONE" ]; then set -- "$@" --drone "$PHONE" --drone-part "$PHONE_SHARE"; fi
       launch "$name" "$ROOT" "$@"
       ;;
     perception)
-      launch "$name" "$ROOT" "$PY" rover_mapper/perception_service.py \
-        --source http://127.0.0.1:8082/video_rect --cam-height "$CAM_HEIGHT" --fov 100 \
-        --range 2.0 --port 8095
+      if [ -n "$PERCEPTION_D405" ]; then
+        # obstacles from the D405's measured depth only: no camera picture, no depth model
+        launch "$name" "$ROOT" "$PY" rover_mapper/perception_service.py \
+          --d405 "$PERCEPTION_D405" --range "$PERCEPTION_RANGE" --port 8095
+      else
+        launch "$name" "$ROOT" "$PY" rover_mapper/perception_service.py \
+          --source http://127.0.0.1:8082/video_rect --cam-height "$CAM_HEIGHT" --fov 100 \
+          --range "$PERCEPTION_RANGE" --port 8095
+      fi
       ;;
     fusion)
       # --delai-http / --delai-liaison: 8 s and 15 s were for the 4G link to the cloud machine
       set -- "$PY" sim/fusion_reelle.py --port 8096 --rover "$ROVER" \
         --perception http://127.0.0.1:8095 --periode "$FUSION_PERIOD" \
-        --delai-http 3 --delai-liaison 6
+        --delai-http 3 --delai-liaison 6 --segment "$SEGMENT" --vitesse "$SPEED"
       if [ -n "$PHONE" ]; then
         # the phone is read through the dashboard (one connection to the phone)
         set -- "$@" --drone-nom "$PHONE_NAME" --drone-source http://127.0.0.1:8082/drone_feed \
           --drone-hauteur "$DRONE_HEIGHT" --drone-marqueur "$DRONE_MARKER" \
-          --drone-detecteur "$DRONE_DETECTOR"
+          --drone-detecteur "$DRONE_DETECTOR" --drone-cumul
         if [ -n "$DRONE_MPP" ]; then set -- "$@" --drone-mpp "$DRONE_MPP"; fi
       fi
       launch "$name" "$ROOT" "$@"

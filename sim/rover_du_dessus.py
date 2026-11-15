@@ -14,8 +14,8 @@ its ArUco marker is too small to be read (a phone a few metres up: the marker is
 - scale: the box is about the size of the rover, which gives the metres per pixel.
 
 Needs `transformers` (pip install transformers) and about 620 MB of weights at the first run.
-Measured on the two real pictures from above we have: the rover found in both (scores 0.44
-and 0.36), 0.7 s per picture on an Apple M5.
+Measured on 17 real pictures from above: the rover found in the 12 that show it, nothing
+found in the 5 without it; 0.7 s per picture on an Apple M5.
 """
 
 import math
@@ -25,8 +25,27 @@ import cv2
 import numpy as np
 
 MODELE = 'google/owlv2-base-patch16-ensemble'
-ROVER = ['a small black robot car', 'a toy tank robot']
-AUTRES = ['a shoe', 'a cardboard box', 'a bag', 'a person']
+# No single description fits every view: "a robot" scores 0.32 to 0.59 on the rover seen from
+# 3 m with its marker paper, and 0.12 seen from 1.5 m straight above with its cables, where
+# "a black device with cables" scores 0.4. The rover's score is the best of these; the other
+# names are there so that a shoe or a bag is called a shoe or a bag. With the dark-box check
+# below: right on 17 real pictures out of 17 (12 with the rover, 5 without).
+ROVER = [
+    'a robot',
+    'a small black robot',
+    'a remote controlled car',
+    'a black device with cables',
+    'a robot with wires on the floor',
+]
+AUTRES = [
+    'a shoe',
+    'a cardboard box',
+    'a bag',
+    'a person',
+    'a backpack',
+    'a cable on the floor',
+    'a table leg',
+]
 
 
 @dataclass
@@ -64,6 +83,18 @@ def cap_par_papier(image, boite):
     return math.atan2(dy, dx)
 
 
+SOMBRE_MIN = 0.4  # share of dark pixels in the rover's box (measured: 0.45 to 0.7 on it)
+
+
+def part_sombre(image, boite):
+    """Share of the box's pixels that are dark (the rover's black body)."""
+    x0, y0, x1, y1 = (int(round(v)) for v in boite)
+    morceau = image[max(y0, 0) : y1, max(x0, 0) : x1]
+    if morceau.size == 0:
+        return 0.0
+    return float((cv2.cvtColor(morceau, cv2.COLOR_BGR2GRAY) < 70).mean())
+
+
 def iou(a, b):
     x0, y0, x1, y1 = max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
     inter = max(0.0, x1 - x0) * max(0.0, y1 - y0)
@@ -72,7 +103,7 @@ def iou(a, b):
 
 
 class DetecteurRover:
-    def __init__(self, seuil=0.25, appareil=None, marqueur_devant=False):
+    def __init__(self, seuil=0.2, appareil=None, marqueur_devant=False):
         import torch
         from transformers import Owlv2ForObjectDetection, Owlv2Processor
 
@@ -101,28 +132,33 @@ class DetecteurRover:
         )
         with self.torch.no_grad():
             sortie = self.modele(**entree)
-        res = self.proc.post_process_grounded_object_detection(
-            sortie, threshold=0.1, target_sizes=[(h, w)]
-        )[0]
-        trouves = list(
-            zip(res['scores'].tolist(), res['labels'].tolist(), res['boxes'].tolist(), strict=True)
-        )
+        # every box with its score for every name (the usual post-processing keeps only the
+        # best name of a box: the rover under its cables is as much "a bag" as "a robot")
+        scores = self.torch.sigmoid(sortie.logits[0]).cpu().numpy()
+        cote = max(h, w)  # the picture is padded to a square; boxes are fractions of it
+        cx, cy, bw, bh = (sortie.pred_boxes[0].cpu().numpy() * cote).T
+        n = len(ROVER)
+        trouves = [
+            (float(scores[i, :n].max()), float(scores[i, n:].max()),
+             (cx[i] - bw[i] / 2, cy[i] - bh[i] / 2, cx[i] + bw[i] / 2, cy[i] + bh[i] / 2))
+            for i in np.nonzero(scores[:, :n].max(axis=1) >= 0.1)[0]
+        ]  # fmt: skip
         return choisir(image, trouves, self.seuil, self.marqueur_devant)
 
 
-def choisir(image, trouves, seuil=0.25, marqueur_devant=False):
-    """The rover among the model's boxes (score, label index, box): the best "robot" box above
-    `seuil` that no other name claims with a better score, and that is not huge."""
+def choisir(image, trouves, seuil=0.2, marqueur_devant=False):
+    """The rover among the model's boxes (score as a robot, best score as something else,
+    box): the best "robot" box above `seuil`, that is not clearly something else (a shoe, a
+    bag...) and not huge."""
     h, w = image.shape[:2]
-    autres = [(s, b) for s, e, b in trouves if e >= len(ROVER)]
-    for score, etiquette, boite in sorted(trouves, reverse=True):
-        if etiquette >= len(ROVER) or score < seuil:
+    for score, autre, boite in sorted(trouves, reverse=True):
+        if score < seuil or score < 0.8 * autre:
             continue
         bw, bh = boite[2] - boite[0], boite[3] - boite[1]
         if bw <= 4 or bh <= 4 or bw * bh > 0.15 * w * h or max(bw, bh) > 3 * min(bw, bh):
             continue
-        if any(s > score and iou(boite, b) > 0.5 for s, b in autres):
-            continue
+        if part_sombre(image, boite) < SOMBRE_MIN:
+            continue  # the rover is black: a robot drawn on a banner or a poster is not
         cap = cap_par_papier(image, boite)
         if cap is not None and marqueur_devant:
             cap += math.pi

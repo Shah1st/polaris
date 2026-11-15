@@ -26,7 +26,7 @@ calib_node:
     sensor_width_px: 4032
     sensor_height_px: 3024
     # markers mode only: floor markers and the map position of each marker's centre.
-    dictionary: DICT_4X4_50
+    dictionary: DICT_APRILTAG_25h9
     marker_ids: [0, 1, 2, 3]
     marker_x: [0.0, 2.0, 2.0, 0.0]
     marker_y: [0.0, 0.0, 1.5, 1.5]
@@ -69,7 +69,7 @@ global_map_node:
     rover_size_tolerance: 0.2
     position_std: 0.03
     # marker mode only.
-    dictionary: DICT_4X4_50
+    dictionary: DICT_APRILTAG_25h9
     rover_marker_id: 10
     rover_radius: 0.20
     # Height of the rover's marker above the floor, and the camera's (same as calib_node), to
@@ -82,7 +82,7 @@ rover_pose_node:
   ros__parameters:
     # size: idle, global_map_node publishes the pose. marker: ArUco marker on the rover's top.
     detection: size
-    dictionary: DICT_4X4_50
+    dictionary: DICT_APRILTAG_25h9
     frame_id: map
     rover_marker_id: 10
     # Added to the yaw when the marker's top edge does not face the rover's front.

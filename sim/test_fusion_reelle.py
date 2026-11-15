@@ -377,3 +377,214 @@ def test_the_local_map_can_be_turned_on_and_off_while_running() -> None:
     f.tour()
     assert f.carte.tuiles['rover']
     assert f.regler_carte_locale({'carte_locale': 'no'})[0] == 400
+
+
+# ---- missions in long segments (--segment) and a drone map that grows (--drone-cumul) ------
+
+
+class SegmentRover:
+    """What _boucle_segments asks of avancer_esquive.RoverSegments: it follows the points it
+    is given and remembers them."""
+
+    def __init__(self, x, y):
+        self.est, self.cap, self.segments = (x, y), 0.0, []
+
+    def position(self):
+        return self.est
+
+    def suivre(self, points, duree):
+        self.segments.append([tuple(p) for p in points])
+        self.est = tuple(points[-1])
+        return 'done', None
+
+    def signaler_choc(self, impact):
+        raise AssertionError('no bump expected')
+
+
+def with_a_drone_map(extra=()):
+    """A FusionReelle in segment mode whose drone has seen a free strip 3 m long and 1 m wide
+    along x from the rover, and nothing else. Local map off: the rover's camera is not used."""
+    f = fr.FusionReelle(
+        fr.options(['--segment', '2.0', '--segment-vu', *extra]),
+        requete=lambda *a: None,
+        percevoir=lambda *a: None,
+        percevoir_frais=lambda *a: None,
+    )
+    strip = np.zeros((20, 60), np.int8)  # 5 cm cells, all free and seen
+    for msg in fr.decouper(strip, 19.5, 19.5, 4, f.carte, 'drone', t=1.0):
+        f.carte.recevoir(msg)
+    return f
+
+
+def test_in_segments_the_rover_reaches_the_goal_in_a_few_commands() -> None:
+    """1.8 m to drive: 8 stops step by step (25 cm each), one or two segments here."""
+    import avancer_esquive as ae
+
+    f = with_a_drone_map()
+    f.objectif = (21.8, 20.0)
+    rover = SegmentRover(20.0, 20.0)
+
+    assert f._boucle_segments(rover, ae) == 'arrive'
+    assert 1 <= len(rover.segments) <= 2
+    assert math.dist(rover.est, f.objectif) <= f.args.tolerance + 0.1
+
+
+def test_in_segments_the_rover_never_leaves_what_has_been_seen() -> None:
+    """The goal is 2 m to the side, where the drone has seen nothing: every point of every
+    segment stays inside the seen strip."""
+    import avancer_esquive as ae
+
+    f = with_a_drone_map()
+    f.objectif = (20.5, 22.0)
+    rover = SegmentRover(20.0, 20.0)
+
+    assert f._boucle_segments(rover, ae) in ('bloque', 'max_pas')
+    points = [p for s in rover.segments for p in s]
+    assert all(19.5 <= x <= 22.5 and 19.5 <= y <= 20.5 for x, y in points)
+
+
+def test_in_segments_without_a_drone_map_the_rover_does_not_move() -> None:
+    import avancer_esquive as ae
+
+    f = with_a_drone_map()
+    with f.verrou:
+        f.carte.tuiles['drone'] = {}
+    f.objectif = (21.8, 20.0)
+    rover = SegmentRover(20.0, 20.0)
+
+    assert f._boucle_segments(rover, ae) == 'bloque'
+    assert rover.segments == []
+
+
+def test_the_drone_map_grows_with_a_camera_that_moves() -> None:
+    """Two placed pictures of a camera that moved 3 m: with --drone-cumul both stay on the
+    drone map; without it the second replaces the first."""
+    for cumul, seen in ((True, 2 * 1600), (False, 1600)):
+        f, _ = fusion()
+        f.args.drone_cumul = cumul
+        for calage in ((0.0, 1.0, 1.0, 20.0, 20.0), (0.0, 1.0, 1.0, 23.0, 20.0)):
+            m = np.zeros((40, 40), np.int8)
+            with f.verrou:
+                place = f.placer_vue(m, 0.05, calage)
+                if not cumul:
+                    f.carte.tuiles['drone'], f.carte.maj['drone'] = {}, {}
+                for msg in fr.decouper(place[0], place[1], place[2], 4, f.carte, 'drone', t=1.0):
+                    f.carte.recevoir(msg)
+        total, x0, y0 = f.matrice_drone()
+        assert int((total != -1).sum()) == seen
+
+
+def test_in_segments_unseen_cells_are_crossed_unless_segment_vu() -> None:
+    """No drone map at all and no local map: step by step the rover drives to the clicked
+    point on its odometry alone; in segments it must do the same (--segment-vu refuses)."""
+    import avancer_esquive as ae
+
+    f = fr.FusionReelle(
+        fr.options(['--segment', '2.0']),
+        requete=lambda *a: None,
+        percevoir=lambda *a: None,
+        percevoir_frais=lambda *a: None,
+    )
+    f.objectif = (21.8, 20.6)
+    rover = SegmentRover(20.0, 20.0)
+
+    assert f._boucle_segments(rover, ae) == 'arrive'
+    assert 1 <= len(rover.segments) <= 2
+
+
+def test_in_segments_a_segment_goes_round_an_obstacle_of_the_drone() -> None:
+    """A box of the drone map across the straight line: no point of a segment, and no chord
+    between two points, comes within the rover's radius of it."""
+    import avancer_esquive as ae
+
+    f = fr.FusionReelle(
+        fr.options(['--segment', '2.0']),
+        requete=lambda *a: None,
+        percevoir=lambda *a: None,
+        percevoir_frais=lambda *a: None,
+    )
+    m = np.zeros((60, 80), np.int8)  # 4 m x 3 m seen free, a 30 cm box on the way
+    m[27:33, 37:43] = 1
+    for msg in fr.decouper(m, 19.0, 18.5, 4, f.carte, 'drone', t=1.0):
+        f.carte.recevoir(msg)
+    f.objectif = (22.0, 20.0)
+    rover = SegmentRover(20.0, 20.0)
+
+    assert f._boucle_segments(rover, ae) == 'arrive'
+    box = (21.0, 20.0)  # its centre; half side 0.15 m, rover radius 0.20 m
+    trace = [(20.0, 20.0)] + [p for s in rover.segments for p in s]
+    for a, b in zip(trace, trace[1:], strict=False):
+        for k in range(21):
+            x, y = a[0] + (b[0] - a[0]) * k / 20, a[1] + (b[1] - a[1]) * k / 20
+            assert max(abs(x - box[0]), abs(y - box[1])) > 0.15 + 0.15
+
+
+# ---- calibration: forward and back, seen by the drone (POST /calibrer) ---------------------
+
+
+def calibrating(turn_deg=70.0, mm_per_px=4.0, camera_moves=False):
+    """A FusionReelle whose rover and drone are stand-ins: the camera's frame is turned
+    `turn_deg` from the maps' and one pixel is `mm_per_px` on the floor. `_rouler` moves the
+    stand-in rover along its heading; `_rover_dans_l_image` says where the camera sees it."""
+    posts = []
+    f = fr.FusionReelle(
+        fr.options([]),
+        requete=lambda m, c, corps=None: posts.append((m, c)) or {'ok': True},
+        percevoir=lambda *a: None,
+        percevoir_frais=lambda *a: None,
+    )
+    f.camera = type('Camera', (), {'settings': OverheadSettings(metres_per_pixel=0.0031)})()
+    f.ia = lambda image: None
+    pose = [20.0, 20.0, math.radians(30)]
+    moves = []
+
+    def rouler(distance):
+        pose[0] += distance * math.cos(pose[2])
+        pose[1] += distance * math.sin(pose[2])
+        moves.append(distance)
+
+    def dans_l_image(apres):
+        th, k = math.radians(-turn_deg), 1000.0 / mm_per_px  # maps -> picture, pixels per m
+        x, y = pose[0] - 18.0, pose[1] - 19.0
+        px = (k * (math.cos(th) * x - math.sin(th) * y), k * (math.sin(th) * x + math.cos(th) * y))
+        if camera_moves and len(moves) == 2:  # the hand moved before the last picture
+            px = (px[0] + 40.0, px[1] + 70.0)
+        return px, tuple(pose)
+
+    f._rouler, f._rover_dans_l_image = rouler, dans_l_image
+    for msg in fr.decouper(np.zeros((8, 8), np.int8), 20.0, 20.0, 4, f.carte, 'drone', t=1.0):
+        f.carte.recevoir(msg)  # an older drone map, placed before the calibration
+    return f, moves, posts
+
+
+def test_the_calibration_drives_forward_and_back_and_finds_direction_and_scale() -> None:
+    f, moves, posts = calibrating(turn_deg=70.0, mm_per_px=4.0)
+
+    f._calibrage()
+
+    assert moves == [pytest.approx(0.30), pytest.approx(-0.30)]  # back where it started
+    assert f.mission['etat'] == 'arrive' and 'CALIBRATED' in f.mission['texte']
+    assert f.rotation_ia == pytest.approx(math.radians(70.0), abs=math.radians(1))
+    assert f.camera.settings.metres_per_pixel == pytest.approx(0.004, rel=0.01)
+    assert f.mpp_calibre  # the rover's box no longer changes the scale
+    assert not f.carte.tuiles['drone']  # the map placed before starts again
+    assert ('POST', '/stop') not in posts
+
+
+def test_the_calibration_is_refused_when_the_camera_moved_meanwhile() -> None:
+    f, moves, posts = calibrating(camera_moves=True)
+
+    f._calibrage()
+
+    assert f.mission['etat'] == 'erreur' and 'hold the camera still' in f.mission['texte']
+    assert f.rotation_ia is None and not f.mpp_calibre
+    assert f.carte.tuiles['drone']  # nothing was thrown away
+    assert ('POST', '/stop') in posts
+
+
+def test_the_calibration_needs_the_drone_camera_and_no_mission() -> None:
+    f, _, _ = calibrating()
+    f.ia = None
+    code, body = f.calibrer()
+    assert code == 409 and 'vision model' in body['error']
+    assert not f.en_mission()
