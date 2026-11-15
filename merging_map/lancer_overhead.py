@@ -3,8 +3,13 @@ lancer_overhead.py - Mission sur le vrai RaspRover, avec la camera au-dessus de 
 (branche overhead-camera, `guidance_global_map.drone.OverheadDrone`) dans le role du drone.
 
     PYTHONPATH=merging_map:src/guidance_calib:src/guidance_global_map:src/guidance_rover_pose \\
-        python merging_map/lancer_overhead.py --image overhead.jpg --victime 1.2 0.9 \\
-        --rover http://<IP du rover>:8080
+        python merging_map/lancer_overhead.py --camera http://<IP du telephone>:8080/video \\
+        --metres-par-pixel 0.0012 --victime 1.2 0.9 --rover http://<IP du rover>:8080
+
+--camera : la camera en direct (flux d'une application camera IP, RTSP, ou numero de
+peripherique). Son echelle n'est pas celle d'une photo : il faut --metres-par-pixel, mesure sur
+une image de ce flux (un objet de longueur connue pose au sol). --image a la place : une photo
+fixe, pour essayer sans camera ; elle ne voit pas le rover bouger.
 
 Il faut les modules de la branche overhead-camera, avec opencv-contrib-python et numpy, et
 sur le rover le serveur de la branche rover-teleop (rover/rover_server.py, POST /path).
@@ -18,6 +23,7 @@ bouge pas.
 import argparse
 import math
 import sys
+import time
 
 from cerveau import mission
 from fusion_carte import CarteFusion
@@ -109,13 +115,52 @@ def lancer(
     )
 
 
+def reglages_camera(args):
+    """Arguments de OverheadSettings d'apres la ligne de commande."""
+    reglages = {'camera_height': args.hauteur}
+    if args.metres_par_pixel is not None:
+        reglages['metres_per_pixel'] = args.metres_par_pixel
+    if args.marqueur is not None:
+        reglages['rover_marker_id'] = args.marqueur
+    return reglages
+
+
+def rafraichir_apres(camera, latence, dormir):
+    """Pour RaspRoverReel(rafraichir_drone=...) avec une camera en direct : son flux a du
+    retard, donc on attend `latence` s avant de prendre l'image, pour qu'elle montre bien le
+    rover arrete."""
+
+    def rafraichir():
+        dormir(latence)
+        camera.refresh(force=True)
+
+    return rafraichir
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    p.add_argument(
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        '--camera',
+        help='camera du dessus en direct : URL du flux (application camera IP du telephone, '
+        'RTSP) ou numero de peripherique. Demande --metres-par-pixel',
+    )
+    source.add_argument(
         '--image',
-        required=True,
         help='photo de la camera du dessus, relue a chaque image : une photo fixe ne voit pas '
-        'le rover bouger, il faudra la camera en direct pour une vraie mission',
+        'le rover bouger, a garder pour les essais sans camera',
+    )
+    p.add_argument(
+        '--metres-par-pixel',
+        type=float,
+        help="taille au sol d'un pixel de l'image, mesuree sur une image de la source. Sans "
+        "elle, l'echelle vient de --hauteur et de l'objectif d'une photo d'iPhone",
+    )
+    p.add_argument(
+        '--latence',
+        type=float,
+        default=0.5,
+        help='retard du flux de --camera (s) : attente avant de regarder le rover arrete',
     )
     p.add_argument(
         '--rover',
@@ -129,7 +174,7 @@ def main(argv=None):
     p.add_argument('--marqueur', type=int, help='id ArUco sur le rover, pour avoir son cap')
     args = p.parse_args(argv)
     try:
-        from guidance_global_map.drone import OverheadDrone, image_file_reader
+        from guidance_global_map.drone import LiveCamera, OverheadDrone, image_file_reader
         from guidance_global_map.pipeline import OverheadSettings
     except ImportError as e:
         sys.exit(
@@ -137,15 +182,28 @@ def main(argv=None):
             '(src/guidance_calib, src/guidance_global_map, src/guidance_rover_pose) et '
             'opencv-contrib-python.'
         )
-    reglages = {'camera_height': args.hauteur}
-    if args.marqueur is not None:
-        reglages['rover_marker_id'] = args.marqueur
-    camera = OverheadDrone(image_file_reader(args.image), OverheadSettings(**reglages))
+    options_rover = {}
+    if args.camera is not None:
+        if args.metres_par_pixel is None:
+            p.error(
+                "--camera demande --metres-par-pixel : l'echelle d'un flux video n'est pas "
+                "celle d'une photo."
+            )
+        source = int(args.camera) if args.camera.isdigit() else args.camera
+        lire = LiveCamera(source)
+        if not lire.wait_for_image(15.0):
+            sys.exit(f'Aucune image de la camera {args.camera} en 15 s.')
+    else:
+        lire = image_file_reader(args.image)
+    camera = OverheadDrone(lire, OverheadSettings(**reglages_camera(args)))
+    if args.camera is not None:
+        options_rover['rafraichir_drone'] = rafraichir_apres(camera, args.latence, time.sleep)
     instantanes = lancer(
         camera,
         client_http(args.rover),
         tuple(args.victime),
         tuple(args.depart) if args.depart else None,
+        options_rover=options_rover,
     )
     traj = instantanes['fin']['traj']
     distance = sum(math.dist(traj[k], traj[k + 1]) for k in range(len(traj) - 1))
