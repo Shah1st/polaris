@@ -273,7 +273,8 @@ def test_rover_server_restart_between_steps(banc, suivi) -> None:
     def systemctl_restart():
         def entre_deux_pas():
             ctrl = banc.rover.snapshot()['ctrl']
-            return ctrl['mode'] == 'idle' and len(ctrl['history']) >= 2
+            # 2 lignes droites de la verification de l'echelle, puis 2 pas de la mission
+            return ctrl['mode'] == 'idle' and len(ctrl['history']) >= 4
 
         if attendre(entre_deux_pas):
             redemarre.append(time.monotonic())

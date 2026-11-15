@@ -151,8 +151,12 @@ Rover vu par la camera : (0.62, 1.33) m, cap -34 deg
 
 À vérifier : la zone mesure bien l'arène ; la position du rover tombe à quelques cm près de la
 vraie (au mètre) ; le cap est donné (sinon le marqueur n'est pas vu) ; la décision et les
-premiers pas ont du sens ; **le rover n'a pas bougé**. `--camera` sans `--metres-par-pixel` n'est
-accepté qu'avec `--dry-run` (échelle déduite de `--hauteur`, peu fiable). `--image photo.jpg`
+premiers pas ont du sens ; **le rover n'a pas bougé**. Sans `--dry-run`, la mission commence
+par vérifier l'échelle sur le rover : il avance de 15 cm puis revient (lui laisser 15 cm de
+libre devant et derrière). Avec `--metres-par-pixel`, elle s'arrête si le rover le contredit
+de plus de 10 % ; sans lui, l'échelle déduite de `--hauteur` est remplacée par celle que
+montre le rover, affichée pour être reprise. `--sans-etalonnage` enlève cette vérification
+et demande alors `--metres-par-pixel`. `--image photo.jpg`
 (photo fixe) n'est accepté qu'avec `--dry-run` (sinon refus, code 2).
 
 ### 3.6 Premier vrai pas, la main sur l'arrêt
