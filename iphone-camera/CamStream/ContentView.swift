@@ -145,6 +145,10 @@ struct ContentView: View {
                 }
                 .disabled(model.captureSource == .testPattern)
 
+                if model.ultraWideAvailable {
+                    lensButton
+                }
+
                 roundButton(icon: "slider.horizontal.3", label: "Réglages") {
                     showSettings = true
                 }
@@ -210,6 +214,23 @@ struct ContentView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// 1× / 0,5× like Apple's Camera app, yellow on the ultra wide. The front camera is always 1×.
+    private var lensButton: some View {
+        let shown: CameraLens = model.position == .back ? model.lens : .wide
+        let ultraWide = shown == .ultraWide
+        return Button {
+            model.switchLens()
+        } label: {
+            Text(shown.label)
+                .font(.subheadline.weight(.bold))
+                .frame(width: 46, height: 46)
+                .background(Color.white.opacity(0.12), in: Circle())
+        }
+        .foregroundStyle(ultraWide ? Color.yellow : Color.white)
+        .disabled(!model.canChooseLens)
+        .accessibilityLabel(ultraWide ? "Objectif grand angle 0,5×, passer en 1×" : "Objectif 1×, passer en grand angle 0,5×")
     }
 
     private func roundButton(icon: String, label: String, action: @escaping () -> Void) -> some View {

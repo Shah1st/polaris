@@ -28,13 +28,14 @@ L'app démarre la diffusion automatiquement et affiche l'adresse à ouvrir. L'iP
 | `http://IP:8080/stream` | Flux MJPEG brut (VLC, OBS, ffmpeg, OpenCV…) |
 | `http://IP:8080/view` | Page avec uniquement l'image (idéale pour OBS) |
 | `http://IP:8080/snapshot.jpg` | Dernière image en JPEG |
-| `http://IP:8080/status` | État en JSON (résolution, i/s, caméra, spectateurs) |
+| `http://IP:8080/status` | État en JSON (résolution, i/s, caméra, objectif, spectateurs) |
 
 Le service est aussi annoncé en Bonjour sous le nom « CamStream » (`dns-sd -B _http._tcp` sur le Mac).
 
 Dans l'app :
 - **🔄** change de caméra (arrière / avant) ;
-- **Réglages** : résolution (480p / 720p / 1080p), images par seconde (15 / 24 / 30), qualité JPEG, liste des adresses à copier ;
+- **1× / 0,5×** passe la caméra arrière en **grand angle** (objectif ultra grand-angle, champ environ deux fois plus large) et retour. Le bouton n'apparaît que sur un iPhone qui a cet objectif (iPhone 11 et suivants, pas le SE) ; la caméra avant reste en 1× ;
+- **Réglages** : caméra et objectif, résolution (480p / 720p / 1080p), images par seconde (15 / 24 / 30), qualité JPEG, liste des adresses à copier ;
 - **🌙** éteint l'affichage (écran noir) pendant que la diffusion continue : moins de batterie et moins de chauffe. Touchez l'écran pour le rallumer.
 - L'interface reste en portrait. **Le flux suit l'orientation réelle de l'iPhone** : tenez-le à l'horizontale pour une image 16:9.
 
@@ -71,6 +72,15 @@ while True:
 - **Sans spectateur**, l'app n'encode qu'une image par seconde, pour garder `/snapshot.jpg` à jour sans user la batterie.
 - **Sécurité** : tout appareil du réseau local peut voir le flux, sans mot de passe. À éviter sur un Wi-Fi public.
 - **Alternative native** : pour utiliser l'iPhone uniquement comme webcam du Mac, la fonction *Caméra de continuité* d'Apple le fait sans app. CamStream est utile pour tout le reste : autre ordinateur, navigateur, OBS, scripts, plusieurs spectateurs…
+
+## Grand angle et caméra du dessus (Polaris)
+
+Le grand angle voit environ deux fois plus large à la même hauteur : utile pour couvrir toute l'arène depuis un point bas. Le choix est mémorisé, et l'objectif utilisé est donné par `/status` (`"lens": "wide"`, `"ultrawide"`, ou `"none"` pour la mire).
+
+- **Un seul objectif, toujours le même.** L'app choisit la caméra physique (1× ou 0,5×), jamais la caméra « virtuelle » d'iOS qui change d'objectif toute seule selon la distance et la lumière : l'échelle de l'image ne change donc pas en pleine mission.
+- **Distorsion** : iOS corrige par défaut celle du grand angle (`isGeometricDistortionCorrectionEnabled` vaut `true` quand l'appareil le permet, d'après la documentation d'Apple). La chaîne de la caméra du dessus (`docs/overhead-camera.md`, `docs/demo-reelle.md`) ne corrige aucune distorsion et recommandait jusqu'ici l'objectif principal seul : vérifier sur une image du flux que les bords droits de l'arène restent droits jusque dans les coins avant de s'y fier.
+- **Échelle** : remesurer les mètres par pixel (`python -m guidance_global_map.measure_scale`) après chaque changement d'objectif, de résolution ou de hauteur ; l'ancienne valeur est fausse d'un facteur 2 environ.
+- Le changement d'objectif se fait sur l'iPhone seulement, pas par le réseau : le serveur n'a pas de mot de passe, et n'importe qui sur le Wi-Fi pourrait sinon changer l'échelle pendant une mission.
 
 ## Tester sans iPhone
 

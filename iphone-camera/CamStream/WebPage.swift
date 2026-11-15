@@ -38,7 +38,7 @@ enum WebPage {
     async function poll(){
       try{
         const r=await fetch('/status',{cache:'no-store'});const j=await r.json();
-        s.textContent=`${j.width}×${j.height} · ${j.fps} i/s · caméra ${j.camera==='front'?'avant':'arrière'} · ${j.viewers} spectateur${j.viewers>1?'s':''}`;
+        s.textContent=`${j.width}×${j.height} · ${j.fps} i/s · caméra ${j.camera==='front'?'avant':'arrière'}${j.lens==='ultrawide'?' grand angle 0,5×':''} · ${j.viewers} spectateur${j.viewers>1?'s':''}`;
         dot.className='on';
         if(lost){lost=false;reconnect();}
       }catch(e){s.textContent='iPhone injoignable (app fermée ou en arrière-plan ?)';dot.className='';lost=true;}

@@ -44,9 +44,45 @@ enum JPEGQuality: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Lens of the back camera. Each one is a physical camera, never the multi-lens virtual camera,
+/// which switches lens by itself (focus distance, light) and would change the picture's scale
+/// in the middle of a run.
+enum CameraLens: String, CaseIterable, Identifiable, Sendable {
+    /// Main lens, 1× (Apple calls it the "wide angle" camera).
+    case wide
+    /// Ultra wide lens, 0.5×: about twice the field of view. iOS corrects its distortion by
+    /// default (`isGeometricDistortionCorrectionEnabled`).
+    case ultraWide = "ultrawide"
+
+    var id: String { rawValue }
+
+    /// Short label, as in Apple's Camera app.
+    var label: String {
+        switch self {
+        case .wide: "1×"
+        case .ultraWide: "0,5×"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .wide: "Standard 1×"
+        case .ultraWide: "Grand angle 0,5×"
+        }
+    }
+
+    var deviceType: AVCaptureDevice.DeviceType {
+        switch self {
+        case .wide: .builtInWideAngleCamera
+        case .ultraWide: .builtInUltraWideCamera
+        }
+    }
+}
+
 /// Source effectivement utilisée pour le flux.
 enum CaptureSource: Equatable, Sendable {
-    case camera(name: String)
+    /// `lens`: the lens actually in use (1× when the ultra wide one was asked for but is missing).
+    case camera(name: String, lens: CameraLens)
     /// Aucune caméra (simulateur) : une mire animée est diffusée à la place.
     case testPattern
     case failed(String)
@@ -89,11 +125,24 @@ final class CameraManager: NSObject, @unchecked Sendable {
         settings.withLock { $0 = EncoderSettings(maxFPS: fps, quality: quality.compression) }
     }
 
+    /// The physical camera of this type at this position, or nil when the iPhone has none.
+    static func camera(_ type: AVCaptureDevice.DeviceType,
+                       position: AVCaptureDevice.Position) -> AVCaptureDevice? {
+        AVCaptureDevice.DiscoverySession(deviceTypes: [type], mediaType: .video, position: position)
+            .devices.first
+    }
+
+    /// True when the back camera has an ultra wide lens (iPhone 11 and later, not the SE).
+    static var hasUltraWideCamera: Bool {
+        camera(.builtInUltraWideCamera, position: .back) != nil
+    }
+
     /// Configure (ou reconfigure) la capture puis la démarre.
-    func start(position: AVCaptureDevice.Position, resolution: StreamResolution,
+    /// `lens` only applies to the back camera; the front one is always 1×.
+    func start(position: AVCaptureDevice.Position, lens: CameraLens, resolution: StreamResolution,
                completion: @escaping @Sendable (CaptureSource) -> Void) {
         sessionQueue.async { [self] in
-            let source = configure(position: position, resolution: resolution)
+            let source = configure(position: position, lens: lens, resolution: resolution)
             switch source {
             case .camera:
                 stopTestPattern()
@@ -117,12 +166,16 @@ final class CameraManager: NSObject, @unchecked Sendable {
 
     // MARK: - Configuration
 
-    private func configure(position: AVCaptureDevice.Position, resolution: StreamResolution) -> CaptureSource {
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position)
+    private func configure(position: AVCaptureDevice.Position, lens: CameraLens,
+                           resolution: StreamResolution) -> CaptureSource {
+        let wanted: CameraLens = position == .back ? lens : .wide
+        guard let device = Self.camera(wanted.deviceType, position: position)
+                ?? Self.camera(.builtInWideAngleCamera, position: position)
                 ?? AVCaptureDevice.default(for: .video)
         else {
             return .testPattern
         }
+        let usedLens: CameraLens = device.deviceType == .builtInUltraWideCamera ? .ultraWide : .wide
 
         session.beginConfiguration()
 
@@ -130,6 +183,9 @@ final class CameraManager: NSObject, @unchecked Sendable {
             session.removeInput(videoInput)
             self.videoInput = nil
         }
+        // The preset chosen for the previous camera may not exist on this one (other lens):
+        // a preset every camera has, the chosen one is set again below.
+        session.sessionPreset = .high
 
         let input: AVCaptureDeviceInput
         do {
@@ -158,7 +214,7 @@ final class CameraManager: NSObject, @unchecked Sendable {
         session.commitConfiguration()
 
         setupRotation(for: device)
-        return .camera(name: device.localizedName)
+        return .camera(name: device.localizedName, lens: usedLens)
     }
 
     /// L'image diffusée suit l'orientation physique de l'iPhone (portrait ou paysage),

@@ -8,6 +8,8 @@ struct StreamInfo: Codable, Sendable, Equatable {
     var height = 0
     var fps = 30
     var camera = "back"
+    /// Lens in use: "wide" (1×), "ultrawide" (0.5×) or "none" (no camera, test pattern).
+    var lens = "none"
 }
 
 /// Petit serveur HTTP qui diffuse les images JPEG de la caméra en MJPEG
@@ -247,9 +249,10 @@ final class MJPEGServer: @unchecked Sendable {
                 let height: Int
                 let fps: Int
                 let camera: String
+                let lens: String
             }
             let status = Status(viewers: streamClients.count, width: info.width, height: info.height,
-                                fps: info.fps, camera: info.camera)
+                                fps: info.fps, camera: info.camera, lens: info.lens)
             let body = (try? JSONEncoder().encode(status)) ?? Data("{}".utf8)
             sendResponse(on: connection, status: "200 OK", contentType: "application/json", body: body, headOnly: headOnly)
 

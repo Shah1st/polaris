@@ -30,6 +30,15 @@ final class StreamModel {
         }
     }
 
+    /// Lens asked for on the back camera (the front one is always 1×).
+    var lens: CameraLens {
+        didSet {
+            guard lens != oldValue else { return }
+            defaults.set(lens.rawValue, forKey: Keys.lens)
+            restartCaptureIfRunning()
+        }
+    }
+
     var resolution: StreamResolution {
         didSet {
             guard resolution != oldValue else { return }
@@ -55,6 +64,9 @@ final class StreamModel {
 
     static let fpsOptions = [15, 24, 30]
 
+    /// The back camera has an ultra wide lens (not on the SE nor before the iPhone 11).
+    let ultraWideAvailable = CameraManager.hasUltraWideCamera
+
     let camera = CameraManager()
     @ObservationIgnored private let server = MJPEGServer()
     @ObservationIgnored private let pathMonitor = NWPathMonitor()
@@ -62,6 +74,7 @@ final class StreamModel {
 
     private enum Keys {
         static let position = "position"
+        static let lens = "lens"
         static let resolution = "resolution"
         static let fps = "fps"
         static let quality = "quality"
@@ -69,6 +82,7 @@ final class StreamModel {
 
     init() {
         position = defaults.string(forKey: Keys.position) == "front" ? .front : .back
+        lens = CameraLens(rawValue: defaults.string(forKey: Keys.lens) ?? "") ?? .wide
         resolution = StreamResolution(rawValue: defaults.string(forKey: Keys.resolution) ?? "") ?? .hd720
         let savedFPS = defaults.integer(forKey: Keys.fps)
         fps = Self.fpsOptions.contains(savedFPS) ? savedFPS : 30
@@ -127,11 +141,25 @@ final class StreamModel {
 
     var primaryURL: String? { pageURLs.first }
 
+    /// Lens of the camera being streamed; nil without a camera (test pattern, failure).
+    var activeLens: CameraLens? {
+        if case .camera(_, let lens) = captureSource { return lens }
+        return nil
+    }
+
+    /// The lens button and picker only make sense on the back camera of an iPhone that has both.
+    var canChooseLens: Bool {
+        ultraWideAvailable && position == .back && captureSource != .testPattern
+    }
+
     var statusText: String {
         if !isRunning { return "Arrêté" }
         if case .failed(let message) = captureSource { return message }
         if case .failed(let message) = serverState { return message }
-        if isLive { return captureSource == .testPattern ? "En direct · mire" : "En direct" }
+        if isLive {
+            if captureSource == .testPattern { return "En direct · mire" }
+            return activeLens == .ultraWide ? "En direct · grand angle" : "En direct"
+        }
         return "Démarrage…"
     }
 
@@ -177,6 +205,10 @@ final class StreamModel {
         position = position == .back ? .front : .back
     }
 
+    func switchLens() {
+        lens = lens == .wide ? .ultraWide : .wide
+    }
+
     /// Retour au premier plan : iOS a pu fermer le socket du serveur pendant la mise en veille.
     func sceneBecameActive() {
         refreshAddresses()
@@ -187,12 +219,13 @@ final class StreamModel {
     // MARK: Interne
 
     private func startCapture() {
-        camera.start(position: position, resolution: resolution) { [weak self] source in
+        camera.start(position: position, lens: lens, resolution: resolution) { [weak self] source in
             guard let self else { return }
             Self.onMain {
                 guard self.isRunning else { return }
                 self.captureSource = source
                 self.configurationID += 1
+                self.pushStreamInfo() // the lens actually in use, for /status
             }
         }
     }
@@ -215,7 +248,8 @@ final class StreamModel {
             width: Int(frameSize.width),
             height: Int(frameSize.height),
             fps: fps,
-            camera: position == .front ? "front" : "back"
+            camera: position == .front ? "front" : "back",
+            lens: activeLens?.rawValue ?? "none"
         ))
     }
 

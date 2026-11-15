@@ -8,12 +8,21 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Caméra") {
+                Section {
                     Picker("Caméra", selection: $model.position) {
                         Text("Arrière").tag(AVCaptureDevice.Position.back)
                         Text("Avant").tag(AVCaptureDevice.Position.front)
                     }
                     .pickerStyle(.segmented)
+                    Picker("Objectif", selection: $model.lens) {
+                        ForEach(CameraLens.allCases) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(!model.canChooseLens)
+                } header: {
+                    Text("Caméra")
+                } footer: {
+                    Text(lensFooter)
                 }
 
                 Section {
@@ -65,6 +74,16 @@ struct SettingsView: View {
             }
         }
         .presentationDetents([.medium, .large])
+    }
+
+    private var lensFooter: String {
+        if !model.ultraWideAvailable {
+            return "Cet iPhone n'a pas d'objectif grand angle : la caméra arrière reste en 1×."
+        }
+        if model.position == .front {
+            return "Le grand angle n'existe que sur la caméra arrière."
+        }
+        return "Grand angle 0,5× : champ environ deux fois plus large, distorsion corrigée par iOS. Après un changement d'objectif, remesurer l'échelle (mètres par pixel) de la carte vue du dessus."
     }
 }
 
