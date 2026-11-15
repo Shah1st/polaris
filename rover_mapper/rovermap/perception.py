@@ -3,7 +3,7 @@
 No tracking: the rover stands still, one depth map (DA3, or a true one) is turned into a
 -1/0/1 grid of 5 cm cells in the rover frame:
 
-* the floor plane is fitted in the lower part of the image (RANSAC, mapper.fit_ground);
+* the floor plane is fitted in the lower part of the image (RANSAC, floor.fit_ground);
 * its distance to the camera, in depth units, against the known camera height above the floor
   gives the metric scale (DA3's depth has no reliable scale of its own);
 * rover frame: origin on the floor under the camera, x = optical axis projected on the floor,
@@ -14,8 +14,8 @@ No tracking: the rover stands still, one depth map (DA3, or a true one) is turne
   than the nearest obstacle on that ray are unknown even if a few floor points land there:
   a 0 erases the drone's obstacles in the fusion, so a hidden cell must never say "free".
 
-Only numpy and OpenCV here (torch comes in through mapper.fit_ground, imported when the plane
-is not given): the geometry is tested without a GPU.
+Only numpy and OpenCV here, the floor fit included (floor.fit_ground): the geometry and the
+D405 run without torch or a GPU.
 """
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ def valid_depth(depth: np.ndarray, conf: np.ndarray | None = None,
 
 def fit_floor(depth: np.ndarray, K: np.ndarray, valid: np.ndarray, seed: int = 0):
     """(normal towards the camera, camera distance to the plane in depth units) or None."""
-    from .mapper import fit_ground  # torch: only where a plane must really be fitted
+    from .floor import fit_ground  # numpy only: the D405 needs no torch
 
     return fit_ground(depth, K, valid, np.random.default_rng(seed))
 
@@ -180,7 +180,7 @@ def perceive(depth: np.ndarray, K: np.ndarray, cam_height: float = 0.22,
     depth = np.asarray(depth, np.float32)
     if valid is None:
         valid = valid_depth(depth, conf)
-    if plane is None and valid.sum() >= 200:  # fit_ground's own minimum, before importing torch
+    if plane is None and valid.sum() >= 200:  # fit_ground's own minimum
         plane = fit_floor(depth, K, valid)
     if plane is None:
         cells, x0, y0, stats = classify_points(np.zeros((0, 3)), max_range, min_range, band, res)
