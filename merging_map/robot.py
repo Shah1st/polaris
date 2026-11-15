@@ -3,7 +3,7 @@ robot.py - Ce dont le cerveau (cerveau.mission) a besoin pour piloter un rover.
 
 Deux implementations :
   - demo_fusion.Simu        : le rover et le drone simules (tests, tableau de bord) ;
-  - rover_reel.RaspRoverReel : le vrai RaspRover, pilote depuis l'ordinateur.
+  - rover_reel.RaspRoverReel : le vrai RaspRover, a travers le serveur embarque de RBDRB.
 
 Toutes les positions sont en metres dans le repere de la carte (celui du drone / ArUco).
 """
