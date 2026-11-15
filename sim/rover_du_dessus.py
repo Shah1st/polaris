@@ -67,6 +67,18 @@ def cap_par_papier(image, boite):
     return math.atan2(dy, dx)
 
 
+SOMBRE_MIN = 0.25  # share of dark pixels in the rover's box (measured: 0.45 to 0.7 on it)
+
+
+def part_sombre(image, boite):
+    """Share of the box's pixels that are dark (the rover's black body)."""
+    x0, y0, x1, y1 = (int(round(v)) for v in boite)
+    morceau = image[max(y0, 0) : y1, max(x0, 0) : x1]
+    if morceau.size == 0:
+        return 0.0
+    return float((cv2.cvtColor(morceau, cv2.COLOR_BGR2GRAY) < 70).mean())
+
+
 def iou(a, b):
     x0, y0, x1, y1 = max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
     inter = max(0.0, x1 - x0) * max(0.0, y1 - y0)
@@ -129,6 +141,8 @@ def choisir(image, trouves, seuil=0.2, marqueur_devant=False):
         bw, bh = boite[2] - boite[0], boite[3] - boite[1]
         if bw <= 4 or bh <= 4 or bw * bh > 0.15 * w * h or max(bw, bh) > 3 * min(bw, bh):
             continue
+        if part_sombre(image, boite) < SOMBRE_MIN:
+            continue  # the rover is black: a robot drawn on a banner or a poster is not
         cap = cap_par_papier(image, boite)
         if cap is not None and marqueur_devant:
             cap += math.pi

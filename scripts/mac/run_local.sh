@@ -18,6 +18,9 @@
 #   POLARIS_PY     python of the rovermap environment (default: ../.venv or .venv next to the repo)
 #   ROVER          rover API                    (default http://172.20.10.2:8080)
 #   PHONE          phone stream, '' = no drone  (default http://172.20.10.6:8080/stream)
+#                  (.../snapshot.jpg: one picture per request; .../stream: the phone pushes
+#                  its video and takes all the air time of a slow shared Wi-Fi)
+#   PHONE_SHARE    share of the time the phone may spend sending pictures (default 0.25)
 #   PHONE_NAME     name shown on the drone map  (default: iPhone CamStream (<host>))
 #   D405           D405 server of the rover, e.g. http://172.20.10.2:8091 ('' = rover camera only)
 #   D405_MOUNT     "TX TY TZ [PITCH [YAW [ROLL]]]" of the D405 seen from the rover camera (with D405)
@@ -33,11 +36,12 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ROVER="${ROVER:-http://172.20.10.2:8080}"
-PHONE="${PHONE-http://172.20.10.6:8080/stream}"
+PHONE="${PHONE-http://172.20.10.6:8080/snapshot.jpg}"
 D405="${D405:-}"
 D405_MOUNT="${D405_MOUNT:-}"
 CAM_HEIGHT="${CAM_HEIGHT:-0.22}"
 FUSION_PERIOD="${FUSION_PERIOD:-1.0}"
+PHONE_SHARE="${PHONE_SHARE:-0.25}"
 SEGMENT="${SEGMENT:-2.0}"
 SPEED="${SPEED:-0.30}"
 DRONE_HEIGHT="${DRONE_HEIGHT:-1.8}"
@@ -117,7 +121,7 @@ start_one() {
         --map-port 8081 --fusion http://127.0.0.1:8096 --suivi out/suivi.json \
         --perception-debug http://127.0.0.1:8095/debug.jpg
       # no --drone-lan: the browser would open a second full-size stream on the phone
-      if [ -n "$PHONE" ]; then set -- "$@" --drone "$PHONE"; fi
+      if [ -n "$PHONE" ]; then set -- "$@" --drone "$PHONE" --drone-part "$PHONE_SHARE"; fi
       launch "$name" "$ROOT" "$@"
       ;;
     perception)
