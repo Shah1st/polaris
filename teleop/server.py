@@ -519,8 +519,10 @@ def make_handler(
     suivi: str | None = None,
     perception_debug: str | None = None,
     overhead: CameraHub | None = None,
+    drone_lan: str = '',
 ):
-    """`overhead`: the drone camera (--drone), None without one."""
+    """`overhead`: the drone camera (--drone), None without one. `drone_lan`: the phone's
+    stream on the robot's network, read by the browser itself in direct mode ('' = never)."""
 
     class H(BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.1'
@@ -547,6 +549,7 @@ def make_handler(
                         f.read()
                         .replace(b'__MAP_PORT__', str(map_port).encode())
                         .replace(b'__ROBOT_LAN__', robot_lan.encode())
+                        .replace(b'__DRONE_LAN__', drone_lan.encode())
                     )
                 self._send(200, page, 'text/html; charset=utf-8')
             elif path == '/api/state':
@@ -825,6 +828,12 @@ if __name__ == '__main__':
         help='the drone camera: MJPEG stream or JPEG snapshot URL of a phone camera app, e.g. '
         'http://192.168.1.50:8081/video (default: none)',
     )
+    ap.add_argument(
+        '--drone-lan',
+        default='',
+        help="the phone's stream on the robot's network (e.g. http://172.20.10.6:8080/stream), "
+        "shown by the browser itself when it has the direct link ('' = never)",
+    )
     args = ap.parse_args()
     sims = {
         'rover': CameraHub(args.sim.rstrip('/') + '/video_feed', snapshots=False),
@@ -845,6 +854,7 @@ if __name__ == '__main__':
             args.suivi,
             args.perception_debug,
             overhead,
+            args.drone_lan,
         ),
     )
     srv.daemon_threads = True

@@ -144,7 +144,7 @@
     <div class="pane" id="paneMaps">
       <figure class="feed">
         <figcaption><b>Drone camera (iPhone)</b><span id="dsrc">–</span></figcaption>
-        <div class="video wide"><canvas id="droneCam" width="640" height="480"></canvas><span id="dinfo"></span></div>
+        <div class="video wide"><canvas id="droneCam" width="640" height="480"></canvas><img id="droneDirect" alt="" hidden><span id="dinfo"></span></div>
       </figure>
       <div id="fstatus">Maps: waiting…</div>
       <div class="maptools"><button id="mapReset" type="button">Reset the maps</button>
@@ -245,7 +245,7 @@ const droneShown = () => droneOn && pane === 'maps' && !document.hidden;
 async function droneLoop(i) {
   for (;;) {
     try {
-      if (!droneShown() || (i >= 1 && pingMs !== null && pingMs > 700)) { await sleep(1000); continue; }
+      if (!droneShown() || droneDirect() || (i >= 1 && pingMs !== null && pingMs > 700)) { await sleep(1000); continue; }
       const r = await fetch(`${frameHost}/frame.jpg?s=overhead&c=${viewer}d&p=${$('preset').value}`, { cache: 'no-store' });
       if (r.status !== 200) { await sleep(300); continue; }
       const seq = +r.headers.get('X-Seq'), age = +r.headers.get('X-Age-Ms');
@@ -263,10 +263,25 @@ async function droneLoop(i) {
   }
 }
 for (let i = 0; i < 2; i++) droneLoop(i);
+// On the robot's network (direct link) the phone is read straight from this computer
+// (server.py --drone-lan): its video then never crosses the 4G link twice, phone -> VM -> here.
+const DRONE_LAN = '__DRONE_LAN__';
+const droneDirect = () => direct && !!DRONE_LAN && droneShown();
+function syncDroneDirect() {
+  const on = droneDirect(), img = $('droneDirect');
+  if (on === !img.hidden) return;
+  img.hidden = !on; $('droneCam').hidden = on;
+  if (on) img.src = DRONE_LAN; else img.removeAttribute('src');
+}
+$('droneDirect').onerror = () => {
+  if (droneDirect()) setTimeout(() => { if (droneDirect()) $('droneDirect').src = DRONE_LAN + (DRONE_LAN.includes('?') ? '&' : '?') + 't=' + Date.now(); }, 1500);
+};
 setInterval(() => { dShownFps = dShown; dShown = 0; }, 1000);
 let droneInfo = null;  // the drone section of /api/state
 setInterval(() => {
   const el = $('dinfo');
+  syncDroneDirect();
+  if (droneDirect()) { el.textContent = 'direct from the phone (local network)'; el.className = ''; return; }
   if (!droneOn) {
     el.textContent = 'no drone camera: start server.py with --drone http://<iPhone>:<port>/…';
     el.className = 'old'; return;
@@ -463,7 +478,7 @@ let direct = false, directFail = 0, probeOk = 0, probeBad = 0, robotSeen = false
 function setDirect(on) {
   direct = on; directFail = 0;
   $('camDirect').hidden = !direct; $('cam').hidden = direct;
-  $('camDirect').src = direct ? LAN + '/video_feed?t=' + Date.now() : '';
+  $('camDirect').src = direct ? LAN + '/video_feed?fps=20&t=' + Date.now() : '';
 }
 function showRoute() {
   const mode = $('route_sel').value;
@@ -497,7 +512,7 @@ async function probe() {
 }
 $('route_sel').onchange = () => { probeOk = probeBad = 0; probe(); };
 setInterval(probe, 5000); probe();
-$('camDirect').onerror = () => { if (direct) setTimeout(() => { $('camDirect').src = LAN + '/video_feed?t=' + Date.now(); }, 1500); };
+$('camDirect').onerror = () => { if (direct) setTimeout(() => { $('camDirect').src = LAN + '/video_feed?fps=20&t=' + Date.now(); }, 1500); };
 // The robot's API reads the JSON whatever the content type: a "simple" request needs no CORS.
 const postRobot = (path, body) => fetch(LAN + path, { method:'POST', mode:'no-cors', keepalive:true,
     headers:{'Content-Type':'text/plain'}, body: JSON.stringify(body || {}) })
