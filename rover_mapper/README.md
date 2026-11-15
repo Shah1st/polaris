@@ -63,6 +63,29 @@ Lanceur : `scripts/live_iphone.command`, à ouvrir avec l'app Terminal de macOS,
 - `scripts/fake_rover.py` : simule le flux du rover à partir d'une vidéo.
 - `scripts/eval_tum.py` : mesure de précision sur un jeu de données TUM (`0` comme pas d'images = rythme réel).
 
+## Vraie D405 du rover (`--d405`)
+
+Le robot ne fait que capturer et envoyer (`d405_server.py` sur l'ordinateur du rover, 127.0.0.1:8091, joint depuis la VM par un tunnel SSH) : une image couleur JPEG et la profondeur brute 16 bits dans le repère du capteur de profondeur, non alignée, avec intrinsèques et extrinsèques d'usine, seulement quand on la demande. Tout le calcul se fait sur la VM (`rovermap/source.py`, `D405Source`) : profondeur en mètres (brut × `depth_scale` lu sur l'appareil, l'unité de la D405 n'est pas le mm), alignement profondeur → couleur pour « D405 seule », reprojection profondeur → caméra du robot pour « Les deux ».
+
+```bash
+# D405 seule (échelle donnée par le capteur)
+/home/romaindcrl/rovermap/.venv/bin/python rover_mapper/run.py --d405 http://127.0.0.1:8091 \
+    --sensors d405 --d405-height 0.06
+# Les deux : image du robot (redressée par le tableau de bord) + profondeur D405
+/home/romaindcrl/rovermap/.venv/bin/python rover_mapper/run.py --source http://127.0.0.1:8082/video_rect \
+    --rgb-fov 100 --d405 http://127.0.0.1:8091 --sensors both --d405-mount TX TY TZ TANGAGE \
+    --cam-height 0.21 [--rover http://127.0.0.1:18080]
+```
+
+- `--d405-height` : hauteur de l'objectif de la D405 au-dessus du sol (à mesurer).
+- `--d405-mount TX TY TZ [TANGAGE [LACET [ROULIS]]]` : caméra couleur de la D405 vue de la caméra du robot, axes OpenCV (x à droite, y vers le bas, z devant, mètres) ; tangage > 0 = la D405 regarde plus bas, lacet > 0 = plus à gauche, roulis > 0 = son côté droit plus bas. **À mesurer.**
+- `--rgb-fov` : champ horizontal de `--source`, une image sténopé centrée (le `--rect-fov` du tableau de bord, 100 par défaut). Pas `--robot` : son flux brut est en fisheye.
+- `--d405-max-age 1.0` : une image D405 plus vieille n'est pas utilisée (âge mesuré par l'horloge monotone du robot plus la nôtre ; l'horloge murale du robot a des heures de décalage).
+- **« Les deux » : les deux images ne sont pas prises ensemble.** La caméra du robot arrive par le tableau de bord avec ~0,5 s de retard, la D405 est la plus récente : en tournant ou en roulant vite, la profondeur tombe sur les mauvais pixels. Rouler lentement.
+- **Tourelle** : la caméra du robot est sur une tourelle ; `--d405-mount` ne vaut qu'à pan 0 et au tilt de la mesure. Avec `--rover URL` (serveur du rover, `GET /state`), un pan non nul est signalé.
+
+Sans le robot : `scripts/fake_d405.py` sert le même contrat HTTP à partir du simulateur de l'appartement (`--sim http://127.0.0.1:8090`, 2 images/s au plus ; jamais celui de la forêt sur 5050). Tests : `test_d405_source.py` (faux serveur D405 avec extrinsèques non triviales, sans appareil ni modèle).
+
 ## Perception du rover pour la mission (une seule image, sans suivi)
 
 `perception_service.py` donne à `merging_map` (interface 4 : `merging_map/perception_rover.py`, `percevoir_http(url)`) les cases de 5 cm devant le rover : 1 obstacle, 0 sol vu, -1 inconnu. À chaque demande : dernière image de la caméra → DA3 sur cette seule image → plan du sol (RANSAC, moitié basse) → échelle donnée par `--cam-height` → repère rover (x devant = axe optique projeté sur le sol, y à gauche, z depuis le sol) → obstacle = points entre `--band-low` 4 cm et `--band-high` 40 cm au-dessus du sol ; ce qui est derrière un obstacle ou hors du champ reste -1 (un 0 effacerait les obstacles du drone). Pas de suivi : celui du mappeur n'a pas tenu sur le vrai rover.

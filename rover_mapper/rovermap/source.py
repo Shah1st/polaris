@@ -1,5 +1,6 @@
-"""Frame sources: robot MJPEG stream, webcam, or a video file, and the
-simulator's snapshot endpoint (robot camera + simulated D405 + true poses).
+"""Frame sources: robot MJPEG stream, webcam, or a video file, the
+simulator's snapshot endpoint (robot camera + simulated D405 + true poses),
+and the real D405 on the rover (d405_server.py; all computing done here).
 
 Every source runs in its own thread and only keeps the most recent frame, so
 the mapper always works on what the camera sees *now* (no latency build-up).
@@ -218,7 +219,7 @@ class SimSource:
         cached = self._preview
         if cached is not None and cached[0] == seq and cached[1] == mode:
             return seq, cached[2]
-        img, sd = snap["rgb"], None
+        img, sd = snap.get("rgb"), None    # no robot camera in a real "D405 seule" dict
         if mode == MODE_D405:
             img, sd = snap["d405_rgb"], snap["d405_depth"]
         elif mode == MODE_BOTH:
@@ -365,4 +366,248 @@ class FrameSource:
                             self._publish(bgr)
             except Exception as e:  # network hiccup: retry
                 self.error = f"{type(e).__name__}: {e}"
+                time.sleep(1.0)
+
+
+# --- Real Intel RealSense D405 on the rover -------------------------------
+# The robot only captures and sends (rover_mapper/d405_server.py: GET /frame,
+# one frameset as .npz: colour JPEG + raw 16-bit depth PNG in the DEPTH
+# sensor frame + intrinsics + factory extrinsics). Everything else happens
+# here, on the VM: depth units -> metres, depth -> colour alignment, depth ->
+# robot camera reprojection. The robot computer is too weak to share it with
+# the rover server.
+
+def pinhole_K(w: int, h: int, hfov_deg: float) -> np.ndarray:
+    """Intrinsics of a centred pinhole image `hfov_deg` wide, exactly as
+    teleop/server.py builds /video_rect (rect_K: f = (w/2)/tan(fov/2), centre
+    at (w/2, h/2))."""
+    f = (w / 2) / np.tan(np.radians(hfov_deg / 2))
+    return np.array([[f, 0, w / 2], [0, f, h / 2], [0, 0, 1.0]])
+
+
+def mount_pose(tx: float, ty: float, tz: float, pitch_deg: float = 0.0, yaw_deg: float = 0.0,
+               roll_deg: float = 0.0) -> np.ndarray:
+    """Pose (camera->robot camera, 4x4) of the D405 colour camera in the robot
+    camera frame, OpenCV axes (x right, y down, z forward), metres.
+
+    pitch > 0: the D405 looks further down than the robot camera; yaw > 0: it
+    looks further left; roll > 0: its right side is lower. Applied as yaw,
+    then pitch, then roll, each about the D405's own axes."""
+    def rx(a):
+        c, s = np.cos(a), np.sin(a)
+        return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
+
+    def ry(a):
+        c, s = np.cos(a), np.sin(a)
+        return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+
+    def rz(a):
+        c, s = np.cos(a), np.sin(a)
+        return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+
+    # Rx(+a) turns the optical axis (0, 0, 1) to (0, -sin a, cos a): upwards,
+    # since y points down; Ry(+a) turns it to the right. Hence the minus signs
+    # for "down" and "left".
+    T = np.eye(4)
+    T[:3, :3] = ry(-np.radians(yaw_deg)) @ rx(-np.radians(pitch_deg)) @ rz(np.radians(roll_deg))
+    T[:3, 3] = (tx, ty, tz)
+    return T
+
+
+def decode_d405_frame(content: bytes) -> dict:
+    """Body of GET /frame (d405_server.py) -> arrays on the VM: `rgb` (RGB,
+    like every other source here), `depth` (float32 metres, depth sensor
+    frame, 0 = none), K_color, K_depth, T_cd (depth camera pose in the colour
+    camera frame: X_color = R_dc X_depth + t_dc), age_s, seq."""
+    z = np.load(io.BytesIO(content))
+    bgr = cv2.imdecode(np.asarray(z["color_jpg"], np.uint8), cv2.IMREAD_COLOR)
+    raw = cv2.imdecode(np.asarray(z["depth_png"], np.uint8), cv2.IMREAD_UNCHANGED)
+    if bgr is None or raw is None or raw.dtype != np.uint16 or raw.ndim != 2:
+        raise ValueError("image D405 illisible (JPEG couleur ou PNG 16 bits de profondeur)")
+    T_cd = np.eye(4)
+    T_cd[:3, :3] = np.asarray(z["R_dc"], np.float64).reshape(3, 3)
+    T_cd[:3, 3] = np.asarray(z["t_dc"], np.float64).reshape(3)
+    # The D405's raw unit is not 1 mm (0.1 mm by default): always the device's own scale.
+    return {"rgb": cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB),
+            "depth": raw.astype(np.float32) * np.float32(z["depth_scale"]),
+            "K_color": np.asarray(z["K_color"], np.float64).reshape(3, 3),
+            "K_depth": np.asarray(z["K_depth"], np.float64).reshape(3, 3),
+            "T_cd": T_cd, "age_s": float(z["age_s"]), "seq": int(z["seq"])}
+
+
+class D405Source(SimSource):
+    """The real D405 (d405_server.py, through the SSH tunnel) and, for "Les
+    deux" and "Caméra du robot", the robot camera (a FrameSource on the teleop
+    dashboard's /video_rect). Same interface as SimSource: snapshot() gives
+    dicts with exactly the keys sensor_inputs() reads for the current `mode`;
+    there is no truth here (T = identity, true depths None).
+
+    "Les deux": the two images are NOT captured together. The robot camera
+    comes through teleop about 0.5 s late, the D405 frame is the newest one:
+    turning or driving fast puts the D405 depth on the wrong pixels, so map
+    slowly. The robot camera is on a pan-tilt: `mount` holds for one pan-tilt
+    position only (pan 0 and the tilt it was measured at). With `rover_url`
+    the rover server's /state is read and a pan != 0 is reported.
+    """
+
+    def __init__(self, d405_url: str, mode: str = MODE_D405, rgb_source=None, rgb_fov: float = 100.0,
+                 mount: np.ndarray | None = None, max_hz: float = 6.0, max_age: float = 1.0,
+                 rover_url: str | None = None):
+        self.base = d405_url.rstrip("/")
+        for suffix in ("/frame", "/info", "/health"):
+            if self.base.endswith(suffix):
+                self.base = self.base[: -len(suffix)]
+        self.uri = self.base + "/frame"
+        self.rgb_source, self.rgb_fov = rgb_source, rgb_fov
+        # mount: D405 colour camera -> robot camera (mount_pose), needed by "Les deux" only.
+        self.mount = None if mount is None else np.asarray(mount, np.float64)
+        self.max_hz, self.max_age = max_hz, max_age
+        self.rover_url = rover_url.rstrip("/") if rover_url else None
+        self._mode = mode
+        self._lock = threading.Lock()
+        self._snap: dict | None = None
+        self._seq = 0
+        self._d405: dict | None = None      # newest decoded D405 frame + its receipt time
+        self._d405_used = -1                # server seq of the last D405 frame published
+        self._rgb_used = -1                 # robot camera seq of the last snapshot
+        self._preview: tuple[int, str, np.ndarray] | None = None
+        self.d405_error: str | None = None
+        self.gimbal_warning: str | None = None
+        self.ended = False
+        self._stop = False
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    # A mode change makes the previous dict unusable (other keys): drop it.
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    @mode.setter
+    def mode(self, m: str) -> None:
+        with self._lock:
+            if m != self._mode:
+                self._mode, self._snap = m, None
+                self._d405_used = self._rgb_used = -1
+
+    @property
+    def error(self) -> str | None:
+        mode = self._mode
+        if mode != MODE_D405 and self.rgb_source is None:
+            return "pas de caméra du robot : donner --source (ou --robot) en plus de --d405"
+        if mode == MODE_BOTH and self.mount is None:
+            return "« Les deux » demande la position de la D405 : --d405-mount TX TY TZ [TANGAGE [LACET [ROULIS]]]"
+        if mode != MODE_RGB and self.d405_error:
+            return self.d405_error
+        return self.rgb_source.error if (mode != MODE_D405 and self.rgb_source is not None) else None
+
+    def snapshot(self) -> tuple[int, dict | None]:
+        with self._lock:
+            if self._mode != MODE_D405:
+                self._pair_rgb()
+            return self._seq, self._snap
+
+    def stop(self) -> None:
+        self._stop = True
+        self._thread.join(timeout=2.0)
+        if self.rgb_source is not None:
+            self.rgb_source.stop()
+
+    # -- internals --------------------------------------------------------
+    def _fresh_d405(self) -> dict | None:
+        """Newest D405 frame if younger than max_age (capture -> now: the
+        server's monotonic age plus our own monotonic time since; the robot's
+        wall clock is hours off, never compare wall times)."""
+        d = self._d405
+        if d is None:
+            return None
+        age = d["age_s"] + time.monotonic() - d["t_recv"]
+        if age > self.max_age:
+            self.d405_error = f"D405 : dernière image trop ancienne ({age:.1f} s > {self.max_age:.1f} s), ignorée"
+            return None
+        return d
+
+    def _pair_rgb(self) -> None:
+        """(lock held) A new robot camera frame -> a new snapshot: the mapper
+        steps on the robot camera's frames in "Caméra du robot" and "Les deux"."""
+        if self.rgb_source is None or (self._mode == MODE_BOTH and self.mount is None):
+            return
+        rseq, rgb = self.rgb_source.latest()
+        if rgb is None or rseq == self._rgb_used:
+            return
+        h, w = rgb.shape[:2]
+        snap = {"rgb": rgb, "K": pinhole_K(w, h, self.rgb_fov), "T": np.eye(4), "depth": None}
+        if self._mode == MODE_BOTH:
+            d = self._fresh_d405()
+            if d is None:
+                return              # no D405 depth young enough: this frame is not used
+            # Raw depth in the depth sensor frame; d405_in_rgb() moves it into
+            # the robot camera in one hop: depth -> D405 colour -> robot camera.
+            snap.update(d405_rgb=d["rgb"], d405_depth=d["depth"], d405_K=d["K_depth"],
+                        d405_T=self.mount @ d["T_cd"], d405_depth_true=None)
+        self._rgb_used = rseq
+        self._snap, self._seq = snap, self._seq + 1
+
+    def _publish_d405(self, d: dict) -> None:
+        """D405 alone: depth -> colour camera, done here in the reader thread
+        (40-60 ms on the VM), then one snapshot per new D405 frame."""
+        h, w = d["rgb"].shape[:2]
+        depth_c = reproject_depth(d["depth"], d["K_depth"], d["T_cd"], d["K_color"], np.eye(4), (w, h))
+        snap = {"d405_rgb": d["rgb"], "d405_depth": depth_c, "d405_K": d["K_color"],
+                "d405_T": np.eye(4), "d405_depth_true": None}
+        with self._lock:
+            # Same frame served twice (polled faster than it captures): one step only.
+            if self._mode == MODE_D405 and d["seq"] != self._d405_used:
+                self._d405_used = d["seq"]
+                self._snap, self._seq = snap, self._seq + 1
+
+    def _check_gimbal(self, sess) -> None:
+        """The robot camera must look straight ahead (pan 0) for the D405
+        mount to hold; the rover server's /state says where the pan-tilt points."""
+        try:
+            g = sess.get(self.rover_url + "/state", timeout=3).json().get("gimbal") or {}
+            pan = float(g.get("pan", 0.0))
+        except Exception:
+            return              # optional check: an unreachable rover is not an error here
+        warn = (f"tourelle de la caméra du robot tournée (pan {pan:+.0f}°) : la position de la D405 "
+                f"(--d405-mount) ne vaut qu'à pan 0" if abs(pan) > 1.0 else None)
+        if warn and warn != self.gimbal_warning:
+            print("Attention :", warn, flush=True)
+        self.gimbal_warning = warn
+
+    def _run(self) -> None:
+        import requests
+
+        sess = requests.Session()
+        next_t = next_gimbal = 0.0
+        while not self._stop:
+            if self.rover_url and self._mode == MODE_BOTH and time.monotonic() > next_gimbal:
+                next_gimbal = time.monotonic() + 10.0
+                self._check_gimbal(sess)
+            if self._mode == MODE_RGB:
+                # The robot encodes a frame only when asked: do not ask for nothing.
+                time.sleep(0.1)
+                continue
+            # The mapper uses 3-6 frames/s: asking more would only load the robot's CPU and link.
+            time.sleep(max(0.0, next_t - time.monotonic()))
+            next_t = time.monotonic() + 1.0 / self.max_hz
+            try:
+                r = sess.get(self.uri, timeout=5)
+                if r.status_code == 503:
+                    try:
+                        msg = r.json().get("error", "")
+                    except Exception:
+                        msg = r.text[:200]
+                    raise RuntimeError(f"pas d'image ({msg})")
+                r.raise_for_status()
+                d = decode_d405_frame(r.content)
+                d["t_recv"] = time.monotonic()
+                self._d405 = d
+                if self._fresh_d405() is None:
+                    continue
+                self.d405_error = None
+                if self._mode == MODE_D405:
+                    self._publish_d405(d)
+            except Exception as e:  # server not up yet / camera unplugged / tunnel down: retry
+                self.d405_error = f"D405 : {type(e).__name__}: {e}"
                 time.sleep(1.0)
