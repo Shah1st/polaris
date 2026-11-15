@@ -588,3 +588,11 @@ def test_the_calibration_needs_the_drone_camera_and_no_mission() -> None:
     code, body = f.calibrer()
     assert code == 409 and 'vision model' in body['error']
     assert not f.en_mission()
+
+
+def test_defaults_for_a_small_arena() -> None:
+    """Asked for after the first drives: obstacles were grown too much to pass between them."""
+    a = fr.options([])
+    assert (a.rayon, a.pas, a.drone_ombres) == (0.15, 0.15, True)
+    f, _ = fusion()
+    assert f.carte.rayon_robot == 0.15 and f.carte.rayon_effectif == 0.15
