@@ -37,7 +37,7 @@ def vers_carte(bx, by):
 class Banc:
     """rover_server.App + rover_core.Rover + FakeEsp32, served on a reserved port."""
 
-    def __init__(self, boot_time=0.3, cap_visible=True):
+    def __init__(self, boot_time=0.3, cap_visible=True, ports=PORTS):
         self.board = FakeEsp32(seed=1)
         self.cfg = Config(bias_calib_time=0.5)
         self.boot_time = boot_time
@@ -48,7 +48,7 @@ class Banc:
         self.app = rover_server.App(self.cfg, '/dev/null', None, None)
         self.app.rover, self.app.camera, self.app.mode = self.rover, camera, 'sim'
         self.server = None
-        for port in PORTS:
+        for port in ports:
             try:
                 self.server = ThreadingHTTPServer(
                     ('127.0.0.1', port), rover_server.make_handler(self.app)
@@ -58,7 +58,7 @@ class Banc:
                 continue
         if self.server is None:
             self.rover.close()
-            pytest.skip('no free port in 8100-8109')
+            pytest.skip(f'no free port in {ports[0]}-{ports[-1]}')
         self.server.daemon_threads = True
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f'http://127.0.0.1:{self.server.server_address[1]}'
@@ -265,3 +265,56 @@ def test_bench_stop_between_two_steps_is_final(banc) -> None:
     with pytest.raises(ArretOperateur, match='entre deux pas'):
         r.deplacer((x0 + 0.6, y0))
     assert not [c for t, c, _ in r.envoyes if t > t_stop and c == '/path']
+
+
+class MurDevant(FakeEsp32):
+    """Wheels stuck while driving forward (an unseen wall right in front), free backwards."""
+
+    @property
+    def blocked(self):
+        tl, tr = self.target
+        return tl + tr > 1e-3
+
+    @blocked.setter
+    def blocked(self, valeur):
+        pass
+
+
+def test_bench_heading_is_measured_backwards_against_a_wall() -> None:
+    """Rover without marker facing an unseen wall: the forward heading step stalls, so it
+    backs off to measure its heading. A /path to a point 17 cm behind ended 'done' at once on
+    the real server (path_lookahead 0.2 m): no heading, 'Cap impossible a mesurer'."""
+    banc = Banc(cap_visible=False, ports=range(8260, 8265))
+    banc.board.__class__ = MurDevant
+    try:
+        banc.attendre_pret()
+        r = adaptateur(banc)
+        x0, y0 = banc.vue()[:2]
+        r.placer((x0, y0))
+        impact = r.deplacer((x0 + 0.3, y0))
+        assert [c for _, c, _ in r.envoyes][:2] == ['/path', '/move']
+        assert r.cap_fiable and abs(r.repere.angle - A0) < 0.1
+        assert impact is not None
+        assert banc.board.x < -0.12  # it really backed off (about 0.17 m)
+    finally:
+        banc.fermer()
+
+
+def test_bench_odometry_reset_during_a_step_stops_the_rover() -> None:
+    """POST /reset_odom (button of the rover's page) 0.5 s into a 0.20 m step: the controller
+    goes on towards a point of the old odometry frame. Without /stop: 0.66 m driven."""
+    banc = Banc(ports=range(8260, 8265))
+    try:
+        banc.attendre_pret()
+        r = adaptateur(banc)
+        x0, y0 = banc.vue()[:2]
+        r.placer((x0, y0))
+        r.deplacer((x0 + 0.3, y0))
+        n = len(banc.board.trail)
+        threading.Timer(0.5, lambda: banc.poster('/reset_odom')).start()
+        assert r.deplacer((x0 + 0.5, y0)) is None
+        assert banc.rover.snapshot()['ctrl']['mode'] == 'idle'
+        time.sleep(1.0)
+        assert roule(banc.board, n) < 0.25
+    finally:
+        banc.fermer()

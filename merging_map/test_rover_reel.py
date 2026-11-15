@@ -52,6 +52,8 @@ class FauxServeur:
         self.perdre_reponse = 0  # the next N POST answers are lost (the server got them)
         self.stops = 0  # stop_count in /state: POST /stop received; None = older server
         self.fault = None  # ctrl.fault: why the server last stopped the rover by itself
+        self.gimbal = None  # /state gimbal {pan, tilt, moving}; None = a server without it
+        self.garde = None  # ctrl.guard.state of the tilt guard; None = a server without it
 
     def redemarrer(self, boot=3.0):
         """rover_server.py restarts: odometry and history back to zero, the ESP32 boots and
@@ -106,7 +108,10 @@ class FauxServeur:
             self.queued, self.mode, self.tache = [], 'idle', None
             if self.stops is not None:
                 self.stops += 1
-        elif chemin != '/gimbal':
+        elif chemin == '/gimbal':
+            if self.gimbal is not None:
+                self.gimbal.update(pan=float(corps['pan']), tilt=float(corps['tilt']))
+        else:
             raise AssertionError(f'unexpected {methode} {chemin}')
         return {'ok': True}
 
@@ -130,6 +135,10 @@ class FauxServeur:
         }
         if self.stops is not None:
             etat['stop_count'] = self.stops
+        if self.gimbal is not None:
+            etat['gimbal'] = dict(self.gimbal)
+        if self.garde is not None:
+            etat['ctrl']['guard'] = {'state': self.garde}
         if self.boot_id is not None:
             etat['boot_id'] = self.boot_id
         return etat
@@ -303,9 +312,10 @@ def test_heading_is_measured_backwards_when_the_rover_faces_a_wall() -> None:
     r = robot(faux)
     r.placer((1.0, 1.0))
     impact = r.deplacer((1.5, 1.0))
-    mesures = chemins(faux, '/path')[:2]
-    assert mesures[0]['points'] == [[0.17, 0.0]]  # ahead: stalled against the wall
-    assert mesures[1]['points'][0][0] < 0  # then 15 cm behind where it stalled
+    assert chemins(faux, '/path')[0]['points'] == [[0.17, 0.0]]  # ahead: stalled
+    # then 17 cm back with a /move: a /path to a point behind the rover closer than the real
+    # server's path_lookahead (0.2 m) ends 'done' without moving
+    assert chemins(faux, '/move') == [{'distance': -0.17}]
     assert r.cap_fiable and abs(angle_normalise(r.cap - faux.cap)) < 0.05
     assert impact is not None and math.dist(impact, (1.17, 1.0)) < 0.03
 
