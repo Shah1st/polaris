@@ -11,6 +11,7 @@ and decides what to do when the rover is blocked.
 | `mission_settings.py` | The mission's distances in two sets: `FIELD` (default) and `ARENA` (2.4 m demo) |
 | `demo_fusion.py` | Simulated world and `Simu`, the simulated robot (needs `numpy` and `matplotlib`) |
 | `rover_reel.py` | `RaspRoverReel`, the real RaspRover through its on-board server (**not yet tested on the robot**) |
+| `lancer_overhead.py` | Real mission: live overhead camera as the drone + the real rover (`--dry-run` first) |
 | `demo_fusion.png` | Output of the demo |
 | `test_*.py` | pytest tests (map, simulation, real-rover adapter against a fake rover server) |
 | `conftest.py` | Lets pytest import the modules from this folder |
@@ -25,7 +26,7 @@ and decides what to do when the rover is blocked.
            |                            |
    demo_fusion.Simu              rover_reel.RaspRoverReel
    (simulated world,             (steps sent to the rover's own server, which drives:
-    tests, dashboard)             rover/rover_server.py, branch rover-teleop)
+    tests, dashboard)             rover/rover_server.py)
 ```
 
 The brain only uses the `robot.Robot` interface: `position()`, `incertitude()`,
@@ -50,11 +51,10 @@ mission(rover, carte, depart=(3.0, 3.0), victime=(8.0, 20.0))
 ```
 
 **Who does what.** The brain decides where to go; the rover's own server (RBDRB's
-`rover/rover_server.py`, branch `rover-teleop`) decides how. Each step of the path (about
-30 cm) goes to the server with `POST /path`, in the frame of its odometry (wheels + gyro);
-the server follows it and stops. It needs the server of the branch `rover-teleop`:
-`POST /path` came with commit 5a7277d and is not in `main` yet (the adapter says so if it
-gets a 404).
+`rover/rover_server.py`) decides how. Each step of the path (about 30 cm) goes to the server
+with `POST /path`, in the frame of its odometry (wheels + gyro); the server follows it and
+stops. `POST /path` is in `main` (commit 5a7277d); an older server answers 404 and the
+adapter says so. The server running on the robot has not been compared with the repository.
 
 * **Two frames.** The adapter keeps the transform map <- odometry (rotation + translation).
   It is corrected only when the rover has **stopped**, on an image taken after the stop;
@@ -70,10 +70,30 @@ gets a 404).
   (400, 404) raises `ServeurRoverError` instead of starting the recovery. When the link is
   really lost, the server finishes its current step and stops: there is no on-board return
   program, the brain waits for the link to come back.
+* **Operator stop is final.** A step that ends `stopped` (STOP on the rover's page or the
+  dashboard), `cancelled by manual control` (someone drives with the keyboard) or
+  `replaced by a new command` (another client) without the adapter causing it raises
+  `rover_reel.ArretOperateur`; the brain lets it through and `lancer_overhead.py` sends
+  `/stop` and ends. Limit: a STOP pressed while the rover stands still between two steps
+  leaves no trace in `/state` with today's server, so it is not seen.
+* **Server restart.** Every `GET /state` is compared with the previous one: a new `boot_id`
+  (or, on a server without it, `odom.odometer` or `link.rx_count` going down, which a
+  `/reset_odom` also does) means the odometry restarted from zero. Before the next motion
+  the adapter waits for the ESP32 and the gyro, re-anchors the map <- odometry transform on
+  a fresh overhead image and measures the heading again if the camera does not give it.
+* **Bounded steps.** A `/path` whose target is farther from the current odometry pose than
+  the step the brain asked for plus `marge_pas` (0.2 m) is never sent:
+  `ServeurRoverError`. (Before: 1.4 m driven for a 30 cm step after a restart.)
+* **Heading move** is a `/path` to an absolute odometry point 15 cm ahead: sent again after a
+  lost answer, it does not drive twice (a relative `/move` did). Backwards (front blocked)
+  the rover turns on the spot, then drives 15 cm.
 * **Small arena:** on the field, a real cut (2 s or more) makes the brain mark a 1.5 m no-go
   zone. In the 2.4 m arena that blocks almost everything (with the fake server, a 3 s cut
   ended the mission far from the victim), so the arena uses its own settings, without any
   no-go zone (see "Field and arena settings" below).
+* **Tested against the real server code** (`test_rover_reel_banc.py`: `rover_server` +
+  `rover_core` + simulated ESP32, in process): nominal step, operator STOP, manual takeover,
+  restart between steps, bounded step.
 * **Measured against the real server** in simulation (`rover_server.py --sim`, slope drift
   0.1 rad/s): the camera in a frame rotated by 30 degrees and shifted, taking an image every
   second on its own clock (so up to 1 s late), 1 cm noise, no heading. Arrived around a box,
@@ -84,7 +104,8 @@ gets a 404).
   error with a camera at one image a second (in its own simulation).
 * **The adapter relies on `/state` fields** that the rover README does not list:
   `ctrl.mode`, `ctrl.queued`, `ctrl.current`, `ctrl.history[0].status`, `odom.x`, `odom.y`,
-  `odom.heading_deg`, `odom.gyro_ready`, `link.connected`. Changing them breaks the brain.
+  `odom.heading_deg`, `odom.gyro_ready`, `link.connected`, and, for restarts, `boot_id`,
+  `odom.odometer`, `link.rx_count`. Changing them breaks the brain.
 * Not yet run on the real robot. Its first move, when the camera gives no heading, is a
   15 cm straight line in an unknown direction.
 
@@ -109,16 +130,33 @@ The `FIELD` values are the ones used so far: the simulation behaves exactly as b
 `ARENA` values are orders of magnitude, to check on the first test drive with the real robot.
 The rover radius and the planning cell size stay with the map (`REGLAGES_PETITE_ZONE`).
 
-## With the overhead camera (branch `overhead-camera`)
+## With the overhead camera
 
 The overhead camera pipeline (`guidance_global_map.drone.OverheadDrone`) plays the drone.
-`lancer_overhead.py` wires it to the rover and runs a mission:
+`lancer_overhead.py` wires it to the rover and runs a mission. Always run `--dry-run` first:
+no POST leaves (the request function refuses them), it prints the zone in metres, the rover
+pose seen by the camera, the scale, the first decision and the first steps, then stops.
 
 ```bash
-PYTHONPATH=merging_map:src/guidance_calib:src/guidance_global_map:src/guidance_rover_pose \
-    python merging_map/lancer_overhead.py --image overhead.jpg --victime 1.2 0.9 \
-    --rover http://<rover IP>:8080
+export PYTHONPATH=merging_map:src/guidance_calib:src/guidance_global_map:src/guidance_rover_pose
+python merging_map/lancer_overhead.py --camera 0 --metres-par-pixel 0.0021 --marqueur 10 \
+    --victime 1.2 0.9 --rover http://<rover IP>:8080 --dry-run
+# then the same without --dry-run; add --suivi /tmp/mission.json for a live page
 ```
+
+| Option | What |
+|---|---|
+| `--camera SOURCE` | live overhead camera: index, `http(s)://` MJPEG or snapshot URL, `rtsp://`, file (`guidance_global_map.drone.camera_reader`) |
+| `--image FILE` | still photo, **only with `--dry-run`** (it does not see the rover move) |
+| `--dry-run` | no POST, stop after the first decision; `--rover` optional |
+| `--metres-par-pixel M` | ground size of a pixel, measured with a ruler (best); otherwise `--hauteur`, `--focale-35mm`, `--capteur L H` |
+| `--marqueur ID` | ArUco id on the rover (heading from the camera, no blind 15 cm move) |
+| `--perception URL` | rover perception service (`perception_rover.percevoir_http`) |
+| `--suivi FILE` | JSON document rewritten (atomically) after every decision and step |
+| `--tolerance`, `--vitesse`, `--delai-http` | arrival distance (0.15 m), cruise speed (0.2 m/s), HTTP timeout (1 s) |
+
+* **Before anything** `GET /state` must answer, or it stops with a clear message.
+* **On every way out** (arrival, operator stop, error, Ctrl-C) it sends `POST /stop` (3 tries).
 
 * **The adapter is used as asked**: first survey from `camera.tiles()`, rover position from
   `camera.rover_pose` (with or without a heading), `drone=camera`, `zone=camera.zone()`.
@@ -132,11 +170,10 @@ PYTHONPATH=merging_map:src/guidance_calib:src/guidance_global_map:src/guidance_r
 * **Frame**: the camera's, origin at the image's bottom-left corner, x right, y up, metres.
   Start and goal outside the camera's view are refused with a message saying so; tiles from
   the rover camera must use the same frame.
-* Needs the `overhead-camera` modules on `PYTHONPATH` and `opencv-contrib-python`. Tested here
-  only with a fake camera that has the same methods (`test_lancer_overhead.py`): the real
-  `OverheadDrone` has not been run with it yet.
-* `--image` is a still photo, read again for every image: it does not see the rover move, so
-  it is only good to try the chain. A real mission needs the live camera.
+* Needs `src/guidance_*` on `PYTHONPATH` and `opencv-contrib-python`. Missions are tested with
+  a fake camera that has the same methods (`test_lancer_overhead.py`,
+  `test_lancer_mission_reelle.py`); the real `OverheadDrone` only in `--dry-run` on
+  `data/overhead/synthetic_scene.png`. Nothing has run on the real robot yet.
 
 **ROS node** (`src/guidance_supervisor`, `merging_map_node`): subscribes to `/map` and
 `/rover/pose_overhead` (and `/goal_pose`, or the `goal_x` / `goal_y` parameters), runs the
