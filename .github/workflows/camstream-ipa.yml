@@ -1,0 +1,45 @@
+# Builds the CamStream iPhone app (iphone-camera/) on a GitHub macOS machine and keeps an
+# UNSIGNED .ipa as the run's artifact. Windows cannot build iOS apps; the .ipa is then signed
+# and installed from any computer with the user's own Apple ID (Sideloadly, AltStore), or the
+# app is run from Xcode on a Mac as in iphone-camera/README.md.
+name: CamStream iPhone app (.ipa)
+
+on:
+  push:
+    branches: [iphone-camera, iphone-camera-ultrawide]
+    paths: ['iphone-camera/**', '.github/workflows/camstream-ipa.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode in use
+        run: xcodebuild -version
+
+      - name: Build for iPhone, without signing
+        run: |
+          xcodebuild -project iphone-camera/CamStream.xcodeproj -target CamStream \
+            -configuration Release -sdk iphoneos \
+            SYMROOT="$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package the .ipa
+        run: |
+          mkdir Payload
+          cp -R build/Release-iphoneos/CamStream.app Payload/
+          zip -qry CamStream-unsigned.ipa Payload
+          ls -l CamStream-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CamStream-unsigned-ipa
+          path: CamStream-unsigned.ipa
+          retention-days: 14
