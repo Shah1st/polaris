@@ -18,8 +18,10 @@
 #   POLARIS_PY     python of the rovermap environment (default: ../.venv or .venv next to the repo)
 #   ROVER          rover API                    (default http://172.20.10.2:8080)
 #   PHONE          phone stream, '' = no drone  (default http://172.20.10.6:8080/stream)
-#                  (.../snapshot.jpg: one picture per request; .../stream: the phone pushes
-#                  its video and takes all the air time of a slow shared Wi-Fi)
+#                  Default: the camera phone plugged into this Mac by USB (its .local name:
+#                  under 1 ms, 15 pictures a second). Over Wi-Fi give its address, and
+#                  .../snapshot.jpg rather than .../stream (a pushed stream takes all the air
+#                  time of a slow Wi-Fi shared with the rover)
 #   PHONE_SHARE    share of the time the phone may spend sending pictures (default 0.25)
 #   PHONE_NAME     name shown on the drone map  (default: iPhone CamStream (<host>))
 #   D405           D405 server of the rover, e.g. http://172.20.10.2:8091 ('' = rover camera only)
@@ -36,7 +38,7 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ROVER="${ROVER:-http://172.20.10.2:8080}"
-PHONE="${PHONE-http://172.20.10.6:8080/snapshot.jpg}"
+PHONE="${PHONE-http://iphone-de-paco.local:8080/stream}"
 D405="${D405:-}"
 D405_MOUNT="${D405_MOUNT:-}"
 CAM_HEIGHT="${CAM_HEIGHT:-0.22}"

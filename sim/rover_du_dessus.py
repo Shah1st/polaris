@@ -14,8 +14,8 @@ its ArUco marker is too small to be read (a phone a few metres up: the marker is
 - scale: the box is about the size of the rover, which gives the metres per pixel.
 
 Needs `transformers` (pip install transformers) and about 620 MB of weights at the first run.
-Measured on the five real pictures from above we have: the rover found in all five (scores
-0.32 to 0.59), nothing found in four pictures without it, 0.7 s per picture on an Apple M5.
+Measured on 17 real pictures from above: the rover found in the 12 that show it, nothing
+found in the 5 without it; 0.7 s per picture on an Apple M5.
 """
 
 import math
@@ -25,11 +25,27 @@ import cv2
 import numpy as np
 
 MODELE = 'google/owlv2-base-patch16-ensemble'
-# Measured on 5 real pictures with the rover and 4 without: "a robot" scores 0.32 to 0.59 on
-# the rover and 0.16 at most anywhere else; the longer descriptions tried first ("a small black
-# robot car") dropped to 0.03 on the rover seen from further away.
-ROVER = ['a robot', 'a small black robot', 'a remote controlled car']
-AUTRES = ['a shoe', 'a cardboard box', 'a bag', 'a person', 'a backpack']
+# No single description fits every view: "a robot" scores 0.32 to 0.59 on the rover seen from
+# 3 m with its marker paper, and 0.12 seen from 1.5 m straight above with its cables, where
+# "a black device with cables" scores 0.4. The rover's score is the best of these; the other
+# names are there so that a shoe or a bag is called a shoe or a bag. With the dark-box check
+# below: right on 17 real pictures out of 17 (12 with the rover, 5 without).
+ROVER = [
+    'a robot',
+    'a small black robot',
+    'a remote controlled car',
+    'a black device with cables',
+    'a robot with wires on the floor',
+]
+AUTRES = [
+    'a shoe',
+    'a cardboard box',
+    'a bag',
+    'a person',
+    'a backpack',
+    'a cable on the floor',
+    'a table leg',
+]
 
 
 @dataclass
@@ -67,7 +83,7 @@ def cap_par_papier(image, boite):
     return math.atan2(dy, dx)
 
 
-SOMBRE_MIN = 0.25  # share of dark pixels in the rover's box (measured: 0.45 to 0.7 on it)
+SOMBRE_MIN = 0.4  # share of dark pixels in the rover's box (measured: 0.45 to 0.7 on it)
 
 
 def part_sombre(image, boite):

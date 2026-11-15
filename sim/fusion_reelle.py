@@ -143,6 +143,30 @@ def marqueurs_tolerants(detecter, identifiant):
     return detecter_mieux
 
 
+def part_ombre(image, mpp, forme, res=0.05):
+    """For every cell of the drone's grid (`forme`: rows, columns; row 0 = south), the share of
+    its pixels that look like a SHADOW on the floor: darker than the floor around, but still
+    of the floor's colour (same hue, chroma that fell with the light). A black object has no
+    colour left, a box or a railing has another colour: they are not shadows."""
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
+    L, a, b = lab[..., 0], lab[..., 1] - 128.0, lab[..., 2] - 128.0
+    L0 = float(np.median(L))
+    clair = L >= L0 - 6.0  # the lit floor: where the floor's colour is read
+    a0, b0 = float(np.median(a[clair])), float(np.median(b[clair]))
+    c0 = max(1.0, float(np.hypot(a0, b0)))
+    c = np.hypot(a, b)
+    cos = (a * a0 + b * b0) / (np.maximum(c, 1e-3) * c0)  # 1: the floor's hue
+    ombre = (L < L0 - 8.0) & (L > 0.25 * L0) & (cos > 0.9) & (c > 0.45 * c0 * L / L0)
+    k = mpp / res
+    petit = cv2.resize(
+        ombre.astype(np.float32), None, fx=k, fy=k, interpolation=cv2.INTER_AREA
+    )[::-1]
+    out = np.zeros(forme, np.float32)
+    h, w = min(forme[0], petit.shape[0]), min(forme[1], petit.shape[1])
+    out[:h, :w] = petit[:h, :w]
+    return out
+
+
 def mesure_du_mouvement(px_de, pose_de, px_a, pose_a, mini_px=8.0, mini_m=0.08):
     """What one move of the rover says of the camera, from PIXELS: (rotation of the camera's
     frame to the maps', metres per pixel), or None when the move is too small to tell. In
@@ -582,6 +606,8 @@ class FusionReelle:
         reglages = dataclasses.replace(reglages, rover_marker_id=None)
         mpp, res = reglages.metres_per_pixel, reglages.cell_size
         m = np.asarray(grid_to_fusion(process_image(image, reglages).grid), dtype=np.int8)
+        if a.drone_ombres:  # a shadow on the floor is not an obstacle
+            m[(m == 1) & (part_ombre(image, mpp, m.shape, res) > 0.6)] = 0
         m = sans_traits(m, a.drone_largeur_min / res)
         if r is None:
             return m, None, None
@@ -1521,6 +1547,13 @@ def options(argv=None):
         '--drone-marqueur-devant',
         action='store_true',
         help='the marker paper is at the front of the rover (default: at the back)',
+    )
+    p.add_argument(
+        '--drone-ombres',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="with the vision model: cells of the drone's picture that are only a shadow on "
+        'the floor (darker, but of the floor colour) are free, not obstacles',
     )
     p.add_argument(
         '--drone-cumul',
