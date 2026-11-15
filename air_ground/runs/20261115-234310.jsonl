@@ -1,0 +1,492 @@
+{"t":0.0,"kind":"goal","goal":[-1.094,0.173],"start":[-0.107,-0.532]}
+{"t":0.286,"kind":"route","points":[[-0.141,-0.008],[-0.231,0.082],[-0.441,0.142],[-1.094,0.173]],"margin_m":0.0}
+{"t":-0.047,"kind":"send","n":1,"blind_m":0.0}
+{"t":-0.047,"kind":"tick","rover":[-0.107,-0.532,-109.8],"odom":[-0.388,-0.984],"mode":"idle","status":"path sent (1) on odometry (not seen for 4 s, 0.00 m), 121 cm to go","seen_age":3.88,"blind_m":0.0,"link_error_cm":1.9}
+{"t":0.657,"kind":"tick","rover":[-0.108,-0.535,-110.3],"odom":[-0.389,-0.986],"mode":"path","status":"driving on odometry (not seen for 5 s, 0.00 m), 121 cm to go","seen_age":4.59,"blind_m":0.003,"link_error_cm":1.9}
+{"t":1.466,"kind":"tick","rover":[-0.106,-0.532,-129.1],"odom":[-0.386,-0.984],"mode":"path","status":"driving on odometry (not seen for 6 s, 0.01 m), 121 cm to go","seen_age":5.4,"blind_m":0.007,"link_error_cm":1.9}
+{"t":2.075,"kind":"tick","rover":[-0.102,-0.531,-157.7],"odom":[-0.383,-0.983],"mode":"path","status":"driving on odometry (not seen for 6 s, 0.01 m), 122 cm to go","seen_age":6.01,"blind_m":0.01,"link_error_cm":1.9}
+{"t":2.607,"kind":"tick","rover":[-0.105,-0.531,175.4],"odom":[-0.385,-0.983],"mode":"path","status":"driving on odometry (not seen for 7 s, 0.01 m), 121 cm to go","seen_age":6.54,"blind_m":0.013,"link_error_cm":1.9}
+{"t":3.222,"kind":"tick","rover":[-0.104,-0.53,159.9],"odom":[-0.384,-0.982],"mode":"path","status":"driving on odometry (not seen for 8 s, 0.01 m), 121 cm to go","seen_age":7.15,"blind_m":0.014,"link_error_cm":1.9}
+{"t":3.726,"kind":"tick","rover":[-0.111,-0.526,133.5],"odom":[-0.391,-0.977],"mode":"path","status":"driving on odometry (not seen for 8 s, 0.02 m), 121 cm to go","seen_age":7.66,"blind_m":0.022,"link_error_cm":1.9}
+{"t":4.24,"kind":"tick","rover":[-0.111,-0.526,122.8],"odom":[-0.391,-0.977],"mode":"path","status":"driving on odometry (not seen for 9 s, 0.02 m), 121 cm to go","seen_age":8.17,"blind_m":0.022,"link_error_cm":1.9}
+{"t":4.743,"kind":"tick","rover":[-0.111,-0.527,112.1],"odom":[-0.391,-0.978],"mode":"path","status":"driving on odometry (not seen for 9 s, 0.02 m), 121 cm to go","seen_age":8.67,"blind_m":0.023,"link_error_cm":1.9}
+{"t":5.356,"kind":"tick","rover":[-0.111,-0.526,100.5],"odom":[-0.391,-0.977],"mode":"path","status":"driving on odometry (not seen for 10 s, 0.02 m), 121 cm to go","seen_age":9.29,"blind_m":0.023,"link_error_cm":1.9}
+{"t":5.908,"kind":"tick","rover":[-0.117,-0.467,93.0],"odom":[-0.388,-0.917],"mode":"path","status":"driving on odometry (not seen for 10 s, 0.08 m), 117 cm to go","seen_age":9.84,"blind_m":0.083,"link_error_cm":1.9}
+{"t":6.369,"kind":"tick","rover":[-0.119,-0.396,91.0],"odom":[-0.381,-0.847],"mode":"path","status":"driving on odometry (not seen for 11 s, 0.15 m), 113 cm to go","seen_age":10.3,"blind_m":0.154,"link_error_cm":1.9}
+{"t":6.758,"kind":"tick","rover":[-0.12,-0.326,90.3],"odom":[-0.372,-0.778],"mode":"path","status":"driving on odometry (not seen for 11 s, 0.22 m), 109 cm to go","seen_age":10.69,"blind_m":0.224,"link_error_cm":1.9}
+{"t":7.311,"kind":"tick","rover":[-0.12,-0.246,90.4],"odom":[-0.362,-0.698],"mode":"path","status":"driving on odometry (not seen for 12 s, 0.30 m), 106 cm to go","seen_age":11.24,"blind_m":0.304,"link_error_cm":1.9}
+{"t":7.838,"kind":"tick","rover":[-0.12,-0.173,90.1],"odom":[-0.352,-0.626],"mode":"path","status":"driving on odometry (not seen for 12 s, 0.38 m), 103 cm to go","seen_age":11.77,"blind_m":0.377,"link_error_cm":1.9}
+{"t":8.292,"kind":"tick","rover":[-0.121,-0.092,91.1],"odom":[-0.341,-0.545],"mode":"path","status":"driving on odometry (not seen for 13 s, 0.46 m), 101 cm to go","seen_age":12.22,"blind_m":0.458,"link_error_cm":1.9}
+{"t":8.857,"kind":"tick","rover":[-0.124,-0.028,97.6],"odom":[-0.336,-0.482],"mode":"path","status":"driving on odometry (not seen for 13 s, 0.52 m), 99 cm to go","seen_age":12.79,"blind_m":0.522,"link_error_cm":1.9}
+{"t":9.864,"kind":"route","points":[[-0.441,0.172],[-1.094,0.173]],"margin_m":0.03}
+{"t":9.557,"kind":"send","n":2,"blind_m":0.611}
+{"t":9.557,"kind":"tick","rover":[-0.147,0.059,114.9],"odom":[-0.347,-0.393],"mode":"path","status":"path sent (2) on odometry (not seen for 14 s, 0.61 m), 95 cm to go","seen_age":13.49,"blind_m":0.611,"link_error_cm":1.9}
+{"t":9.922,"kind":"tick","rover":[-0.171,0.102,124.3],"odom":[-0.365,-0.346],"mode":"path","status":"driving on odometry (not seen for 14 s, 0.66 m), 93 cm to go","seen_age":13.85,"blind_m":0.662,"link_error_cm":1.9}
+{"t":10.224,"kind":"tick","rover":[-0.203,0.143,134.4],"odom":[-0.391,-0.302],"mode":"path","status":"driving on odometry (not seen for 15 s, 0.71 m), 89 cm to go","seen_age":14.15,"blind_m":0.713,"link_error_cm":1.9}
+{"t":10.647,"kind":"tick","rover":[-0.252,0.184,147.3],"odom":[-0.434,-0.254],"mode":"path","status":"driving on odometry (not seen for 15 s, 0.78 m), 84 cm to go","seen_age":14.58,"blind_m":0.777,"link_error_cm":1.9}
+{"t":11.075,"kind":"tick","rover":[-0.305,0.213,157.5],"odom":[-0.483,-0.219],"mode":"path","status":"driving on odometry (not seen for 15 s, 0.84 m), 79 cm to go","seen_age":15.01,"blind_m":0.837,"link_error_cm":1.9}
+{"t":12.051,"kind":"route","points":[[-1.094,0.173]],"margin_m":0.05}
+{"t":11.575,"kind":"send","n":3,"blind_m":0.92}
+{"t":11.575,"kind":"tick","rover":[-0.384,0.237,168.5],"odom":[-0.558,-0.184],"mode":"path","status":"path sent (3) on odometry (not seen for 16 s, 0.92 m), 71 cm to go","seen_age":15.51,"blind_m":0.92,"link_error_cm":1.9}
+{"t":12.254,"kind":"tick","rover":[-0.474,0.228,178.0],"odom":[-0.653,-0.158],"mode":"path","status":"driving, 62 cm to go","seen_age":-0.02,"blind_m":0.0,"link_error_cm":15.1}
+{"t":12.683,"kind":"tick","rover":[-0.524,0.229,-179.4],"odom":[-0.702,-0.151],"mode":"path","status":"driving, 57 cm to go","seen_age":0.41,"blind_m":0.0,"link_error_cm":15.1}
+{"t":13.071,"kind":"tick","rover":[-0.582,0.226,-175.3],"odom":[-0.76,-0.145],"mode":"path","status":"driving on odometry (not seen for 1 s, 0.06 m), 51 cm to go","seen_age":0.79,"blind_m":0.059,"link_error_cm":15.1}
+{"t":13.604,"kind":"tick","rover":[-0.659,0.196,-171.8],"odom":[-0.844,-0.143],"mode":"path","status":"driving, 44 cm to go","seen_age":-0.11,"blind_m":0.0,"link_error_cm":14.8}
+{"t":14.124,"kind":"tick","rover":[-0.725,0.165,-167.6],"odom":[-0.92,-0.145],"mode":"path","status":"driving, 37 cm to go","seen_age":0.08,"blind_m":0.0,"link_error_cm":13.2}
+{"t":14.603,"kind":"send","n":4,"blind_m":0.0}
+{"t":14.603,"kind":"tick","rover":[-0.802,0.125,-164.6],"odom":[-1.008,-0.153],"mode":"path","status":"path sent (4), 30 cm to go","seen_age":0.02,"blind_m":0.0,"link_error_cm":13.3}
+{"t":15.136,"kind":"tick","rover":[-0.886,0.102,-164.6],"odom":[-1.095,-0.163],"mode":"path","status":"driving on odometry (not seen for 1 s, 0.09 m), 22 cm to go","seen_age":0.56,"blind_m":0.088,"link_error_cm":13.3}
+{"t":15.856,"kind":"tick","rover":[-0.959,0.083,-167.4],"odom":[-1.17,-0.17],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.16 m), 16 cm to go","seen_age":1.28,"blind_m":0.163,"link_error_cm":13.3}
+{"t":16.308,"kind":"tick","rover":[-1.016,0.071,-169.7],"odom":[-1.227,-0.173],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.22 m), 13 cm to go","seen_age":1.73,"blind_m":0.221,"link_error_cm":13.3}
+{"t":16.678,"kind":"tick","rover":[-1.04,0.067,-173.0],"odom":[-1.252,-0.173],"mode":"path","status":"driving on odometry (not seen for 3 s, 0.25 m), 12 cm to go","seen_age":2.1,"blind_m":0.245,"link_error_cm":13.3}
+{"t":17.215,"kind":"tick","rover":[-1.032,0.068,177.3],"odom":[-1.245,-0.174],"mode":"path","status":"driving on odometry (not seen for 3 s, 0.25 m), 12 cm to go","seen_age":2.64,"blind_m":0.253,"link_error_cm":13.3}
+{"t":17.652,"kind":"tick","rover":[-1.018,0.066,162.2],"odom":[-1.231,-0.177],"mode":"path","status":"driving on odometry (not seen for 3 s, 0.27 m), 13 cm to go","seen_age":3.07,"blind_m":0.267,"link_error_cm":13.3}
+{"t":18.057,"kind":"tick","rover":[-1.02,0.067,153.3],"odom":[-1.233,-0.176],"mode":"path","status":"driving on odometry (not seen for 4 s, 0.27 m), 13 cm to go","seen_age":3.48,"blind_m":0.269,"link_error_cm":13.3}
+{"t":18.607,"kind":"tick","rover":[-1.022,0.068,139.8],"odom":[-1.234,-0.175],"mode":"path","status":"driving on odometry (not seen for 5 s, 0.27 m), 13 cm to go","seen_age":4.03,"blind_m":0.271,"link_error_cm":13.3}
+{"t":19.506,"kind":"tick","rover":[-1.047,0.105,119.6],"odom":[-1.254,-0.134],"mode":"path","status":"driving on odometry (not seen for 5 s, 0.32 m), 8 cm to go","seen_age":4.93,"blind_m":0.316,"link_error_cm":13.3}
+{"t":20.048,"kind":"tick","rover":[-1.075,0.155,119.4],"odom":[-1.273,-0.08],"mode":"settle","status":"driving on odometry (not seen for 6 s, 0.37 m), 3 cm to go","seen_age":5.47,"blind_m":0.373,"link_error_cm":13.3}
+{"t":20.575,"kind":"end","status":"arrived, 2.0 cm from the goal"}
+{"t":25.416,"kind":"goal","goal":[-0.9,-1.901],"start":[-0.934,0.073]}
+{"t":25.831,"kind":"route","points":[[-1.311,-0.038],[-1.431,-0.398],[-1.491,-0.938],[-0.9,-1.901]],"margin_m":0.0}
+{"t":26.086,"kind":"route","points":[[-1.311,-0.038],[-1.431,-0.398],[-1.491,-0.938],[-0.9,-1.901]],"margin_m":0.0}
+{"t":25.382,"kind":"send","n":5,"blind_m":0.0}
+{"t":25.382,"kind":"tick","rover":[-0.925,0.067,114.7],"odom":[-1.275,-0.075],"mode":"idle","status":"path sent (5), 197 cm to go","seen_age":-0.09,"blind_m":0.0,"link_error_cm":6.8}
+{"t":26.223,"kind":"tick","rover":[-0.918,0.063,114.5],"odom":[-1.275,-0.075],"mode":"path","status":"driving, 196 cm to go","seen_age":0.15,"blind_m":0.0,"link_error_cm":5.7}
+{"t":26.798,"kind":"tick","rover":[-0.917,0.069,117.9],"odom":[-1.28,-0.063],"mode":"path","status":"driving, 197 cm to go","seen_age":0.13,"blind_m":0.0,"link_error_cm":5.6}
+{"t":27.405,"kind":"tick","rover":[-0.91,0.062,146.1],"odom":[-1.277,-0.068],"mode":"path","status":"driving, 196 cm to go","seen_age":-0.1,"blind_m":0.0,"link_error_cm":3.2}
+{"t":28.125,"kind":"send","n":6,"blind_m":0.0}
+{"t":28.125,"kind":"tick","rover":[-0.907,0.058,173.7],"odom":[-1.275,-0.069],"mode":"path","status":"path sent (6), 196 cm to go","seen_age":-0.08,"blind_m":0.0,"link_error_cm":2.0}
+{"t":28.956,"kind":"tick","rover":[-0.901,0.056,-170.2],"odom":[-1.27,-0.07],"mode":"path","status":"driving, 196 cm to go","seen_age":0.02,"blind_m":0.0,"link_error_cm":1.5}
+{"t":29.589,"kind":"tick","rover":[-0.932,0.042,-157.8],"odom":[-1.305,-0.076],"mode":"path","status":"driving, 194 cm to go","seen_age":-0.02,"blind_m":0.0,"link_error_cm":2.5}
+{"t":30.7,"kind":"route","points":[[-1.281,-0.008],[-1.431,-0.368],[-1.491,-0.938],[-0.9,-1.901]],"margin_m":0.0}
+{"t":30.172,"kind":"send","n":7,"blind_m":0.0}
+{"t":30.172,"kind":"tick","rover":[-1.027,-0.003,-156.0],"odom":[-1.41,-0.105],"mode":"path","status":"path sent (7), 190 cm to go","seen_age":0.1,"blind_m":0.0,"link_error_cm":3.7}
+{"t":30.799,"kind":"tick","rover":[-1.106,-0.045,-156.0],"odom":[-1.499,-0.132],"mode":"path","status":"driving, 187 cm to go","seen_age":0.06,"blind_m":0.0,"link_error_cm":5.0}
+{"t":31.273,"kind":"tick","rover":[-1.148,-0.063,-160.5],"odom":[-1.544,-0.143],"mode":"path","status":"driving on odometry (not seen for 1 s, 0.05 m), 186 cm to go","seen_age":0.54,"blind_m":0.046,"link_error_cm":5.0}
+{"t":32.295,"kind":"route","points":[[-1.401,-0.218],[-1.491,-0.878],[-1.491,-0.998],[-0.9,-1.901]],"margin_m":0.01}
+{"t":31.807,"kind":"send","n":8,"blind_m":0.118}
+{"t":31.807,"kind":"tick","rover":[-1.219,-0.076,177.5],"odom":[-1.616,-0.147],"mode":"path","status":"path sent (8) on odometry (not seen for 2 s, 0.12 m), 185 cm to go","seen_age":1.07,"blind_m":0.118,"link_error_cm":5.0}
+{"t":32.373,"kind":"tick","rover":[-1.26,-0.068,161.0],"odom":[-1.656,-0.133],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.16 m), 187 cm to go","seen_age":1.64,"blind_m":0.16,"link_error_cm":5.0}
+{"t":33.056,"kind":"tick","rover":[-1.275,-0.064,171.3],"odom":[-1.67,-0.127],"mode":"path","status":"driving on odometry (not seen for 3 s, 0.18 m), 188 cm to go","seen_age":2.32,"blind_m":0.176,"link_error_cm":5.0}
+{"t":33.622,"kind":"tick","rover":[-1.271,-0.063,-167.6],"odom":[-1.666,-0.126],"mode":"path","status":"driving on odometry (not seen for 3 s, 0.18 m), 188 cm to go","seen_age":2.88,"blind_m":0.18,"link_error_cm":5.0}
+{"t":34.264,"kind":"tick","rover":[-1.27,-0.064,-145.7],"odom":[-1.664,-0.128],"mode":"path","status":"driving on odometry (not seen for 4 s, 0.18 m), 187 cm to go","seen_age":3.53,"blind_m":0.182,"link_error_cm":5.0}
+{"t":34.886,"kind":"tick","rover":[-1.281,-0.074,-131.3],"odom":[-1.677,-0.135],"mode":"path","status":"driving on odometry (not seen for 5 s, 0.20 m), 187 cm to go","seen_age":4.15,"blind_m":0.197,"link_error_cm":5.0}
+{"t":35.653,"kind":"tick","rover":[-1.321,-0.14,-116.9],"odom":[-1.726,-0.195],"mode":"path","status":"driving on odometry (not seen for 6 s, 0.27 m), 181 cm to go","seen_age":4.92,"blind_m":0.275,"link_error_cm":5.0}
+{"t":36.831,"kind":"route","points":[[-1.461,-0.428],[-1.521,-0.938],[-0.9,-1.901]],"margin_m":0.02}
+{"t":36.287,"kind":"send","n":9,"blind_m":0.357}
+{"t":36.287,"kind":"tick","rover":[-1.356,-0.214,-112.9],"odom":[-1.772,-0.264],"mode":"path","status":"path sent (9) on odometry (not seen for 6 s, 0.36 m), 175 cm to go","seen_age":5.55,"blind_m":0.357,"link_error_cm":5.0}
+{"t":36.951,"kind":"tick","rover":[-1.391,-0.3,-109.8],"odom":[-1.818,-0.344],"mode":"path","status":"driving on odometry (not seen for 7 s, 0.45 m), 167 cm to go","seen_age":6.21,"blind_m":0.45,"link_error_cm":5.0}
+{"t":38.179,"kind":"route","points":[[-1.521,-0.878],[-1.521,-0.968],[-0.9,-1.901]],"margin_m":0.03}
+{"t":37.523,"kind":"send","n":10,"blind_m":0.54}
+{"t":37.523,"kind":"tick","rover":[-1.42,-0.386,-107.2],"odom":[-1.858,-0.425],"mode":"path","status":"path sent (10) on odometry (not seen for 7 s, 0.54 m), 160 cm to go","seen_age":6.78,"blind_m":0.54,"link_error_cm":5.0}
+{"t":38.373,"kind":"tick","rover":[-1.454,-0.499,-106.5],"odom":[-1.908,-0.532],"mode":"path","status":"driving on odometry (not seen for 8 s, 0.66 m), 151 cm to go","seen_age":7.64,"blind_m":0.658,"link_error_cm":5.0}
+{"t":38.796,"kind":"tick","rover":[-1.472,-0.566,-104.6],"odom":[-1.936,-0.596],"mode":"path","status":"driving on odometry (not seen for 8 s, 0.73 m), 145 cm to go","seen_age":8.06,"blind_m":0.728,"link_error_cm":5.0}
+{"t":39.239,"kind":"tick","rover":[-1.46,-0.625,-102.3],"odom":[-1.957,-0.647],"mode":"path","status":"driving, 139 cm to go","seen_age":-0.17,"blind_m":0.0,"link_error_cm":17.8}
+{"t":40.023,"kind":"send","n":11,"blind_m":0.0}
+{"t":40.023,"kind":"tick","rover":[-1.453,-0.742,-97.3],"odom":[-1.998,-0.758],"mode":"path","status":"path sent (11), 128 cm to go","seen_age":-0.09,"blind_m":0.0,"link_error_cm":18.8}
+{"t":40.757,"kind":"tick","rover":[-1.434,-0.847,-93.6],"odom":[-2.028,-0.859],"mode":"path","status":"driving, 118 cm to go","seen_age":0.05,"blind_m":0.0,"link_error_cm":19.9}
+{"t":41.139,"kind":"tick","rover":[-1.436,-0.877,-97.2],"odom":[-2.037,-0.888],"mode":"path","status":"driving, 116 cm to go","seen_age":0.43,"blind_m":0.0,"link_error_cm":19.9}
+{"t":41.472,"kind":"tick","rover":[-1.438,-0.891,-101.3],"odom":[-2.041,-0.901],"mode":"path","status":"driving on odometry (not seen for 1 s, 0.01 m), 114 cm to go","seen_age":0.76,"blind_m":0.014,"link_error_cm":19.9}
+{"t":42.023,"kind":"tick","rover":[-1.436,-0.886,-121.1],"odom":[-2.039,-0.896],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.02 m), 115 cm to go","seen_age":1.31,"blind_m":0.019,"link_error_cm":19.9}
+{"t":42.639,"kind":"tick","rover":[-1.442,-0.89,-151.4],"odom":[-2.045,-0.899],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.03 m), 115 cm to go","seen_age":1.93,"blind_m":0.025,"link_error_cm":19.9}
+{"t":43.055,"kind":"tick","rover":[-1.44,-0.891,-166.7],"odom":[-2.043,-0.9],"mode":"path","status":"driving on odometry (not seen for 3 s, 0.03 m), 115 cm to go","seen_age":2.34,"blind_m":0.027,"link_error_cm":19.9}
+{"t":43.461,"kind":"tick","rover":[-1.444,-0.891,-174.1],"odom":[-2.047,-0.9],"mode":"path","status":"driving on odometry (not seen for 3 s, 0.03 m), 115 cm to go","seen_age":2.75,"blind_m":0.031,"link_error_cm":19.9}
+{"t":44.143,"kind":"tick","rover":[-1.445,-0.891,175.8],"odom":[-2.048,-0.899],"mode":"path","status":"driving on odometry (not seen for 4 s, 0.03 m), 115 cm to go","seen_age":3.43,"blind_m":0.032,"link_error_cm":19.9}
+{"t":44.67,"kind":"tick","rover":[-1.465,-0.888,163.8],"odom":[-2.067,-0.892],"mode":"path","status":"driving on odometry (not seen for 4 s, 0.05 m), 116 cm to go","seen_age":3.96,"blind_m":0.053,"link_error_cm":19.9}
+{"t":45.087,"kind":"tick","rover":[-1.479,-0.883,161.1],"odom":[-2.08,-0.884],"mode":"path","status":"driving on odometry (not seen for 5 s, 0.07 m), 117 cm to go","seen_age":4.38,"blind_m":0.067,"link_error_cm":19.9}
+{"t":45.486,"kind":"tick","rover":[-1.493,-0.879,165.3],"odom":[-2.093,-0.877],"mode":"path","status":"driving on odometry (not seen for 5 s, 0.08 m), 118 cm to go","seen_age":4.78,"blind_m":0.082,"link_error_cm":19.9}
+{"t":45.972,"kind":"tick","rover":[-1.494,-0.878,176.4],"odom":[-2.093,-0.876],"mode":"path","status":"driving on odometry (not seen for 6 s, 0.08 m), 118 cm to go","seen_age":5.26,"blind_m":0.083,"link_error_cm":19.9}
+{"t":46.488,"kind":"tick","rover":[-1.496,-0.878,-155.9],"odom":[-2.095,-0.876],"mode":"path","status":"driving on odometry (not seen for 6 s, 0.08 m), 118 cm to go","seen_age":5.78,"blind_m":0.085,"link_error_cm":19.9}
+{"t":47.074,"kind":"tick","rover":[-1.495,-0.878,-136.0],"odom":[-2.094,-0.876],"mode":"path","status":"driving on odometry (not seen for 7 s, 0.09 m), 118 cm to go","seen_age":6.36,"blind_m":0.085,"link_error_cm":19.9}
+{"t":47.486,"kind":"tick","rover":[-1.497,-0.881,-122.7],"odom":[-2.097,-0.878],"mode":"path","status":"driving on odometry (not seen for 7 s, 0.09 m), 118 cm to go","seen_age":6.78,"blind_m":0.088,"link_error_cm":19.9}
+{"t":47.916,"kind":"tick","rover":[-1.495,-0.877,-92.5],"odom":[-2.095,-0.875],"mode":"path","status":"driving on odometry (not seen for 8 s, 0.09 m), 118 cm to go","seen_age":7.21,"blind_m":0.092,"link_error_cm":19.9}
+{"t":48.553,"kind":"tick","rover":[-1.494,-0.882,-75.6],"odom":[-2.095,-0.88],"mode":"path","status":"driving on odometry (not seen for 8 s, 0.10 m), 118 cm to go","seen_age":7.84,"blind_m":0.098,"link_error_cm":19.9}
+{"t":49.206,"kind":"tick","rover":[-1.465,-0.951,-63.2],"odom":[-2.08,-0.954],"mode":"path","status":"driving on odometry (not seen for 9 s, 0.17 m), 111 cm to go","seen_age":8.5,"blind_m":0.173,"link_error_cm":19.9}
+{"t":49.638,"kind":"tick","rover":[-1.44,-1.0,-61.3],"odom":[-2.066,-1.007],"mode":"path","status":"driving on odometry (not seen for 9 s, 0.23 m), 105 cm to go","seen_age":8.93,"blind_m":0.227,"link_error_cm":19.9}
+{"t":50.147,"kind":"tick","rover":[-1.407,-1.057,-59.9],"odom":[-2.046,-1.069],"mode":"path","status":"driving on odometry (not seen for 10 s, 0.29 m), 98 cm to go","seen_age":9.44,"blind_m":0.293,"link_error_cm":19.9}
+{"t":50.728,"kind":"tick","rover":[-1.361,-1.134,-58.4],"odom":[-2.017,-1.154],"mode":"path","status":"driving on odometry (not seen for 10 s, 0.38 m), 90 cm to go","seen_age":10.02,"blind_m":0.382,"link_error_cm":19.9}
+{"t":51.155,"kind":"tick","rover":[-1.324,-1.192,-57.0],"odom":[-1.993,-1.219],"mode":"path","status":"driving on odometry (not seen for 11 s, 0.45 m), 83 cm to go","seen_age":10.44,"blind_m":0.452,"link_error_cm":19.9}
+{"t":51.612,"kind":"tick","rover":[-1.288,-1.247,-56.0],"odom":[-1.97,-1.28],"mode":"path","status":"driving on odometry (not seen for 11 s, 0.52 m), 76 cm to go","seen_age":10.9,"blind_m":0.517,"link_error_cm":19.9}
+{"t":52.018,"kind":"tick","rover":[-1.253,-1.298,-54.8],"odom":[-1.946,-1.338],"mode":"path","status":"driving on odometry (not seen for 11 s, 0.58 m), 70 cm to go","seen_age":11.31,"blind_m":0.579,"link_error_cm":19.9}
+{"t":52.533,"kind":"tick","rover":[-1.208,-1.361,-53.7],"odom":[-1.915,-1.409],"mode":"path","status":"driving on odometry (not seen for 12 s, 0.66 m), 62 cm to go","seen_age":11.82,"blind_m":0.657,"link_error_cm":19.9}
+{"t":53.036,"kind":"tick","rover":[-1.163,-1.423,-53.4],"odom":[-1.884,-1.478],"mode":"path","status":"driving on odometry (not seen for 13 s, 0.73 m), 55 cm to go","seen_age":12.33,"blind_m":0.733,"link_error_cm":19.9}
+{"t":53.288,"kind":"tick","rover":[-1.142,-1.45,-52.3],"odom":[-1.869,-1.509],"mode":"path","status":"driving on odometry (not seen for 13 s, 0.77 m), 51 cm to go","seen_age":12.58,"blind_m":0.767,"link_error_cm":19.9}
+{"t":53.767,"kind":"send","n":12,"blind_m":0.0}
+{"t":53.767,"kind":"tick","rover":[-1.073,-1.489,-52.7],"odom":[-1.841,-1.568],"mode":"path","status":"path sent (12), 45 cm to go","seen_age":-0.07,"blind_m":0.0,"link_error_cm":20.9}
+{"t":54.155,"kind":"tick","rover":[-1.011,-1.529,-53.1],"odom":[-1.813,-1.627],"mode":"path","status":"driving, 39 cm to go","seen_age":-0.08,"blind_m":0.0,"link_error_cm":16.8}
+{"t":54.59,"kind":"tick","rover":[-0.954,-1.565,-54.3],"odom":[-1.787,-1.681],"mode":"path","status":"driving, 34 cm to go","seen_age":-0.11,"blind_m":0.0,"link_error_cm":16.4}
+{"t":55.028,"kind":"tick","rover":[-0.927,-1.607,-60.5],"odom":[-1.768,-1.727],"mode":"path","status":"driving, 30 cm to go","seen_age":0.33,"blind_m":0.0,"link_error_cm":16.4}
+{"t":55.548,"kind":"tick","rover":[-0.885,-1.691,-66.9],"odom":[-1.743,-1.817],"mode":"path","status":"driving on odometry (not seen for 1 s, 0.09 m), 21 cm to go","seen_age":0.85,"blind_m":0.094,"link_error_cm":16.4}
+{"t":56.164,"kind":"tick","rover":[-0.858,-1.76,-72.3],"odom":[-1.73,-1.891],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.17 m), 15 cm to go","seen_age":1.46,"blind_m":0.168,"link_error_cm":16.4}
+{"t":56.653,"kind":"tick","rover":[-0.844,-1.814,-81.5],"odom":[-1.726,-1.946],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.22 m), 10 cm to go","seen_age":1.95,"blind_m":0.223,"link_error_cm":16.4}
+{"t":57.056,"kind":"tick","rover":[-0.84,-1.854,-88.1],"odom":[-1.73,-1.986],"mode":"path","status":"driving on odometry (not seen for 3 s, 0.26 m), 8 cm to go","seen_age":2.36,"blind_m":0.263,"link_error_cm":16.4}
+{"t":57.572,"kind":"send","n":13,"blind_m":0.0}
+{"t":57.572,"kind":"tick","rover":[-0.82,-1.84,-92.0],"odom":[-1.731,-1.994],"mode":"idle","status":"path sent (13), 10 cm to go","seen_age":-0.07,"blind_m":0.0,"link_error_cm":19.9}
+{"t":58.036,"kind":"tick","rover":[-0.803,-1.823,-91.8],"odom":[-1.732,-1.995],"mode":"path","status":"driving, 13 cm to go","seen_age":-0.0,"blind_m":0.0,"link_error_cm":17.0}
+{"t":58.356,"kind":"tick","rover":[-0.789,-1.818,-101.2],"odom":[-1.735,-2.008],"mode":"path","status":"driving, 14 cm to go","seen_age":-0.18,"blind_m":0.0,"link_error_cm":15.5}
+{"t":58.955,"kind":"tick","rover":[-0.774,-1.794,-126.2],"odom":[-1.731,-2.0],"mode":"path","status":"driving, 17 cm to go","seen_age":-0.09,"blind_m":0.0,"link_error_cm":13.1}
+{"t":59.405,"kind":"tick","rover":[-0.767,-1.784,-134.1],"odom":[-1.735,-2.003],"mode":"path","status":"driving, 18 cm to go","seen_age":-0.07,"blind_m":0.0,"link_error_cm":11.4}
+{"t":59.771,"kind":"send","n":14,"blind_m":0.0}
+{"t":59.771,"kind":"tick","rover":[-0.764,-1.777,-137.2],"odom":[-1.74,-2.007],"mode":"path","status":"path sent (14), 18 cm to go","seen_age":-0.14,"blind_m":0.0,"link_error_cm":9.2}
+{"t":60.327,"kind":"tick","rover":[-0.79,-1.793,-145.7],"odom":[-1.782,-2.027],"mode":"path","status":"driving, 16 cm to go","seen_age":-0.05,"blind_m":0.0,"link_error_cm":10.9}
+{"t":60.784,"kind":"tick","rover":[-0.847,-1.832,-145.7],"odom":[-1.847,-2.052],"mode":"path","status":"driving, 9 cm to go","seen_age":0.41,"blind_m":0.0,"link_error_cm":10.9}
+{"t":61.238,"kind":"tick","rover":[-0.872,-1.851,-140.5],"odom":[-1.876,-2.064],"mode":"path","status":"driving on odometry (not seen for 1 s, 0.03 m), 6 cm to go","seen_age":0.86,"blind_m":0.031,"link_error_cm":10.9}
+{"t":61.823,"kind":"tick","rover":[-0.892,-1.868,-134.6],"odom":[-1.898,-2.076],"mode":"settle","status":"driving on odometry (not seen for 2 s, 0.06 m), 3 cm to go","seen_age":1.45,"blind_m":0.057,"link_error_cm":10.9}
+{"t":62.271,"kind":"end","status":"arrived, 3.5 cm from the goal"}
+{"t":64.254,"kind":"goal","goal":[0.031,-0.003],"start":[-0.892,-1.868]}
+{"t":64.493,"kind":"route","points":[[-1.491,-0.938],[-1.431,-0.368],[-1.311,-0.038],[-0.561,0.112],[-0.141,0.082],[0.031,-0.003]],"margin_m":0.0}
+{"t":64.072,"kind":"send","n":15,"blind_m":0.057}
+{"t":64.072,"kind":"tick","rover":[-0.892,-1.868,-134.6],"odom":[-1.898,-2.076],"mode":"idle","status":"path sent (15) on odometry (not seen for 4 s, 0.06 m), 208 cm to go","seen_age":3.7,"blind_m":0.057,"link_error_cm":10.9}
+{"t":64.64,"kind":"tick","rover":[-0.891,-1.868,-134.5],"odom":[-1.898,-2.076],"mode":"path","status":"driving on odometry (not seen for 5 s, 0.06 m), 208 cm to go","seen_age":4.27,"blind_m":0.057,"link_error_cm":10.9}
+{"t":65.251,"kind":"tick","rover":[-0.896,-1.873,-137.8],"odom":[-1.904,-2.08],"mode":"path","status":"driving on odometry (not seen for 5 s, 0.06 m), 209 cm to go","seen_age":4.88,"blind_m":0.064,"link_error_cm":10.9}
+{"t":65.822,"kind":"tick","rover":[-0.908,-1.88,-162.7],"odom":[-1.917,-2.084],"mode":"path","status":"driving on odometry (not seen for 6 s, 0.08 m), 210 cm to go","seen_age":5.45,"blind_m":0.078,"link_error_cm":10.9}
+{"t":66.738,"kind":"goal","goal":[-0.637,-0.407],"start":[-0.89,-1.878]}
+{"t":66.486,"kind":"end","status":"stopped: no way to the goal around the obstacles"}
+{"t":84.514,"kind":"goal","goal":[-0.18,0.155],"start":[-1.558,-0.323]}
+{"t":84.94,"kind":"route","points":[[-1.251,-0.008],[-0.621,0.142],[-0.18,0.155]],"margin_m":0.0}
+{"t":84.487,"kind":"send","n":16,"blind_m":0.0}
+{"t":84.487,"kind":"tick","rover":[-1.557,-0.323,44.8],"odom":[-1.889,-0.212],"mode":"path","status":"path sent (16), 146 cm to go","seen_age":-0.32,"blind_m":0.0,"link_error_cm":1.2}
+{"t":85.488,"kind":"tick","rover":[-1.529,-0.31,21.0],"odom":[-1.857,-0.206],"mode":"path","status":"driving, 143 cm to go","seen_age":-0.02,"blind_m":0.0,"link_error_cm":1.3}
+{"t":85.934,"kind":"tick","rover":[-1.468,-0.286,22.0],"odom":[-1.791,-0.203],"mode":"path","status":"driving, 136 cm to go","seen_age":-0.0,"blind_m":0.0,"link_error_cm":0.6}
+{"t":87.054,"kind":"route","points":[[-1.281,-0.008],[-0.591,0.142],[-0.18,0.155]],"margin_m":0.0}
+{"t":86.404,"kind":"send","n":17,"blind_m":0.0}
+{"t":86.404,"kind":"tick","rover":[-1.401,-0.254,25.4],"odom":[-1.718,-0.2],"mode":"path","status":"path sent (17), 129 cm to go","seen_age":-0.27,"blind_m":0.0,"link_error_cm":2.6}
+{"t":87.187,"kind":"tick","rover":[-1.311,-0.188,41.0],"odom":[-1.605,-0.174],"mode":"path","status":"driving, 118 cm to go","seen_age":-0.02,"blind_m":0.0,"link_error_cm":5.0}
+{"t":87.632,"kind":"tick","rover":[-1.282,-0.145,53.1],"odom":[-1.557,-0.152],"mode":"path","status":"driving, 114 cm to go","seen_age":-0.11,"blind_m":0.0,"link_error_cm":5.7}
+{"t":88.121,"kind":"tick","rover":[-1.248,-0.084,70.9],"odom":[-1.503,-0.107],"mode":"path","status":"driving, 110 cm to go","seen_age":0.38,"blind_m":0.0,"link_error_cm":5.7}
+{"t":88.621,"kind":"tick","rover":[-1.25,-0.04,87.6],"odom":[-1.479,-0.074],"mode":"path","status":"driving, 109 cm to go","seen_age":-0.22,"blind_m":0.0,"link_error_cm":7.4}
+{"t":89.23,"kind":"tick","rover":[-1.249,-0.022,84.8],"odom":[-1.472,-0.058],"mode":"path","status":"driving on odometry (not seen for 1 s, 0.00 m), 108 cm to go","seen_age":0.39,"blind_m":0.0,"link_error_cm":7.4}
+{"t":89.9,"kind":"tick","rover":[-1.25,-0.02,57.3],"odom":[-1.472,-0.055],"mode":"path","status":"driving on odometry (not seen for 1 s, 0.00 m), 108 cm to go","seen_age":1.06,"blind_m":0.003,"link_error_cm":7.4}
+{"t":90.366,"kind":"tick","rover":[-1.244,-0.014,40.7],"odom":[-1.464,-0.052],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.01 m), 108 cm to go","seen_age":1.53,"blind_m":0.011,"link_error_cm":7.4}
+{"t":90.806,"kind":"tick","rover":[-1.246,-0.016,36.7],"odom":[-1.467,-0.053],"mode":"path","status":"driving on odometry (not seen for 3 s, 0.01 m), 108 cm to go","seen_age":1.97,"blind_m":0.014,"link_error_cm":7.4}
+{"t":91.455,"kind":"tick","rover":[-1.239,-0.012,27.6],"odom":[-1.459,-0.052],"mode":"path","status":"driving on odometry (not seen for 3 s, 0.02 m), 107 cm to go","seen_age":2.61,"blind_m":0.022,"link_error_cm":7.4}
+{"t":92.138,"kind":"tick","rover":[-1.157,0.028,23.8],"odom":[-1.368,-0.046],"mode":"path","status":"driving on odometry (not seen for 4 s, 0.11 m), 99 cm to go","seen_age":3.3,"blind_m":0.113,"link_error_cm":7.4}
+{"t":92.755,"kind":"tick","rover":[-1.079,0.06,21.2],"odom":[-1.283,-0.047],"mode":"path","status":"driving on odometry (not seen for 5 s, 0.20 m), 90 cm to go","seen_age":3.91,"blind_m":0.198,"link_error_cm":7.4}
+{"t":93.586,"kind":"tick","rover":[-0.963,0.102,17.5],"odom":[-1.16,-0.053],"mode":"path","status":"driving on odometry (not seen for 5 s, 0.32 m), 78 cm to go","seen_age":4.75,"blind_m":0.321,"link_error_cm":7.4}
+{"t":93.867,"kind":"tick","rover":[-0.919,0.115,16.6],"odom":[-1.114,-0.057],"mode":"path","status":"driving on odometry (not seen for 5 s, 0.37 m), 74 cm to go","seen_age":5.03,"blind_m":0.367,"link_error_cm":7.4}
+{"t":94.195,"kind":"tick","rover":[-0.873,0.128,15.4],"odom":[-1.067,-0.062],"mode":"path","status":"driving on odometry (not seen for 6 s, 0.41 m), 69 cm to go","seen_age":5.36,"blind_m":0.414,"link_error_cm":7.4}
+{"t":94.537,"kind":"tick","rover":[-0.832,0.14,14.6],"odom":[-1.024,-0.068],"mode":"path","status":"driving on odometry (not seen for 6 s, 0.46 m), 65 cm to go","seen_age":5.7,"blind_m":0.457,"link_error_cm":7.4}
+{"t":94.831,"kind":"tick","rover":[-0.79,0.15,13.6],"odom":[-0.982,-0.074],"mode":"path","status":"driving on odometry (not seen for 6 s, 0.50 m), 61 cm to go","seen_age":5.99,"blind_m":0.5,"link_error_cm":7.4}
+{"t":95.187,"kind":"tick","rover":[-0.738,0.161,11.4],"odom":[-0.93,-0.084],"mode":"path","status":"driving on odometry (not seen for 6 s, 0.55 m), 56 cm to go","seen_age":6.35,"blind_m":0.553,"link_error_cm":7.4}
+{"t":95.521,"kind":"tick","rover":[-0.694,0.17,10.6],"odom":[-0.886,-0.093],"mode":"path","status":"driving on odometry (not seen for 7 s, 0.60 m), 51 cm to go","seen_age":6.68,"blind_m":0.598,"link_error_cm":7.4}
+{"t":95.871,"kind":"tick","rover":[-0.649,0.178,8.7],"odom":[-0.841,-0.103],"mode":"path","status":"driving on odometry (not seen for 7 s, 0.64 m), 47 cm to go","seen_age":7.03,"blind_m":0.644,"link_error_cm":7.4}
+{"t":96.245,"kind":"tick","rover":[-0.593,0.186,7.9],"odom":[-0.786,-0.117],"mode":"path","status":"driving on odometry (not seen for 8 s, 0.70 m), 41 cm to go","seen_age":7.41,"blind_m":0.701,"link_error_cm":7.4}
+{"t":96.679,"kind":"tick","rover":[-0.539,0.193,5.8],"odom":[-0.734,-0.132],"mode":"path","status":"driving on odometry (not seen for 8 s, 0.76 m), 36 cm to go","seen_age":7.84,"blind_m":0.755,"link_error_cm":7.4}
+{"t":97.104,"kind":"tick","rover":[-0.472,0.198,3.7],"odom":[-0.67,-0.152],"mode":"path","status":"driving on odometry (not seen for 8 s, 0.82 m), 30 cm to go","seen_age":8.26,"blind_m":0.822,"link_error_cm":7.4}
+{"t":97.448,"kind":"tick","rover":[-0.412,0.202,2.9],"odom":[-0.613,-0.172],"mode":"path","status":"driving on odometry (not seen for 9 s, 0.88 m), 24 cm to go","seen_age":8.61,"blind_m":0.882,"link_error_cm":7.4}
+{"t":97.715,"kind":"tick","rover":[-0.383,0.203,2.5],"odom":[-0.586,-0.182],"mode":"path","status":"driving on odometry (not seen for 9 s, 0.91 m), 21 cm to go","seen_age":8.88,"blind_m":0.912,"link_error_cm":7.4}
+{"t":98.013,"kind":"tick","rover":[-0.345,0.205,2.2],"odom":[-0.55,-0.195],"mode":"path","status":"driving on odometry (not seen for 9 s, 0.95 m), 17 cm to go","seen_age":9.17,"blind_m":0.949,"link_error_cm":7.4}
+{"t":98.267,"kind":"tick","rover":[-0.311,0.206,1.4],"odom":[-0.518,-0.207],"mode":"path","status":"driving on odometry (not seen for 9 s, 0.98 m), 14 cm to go","seen_age":9.43,"blind_m":0.984,"link_error_cm":7.4}
+{"t":98.546,"kind":"tick","rover":[-0.271,0.206,0.9],"odom":[-0.481,-0.222],"mode":"path","status":"driving on odometry (not seen for 10 s, 1.02 m), 10 cm to go","seen_age":9.71,"blind_m":1.023,"link_error_cm":7.4}
+{"t":98.799,"kind":"tick","rover":[-0.242,0.207,-0.8],"odom":[-0.454,-0.233],"mode":"settle","status":"driving on odometry (not seen for 10 s, 1.05 m), 8 cm to go","seen_age":9.96,"blind_m":1.052,"link_error_cm":7.4}
+{"t":99.064,"kind":"tick","rover":[-0.242,0.207,-0.4],"odom":[-0.454,-0.233],"mode":"settle","status":"driving on odometry (not seen for 10 s, 1.05 m), 8 cm to go","seen_age":10.22,"blind_m":1.052,"link_error_cm":7.4}
+{"t":99.21,"kind":"send","n":18,"blind_m":1.052}
+{"t":99.402,"kind":"tick","rover":[-0.241,0.207,-0.9],"odom":[-0.453,-0.233],"mode":"path","status":"driving on odometry (not seen for 11 s, 1.05 m), 8 cm to go","seen_age":10.56,"blind_m":1.054,"link_error_cm":7.4}
+{"t":99.721,"kind":"tick","rover":[-0.233,0.206,-4.2],"odom":[-0.446,-0.236],"mode":"path","status":"driving on odometry (not seen for 11 s, 1.06 m), 7 cm to go","seen_age":10.88,"blind_m":1.061,"link_error_cm":7.4}
+{"t":100.07,"kind":"tick","rover":[-0.229,0.206,-12.7],"odom":[-0.442,-0.238],"mode":"path","status":"driving on odometry (not seen for 11 s, 1.07 m), 7 cm to go","seen_age":11.23,"blind_m":1.072,"link_error_cm":7.4}
+{"t":100.376,"kind":"tick","rover":[-0.233,0.207,-21.4],"odom":[-0.446,-0.235],"mode":"path","status":"driving on odometry (not seen for 12 s, 1.08 m), 7 cm to go","seen_age":11.54,"blind_m":1.076,"link_error_cm":7.4}
+{"t":100.734,"kind":"tick","rover":[-0.235,0.208,-30.5],"odom":[-0.447,-0.234],"mode":"path","status":"driving on odometry (not seen for 12 s, 1.08 m), 8 cm to go","seen_age":11.89,"blind_m":1.081,"link_error_cm":7.4}
+{"t":101.154,"kind":"tick","rover":[-0.24,0.211,-34.9],"odom":[-0.45,-0.229],"mode":"path","status":"driving on odometry (not seen for 12 s, 1.09 m), 8 cm to go","seen_age":12.31,"blind_m":1.087,"link_error_cm":7.4}
+{"t":101.417,"kind":"tick","rover":[-0.224,0.198,-43.3],"odom":[-0.441,-0.247],"mode":"path","status":"driving on odometry (not seen for 13 s, 1.11 m), 6 cm to go","seen_age":12.58,"blind_m":1.107,"link_error_cm":7.4}
+{"t":101.737,"kind":"tick","rover":[-0.192,0.165,-49.3],"odom":[-0.424,-0.29],"mode":"settle","status":"driving on odometry (not seen for 13 s, 1.15 m), 2 cm to go","seen_age":12.9,"blind_m":1.153,"link_error_cm":7.4}
+{"t":102.244,"kind":"tick","rover":[-0.191,0.164,-49.2],"odom":[-0.424,-0.292],"mode":"settle","status":"driving on odometry (not seen for 14 s, 1.15 m), 1 cm to go","seen_age":13.4,"blind_m":1.155,"link_error_cm":7.4}
+{"t":102.549,"kind":"end","status":"arrived, 1.4 cm from the goal"}
+{"t":171.213,"kind":"goal","goal":[-0.992,-0.484],"start":[-0.122,0.91]}
+{"t":171.278,"kind":"route","points":[[-0.117,0.614],[-0.177,0.494],[-0.207,-0.136],[-0.327,-0.256],[-0.992,-0.484]],"margin_m":0.0}
+{"t":170.949,"kind":"send","n":19,"blind_m":0.0}
+{"t":170.949,"kind":"tick","rover":[-0.122,0.91,-78.4],"odom":[-0.424,-0.292],"mode":"idle","status":"path sent (19) on odometry (not seen for 9 s, 0.00 m), 164 cm to go","seen_age":8.71,"blind_m":0.0,"link_error_cm":1.2}
+{"t":171.5,"kind":"tick","rover":[-0.122,0.909,-78.4],"odom":[-0.423,-0.293],"mode":"path","status":"driving on odometry (not seen for 10 s, 0.00 m), 164 cm to go","seen_age":9.26,"blind_m":0.001,"link_error_cm":1.2}
+{"t":171.984,"kind":"tick","rover":[-0.122,0.907,-78.8],"odom":[-0.423,-0.294],"mode":"path","status":"driving on odometry (not seen for 10 s, 0.00 m), 164 cm to go","seen_age":9.74,"blind_m":0.003,"link_error_cm":1.2}
+{"t":172.417,"kind":"tick","rover":[-0.119,0.893,-82.3],"odom":[-0.419,-0.308],"mode":"path","status":"driving on odometry (not seen for 11 s, 0.02 m), 163 cm to go","seen_age":10.17,"blind_m":0.017,"link_error_cm":1.2}
+{"t":173.084,"kind":"tick","rover":[-0.117,0.817,-90.8],"odom":[-0.408,-0.384],"mode":"path","status":"driving on odometry (not seen for 11 s, 0.09 m), 157 cm to go","seen_age":10.84,"blind_m":0.094,"link_error_cm":1.2}
+{"t":173.888,"kind":"goal","goal":[-0.834,0.36],"start":[-0.119,0.742]}
+{"t":173.534,"kind":"tick","rover":[-0.119,0.742,-92.7],"odom":[-0.402,-0.458],"mode":"path","status":"planning the route","seen_age":11.29,"blind_m":0.168,"link_error_cm":1.2}
+{"t":173.969,"kind":"route","points":[[-0.177,0.464],[-0.207,-0.166],[-0.387,-0.286],[-0.687,-0.286],[-0.777,-0.166],[-0.837,0.074],[-0.834,0.36]],"margin_m":0.01}
+{"t":174.457,"kind":"route","points":[[-0.177,0.494],[-0.207,-0.166],[-0.387,-0.286],[-0.687,-0.286],[-0.777,-0.166],[-0.837,0.074],[-0.834,0.36]],"margin_m":0.01}
+{"t":174.018,"kind":"send","n":20,"blind_m":0.222}
+{"t":174.018,"kind":"tick","rover":[-0.122,0.689,-94.1],"odom":[-0.399,-0.511],"mode":"path","status":"path sent (20) on odometry (not seen for 12 s, 0.22 m), 78 cm to go","seen_age":11.78,"blind_m":0.222,"link_error_cm":1.2}
+{"t":174.999,"kind":"route","points":[[-0.177,-0.106],[-0.357,-0.286],[-0.507,-0.316],[-0.627,-0.316],[-0.807,-0.136],[-0.867,0.164],[-0.867,0.344]],"margin_m":0.02}
+{"t":174.55,"kind":"send","n":21,"blind_m":0.312}
+{"t":174.55,"kind":"tick","rover":[-0.133,0.599,-99.5],"odom":[-0.399,-0.602],"mode":"path","status":"path sent (21) on odometry (not seen for 13 s, 0.31 m), 74 cm to go","seen_age":12.31,"blind_m":0.312,"link_error_cm":1.2}
+{"t":175.151,"kind":"tick","rover":[-0.148,0.516,-101.6],"odom":[-0.404,-0.686],"mode":"path","status":"driving on odometry (not seen for 13 s, 0.40 m), 70 cm to go","seen_age":12.91,"blind_m":0.396,"link_error_cm":1.2}
+{"t":175.485,"kind":"tick","rover":[-0.157,0.473,-102.0],"odom":[-0.408,-0.73],"mode":"path","status":"driving on odometry (not seen for 14 s, 0.44 m), 69 cm to go","seen_age":13.24,"blind_m":0.441,"link_error_cm":1.2}
+{"t":176.419,"kind":"route","points":[[-0.687,0.434],[-0.834,0.36]],"margin_m":0.03}
+{"t":175.894,"kind":"send","n":22,"blind_m":0.502}
+{"t":175.894,"kind":"tick","rover":[-0.17,0.413,-102.5],"odom":[-0.414,-0.791],"mode":"path","status":"path sent (22) on odometry (not seen for 14 s, 0.50 m), 67 cm to go","seen_age":13.65,"blind_m":0.502,"link_error_cm":1.2}
+{"t":177.063,"kind":"route","points":[[-0.357,0.434],[-0.687,0.434],[-0.834,0.36]],"margin_m":0.03}
+{"t":176.617,"kind":"send","n":23,"blind_m":0.609}
+{"t":176.617,"kind":"tick","rover":[-0.192,0.308,-100.8],"odom":[-0.425,-0.898],"mode":"path","status":"path sent (23) on odometry (not seen for 15 s, 0.61 m), 64 cm to go","seen_age":14.38,"blind_m":0.609,"link_error_cm":1.2}
+{"t":177.182,"kind":"tick","rover":[-0.196,0.291,-104.4],"odom":[-0.426,-0.915],"mode":"path","status":"driving on odometry (not seen for 15 s, 0.63 m), 64 cm to go","seen_age":14.94,"blind_m":0.627,"link_error_cm":1.2}
+{"t":177.651,"kind":"tick","rover":[-0.191,0.288,-119.8],"odom":[-0.429,-0.926],"mode":"path","status":"driving, 65 cm to go","seen_age":-0.08,"blind_m":0.0,"link_error_cm":7.1}
+{"t":178.1,"kind":"tick","rover":[-0.182,0.297,-140.9],"odom":[-0.429,-0.925],"mode":"path","status":"driving, 65 cm to go","seen_age":-0.13,"blind_m":0.0,"link_error_cm":8.1}
+{"t":178.97,"kind":"route","points":[[-0.207,-0.166],[-0.297,-0.256],[-0.507,-0.286],[-0.657,-0.286],[-0.777,-0.166],[-0.837,0.134],[-0.834,0.36]],"margin_m":0.0}
+{"t":178.647,"kind":"send","n":24,"blind_m":0.0}
+{"t":178.647,"kind":"tick","rover":[-0.173,0.305,-159.7],"odom":[-0.429,-0.924],"mode":"path","status":"path sent (24), 66 cm to go","seen_age":-0.02,"blind_m":0.0,"link_error_cm":7.7}
+{"t":179.559,"kind":"route","points":[[0.063,0.074],[0.063,-0.106],[-0.057,-0.226],[-0.507,-0.286],[-0.657,-0.286],[-0.777,-0.166],[-0.837,0.134],[-0.834,0.36]],"margin_m":0.0}
+{"t":179.247,"kind":"send","n":25,"blind_m":0.0}
+{"t":179.247,"kind":"tick","rover":[-0.166,0.313,-178.1],"odom":[-0.429,-0.924],"mode":"path","status":"path sent (25), 67 cm to go","seen_age":-0.02,"blind_m":0.0,"link_error_cm":7.7}
+{"t":179.725,"kind":"tick","rover":[-0.17,0.313,176.2],"odom":[-0.434,-0.925],"mode":"path","status":"driving, 67 cm to go","seen_age":0.46,"blind_m":0.0,"link_error_cm":7.7}
+{"t":180.337,"kind":"tick","rover":[-0.17,0.313,-172.4],"odom":[-0.434,-0.925],"mode":"path","status":"driving on odometry (not seen for 1 s, 0.00 m), 67 cm to go","seen_age":1.07,"blind_m":0.002,"link_error_cm":7.7}
+{"t":180.797,"kind":"tick","rover":[-0.165,0.315,-146.7],"odom":[-0.428,-0.923],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.01 m), 67 cm to go","seen_age":1.53,"blind_m":0.007,"link_error_cm":7.7}
+{"t":181.176,"kind":"tick","rover":[-0.159,0.318,-133.0],"odom":[-0.429,-0.925],"mode":"path","status":"driving, 68 cm to go","seen_age":-0.03,"blind_m":0.0,"link_error_cm":5.8}
+{"t":181.525,"kind":"tick","rover":[-0.157,0.32,-110.2],"odom":[-0.431,-0.927],"mode":"path","status":"driving, 68 cm to go","seen_age":-0.01,"blind_m":0.0,"link_error_cm":3.8}
+{"t":181.904,"kind":"tick","rover":[-0.155,0.316,-103.1],"odom":[-0.432,-0.932],"mode":"path","status":"driving, 68 cm to go","seen_age":0.07,"blind_m":0.0,"link_error_cm":2.7}
+{"t":182.215,"kind":"tick","rover":[-0.153,0.312,-86.1],"odom":[-0.433,-0.937],"mode":"path","status":"driving, 68 cm to go","seen_age":0.08,"blind_m":0.0,"link_error_cm":2.0}
+{"t":182.796,"kind":"goal","goal":[-0.483,1.034],"start":[-0.153,0.312]}
+{"t":182.896,"kind":"route","points":[[-0.087,0.854],[-0.483,1.034]],"margin_m":0.0}
+{"t":183.017,"kind":"goal","goal":[-0.483,1.034],"start":[-0.152,0.309]}
+{"t":183.081,"kind":"route","points":[[-0.087,0.854],[-0.483,1.034]],"margin_m":0.0}
+{"t":183.129,"kind":"route","points":[[-0.117,0.884],[-0.483,1.034]],"margin_m":0.0}
+{"t":182.73,"kind":"send","n":26,"blind_m":0.0}
+{"t":182.73,"kind":"tick","rover":[-0.149,0.308,-65.8],"odom":[-0.432,-0.94],"mode":"path","status":"path sent (26), 80 cm to go","seen_age":0.16,"blind_m":0.0,"link_error_cm":2.4}
+{"t":183.647,"kind":"route","points":[[-0.087,0.854],[-0.483,1.034]],"margin_m":0.0}
+{"t":183.252,"kind":"send","n":27,"blind_m":0.008}
+{"t":183.252,"kind":"tick","rover":[-0.153,0.315,-56.7],"odom":[-0.437,-0.934],"mode":"path","status":"path sent (27) on odometry (not seen for 1 s, 0.01 m), 79 cm to go","seen_age":0.68,"blind_m":0.008,"link_error_cm":2.4}
+{"t":183.783,"kind":"tick","rover":[-0.151,0.311,-33.2],"odom":[-0.434,-0.937],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.01 m), 79 cm to go","seen_age":1.21,"blind_m":0.012,"link_error_cm":2.4}
+{"t":184.213,"kind":"tick","rover":[-0.153,0.312,-20.7],"odom":[-0.436,-0.937],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.01 m), 79 cm to go","seen_age":1.64,"blind_m":0.014,"link_error_cm":2.4}
+{"t":184.549,"kind":"tick","rover":[-0.146,0.31,-6.3],"odom":[-0.429,-0.937],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.02 m), 80 cm to go","seen_age":1.98,"blind_m":0.021,"link_error_cm":2.4}
+{"t":185.001,"kind":"tick","rover":[-0.134,0.311,17.2],"odom":[-0.417,-0.935],"mode":"path","status":"driving on odometry (not seen for 3 s, 0.03 m), 80 cm to go","seen_age":2.43,"blind_m":0.034,"link_error_cm":2.4}
+{"t":185.581,"kind":"tick","rover":[-0.136,0.306,37.7],"odom":[-0.419,-0.94],"mode":"path","status":"driving on odometry (not seen for 3 s, 0.04 m), 81 cm to go","seen_age":3.01,"blind_m":0.039,"link_error_cm":2.4}
+{"t":185.978,"kind":"tick","rover":[-0.134,0.308,56.6],"odom":[-0.417,-0.938],"mode":"path","status":"driving on odometry (not seen for 4 s, 0.04 m), 81 cm to go","seen_age":3.41,"blind_m":0.042,"link_error_cm":2.4}
+{"t":186.385,"kind":"tick","rover":[-0.132,0.31,62.8],"odom":[-0.416,-0.935],"mode":"path","status":"driving on odometry (not seen for 4 s, 0.04 m), 80 cm to go","seen_age":3.81,"blind_m":0.045,"link_error_cm":2.4}
+{"t":186.747,"kind":"tick","rover":[-0.134,0.307,68.2],"odom":[-0.417,-0.939],"mode":"path","status":"driving on odometry (not seen for 4 s, 0.05 m), 81 cm to go","seen_age":4.18,"blind_m":0.049,"link_error_cm":2.4}
+{"t":187.102,"kind":"tick","rover":[-0.136,0.299,76.1],"odom":[-0.418,-0.946],"mode":"path","status":"driving on odometry (not seen for 5 s, 0.06 m), 81 cm to go","seen_age":4.53,"blind_m":0.056,"link_error_cm":2.4}
+{"t":187.549,"kind":"tick","rover":[-0.136,0.308,86.5],"odom":[-0.418,-0.938],"mode":"path","status":"driving on odometry (not seen for 5 s, 0.06 m), 80 cm to go","seen_age":4.98,"blind_m":0.065,"link_error_cm":2.4}
+{"t":187.906,"kind":"tick","rover":[-0.136,0.34,93.4],"odom":[-0.424,-0.907],"mode":"path","status":"driving on odometry (not seen for 6 s, 0.10 m), 78 cm to go","seen_age":5.34,"blind_m":0.096,"link_error_cm":2.4}
+{"t":188.24,"kind":"tick","rover":[-0.141,0.405,95.3],"odom":[-0.44,-0.844],"mode":"path","status":"driving on odometry (not seen for 6 s, 0.16 m), 72 cm to go","seen_age":5.67,"blind_m":0.161,"link_error_cm":2.4}
+{"t":188.583,"kind":"tick","rover":[-0.145,0.454,95.2],"odom":[-0.453,-0.796],"mode":"path","status":"driving on odometry (not seen for 6 s, 0.21 m), 67 cm to go","seen_age":6.01,"blind_m":0.211,"link_error_cm":2.4}
+{"t":189.024,"kind":"tick","rover":[-0.151,0.515,95.1],"odom":[-0.469,-0.737],"mode":"path","status":"driving on odometry (not seen for 7 s, 0.27 m), 62 cm to go","seen_age":6.45,"blind_m":0.272,"link_error_cm":2.4}
+{"t":189.45,"kind":"tick","rover":[-0.155,0.572,94.1],"odom":[-0.484,-0.682],"mode":"path","status":"driving on odometry (not seen for 7 s, 0.33 m), 57 cm to go","seen_age":6.88,"blind_m":0.329,"link_error_cm":2.4}
+{"t":189.983,"kind":"tick","rover":[-0.159,0.648,90.8],"odom":[-0.501,-0.607],"mode":"path","status":"driving on odometry (not seen for 8 s, 0.41 m), 50 cm to go","seen_age":7.41,"blind_m":0.406,"link_error_cm":2.4}
+{"t":190.515,"kind":"tick","rover":[-0.156,0.724,84.3],"odom":[-0.512,-0.532],"mode":"path","status":"driving on odometry (not seen for 8 s, 0.48 m), 45 cm to go","seen_age":7.95,"blind_m":0.481,"link_error_cm":2.4}
+{"t":190.991,"kind":"tick","rover":[-0.145,0.797,72.9],"odom":[-0.513,-0.458],"mode":"path","status":"driving on odometry (not seen for 9 s, 0.56 m), 41 cm to go","seen_age":8.42,"blind_m":0.556,"link_error_cm":2.4}
+{"t":191.309,"kind":"tick","rover":[-0.132,0.83,65.6],"odom":[-0.507,-0.423],"mode":"path","status":"driving on odometry (not seen for 9 s, 0.59 m), 41 cm to go","seen_age":8.74,"blind_m":0.591,"link_error_cm":2.4}
+{"t":191.792,"kind":"tick","rover":[-0.124,0.849,66.6],"odom":[-0.502,-0.403],"mode":"path","status":"driving on odometry (not seen for 9 s, 0.61 m), 40 cm to go","seen_age":9.22,"blind_m":0.611,"link_error_cm":2.4}
+{"t":192.058,"kind":"tick","rover":[-0.124,0.847,67.7],"odom":[-0.502,-0.405],"mode":"path","status":"driving on odometry (not seen for 10 s, 0.61 m), 40 cm to go","seen_age":9.49,"blind_m":0.614,"link_error_cm":2.4}
+{"t":192.415,"kind":"tick","rover":[-0.123,0.852,78.6],"odom":[-0.501,-0.4],"mode":"path","status":"driving on odometry (not seen for 10 s, 0.62 m), 40 cm to go","seen_age":9.85,"blind_m":0.619,"link_error_cm":2.4}
+{"t":192.726,"kind":"tick","rover":[-0.122,0.858,91.1],"odom":[-0.502,-0.394],"mode":"path","status":"driving on odometry (not seen for 10 s, 0.63 m), 40 cm to go","seen_age":10.16,"blind_m":0.625,"link_error_cm":2.4}
+{"t":193.099,"kind":"tick","rover":[-0.122,0.858,99.1],"odom":[-0.502,-0.394],"mode":"path","status":"driving on odometry (not seen for 11 s, 0.63 m), 40 cm to go","seen_age":10.53,"blind_m":0.633,"link_error_cm":2.4}
+{"t":193.384,"kind":"tick","rover":[-0.118,0.847,118.5],"odom":[-0.496,-0.404],"mode":"path","status":"driving on odometry (not seen for 11 s, 0.64 m), 41 cm to go","seen_age":10.81,"blind_m":0.645,"link_error_cm":2.4}
+{"t":193.818,"kind":"tick","rover":[-0.121,0.851,127.9],"odom":[-0.499,-0.4],"mode":"path","status":"driving on odometry (not seen for 11 s, 0.65 m), 40 cm to go","seen_age":11.25,"blind_m":0.65,"link_error_cm":2.4}
+{"t":194.417,"kind":"tick","rover":[-0.123,0.853,141.9],"odom":[-0.501,-0.399],"mode":"path","status":"driving on odometry (not seen for 12 s, 0.65 m), 40 cm to go","seen_age":11.85,"blind_m":0.652,"link_error_cm":2.4}
+{"t":194.796,"kind":"tick","rover":[-0.135,0.862,149.8],"odom":[-0.515,-0.392],"mode":"path","status":"driving on odometry (not seen for 12 s, 0.67 m), 39 cm to go","seen_age":12.23,"blind_m":0.667,"link_error_cm":2.4}
+{"t":195.089,"kind":"tick","rover":[-0.168,0.878,157.6],"odom":[-0.55,-0.383],"mode":"path","status":"driving on odometry (not seen for 13 s, 0.70 m), 35 cm to go","seen_age":12.52,"blind_m":0.704,"link_error_cm":2.4}
+{"t":195.488,"kind":"tick","rover":[-0.232,0.902,160.0],"odom":[-0.617,-0.37],"mode":"path","status":"driving on odometry (not seen for 13 s, 0.77 m), 28 cm to go","seen_age":12.92,"blind_m":0.772,"link_error_cm":2.4}
+{"t":195.764,"kind":"tick","rover":[-0.268,0.915,160.8],"odom":[-0.655,-0.363],"mode":"path","status":"driving on odometry (not seen for 14 s, 0.81 m), 25 cm to go","seen_age":13.19,"blind_m":0.81,"link_error_cm":2.4}
+{"t":196.158,"kind":"tick","rover":[-0.331,0.936,161.9],"odom":[-0.721,-0.353],"mode":"path","status":"driving on odometry (not seen for 14 s, 0.88 m), 18 cm to go","seen_age":13.59,"blind_m":0.877,"link_error_cm":2.4}
+{"t":196.584,"kind":"tick","rover":[-0.391,0.956,162.8],"odom":[-0.784,-0.345],"mode":"path","status":"driving on odometry (not seen for 15 s, 0.94 m), 12 cm to go","seen_age":14.01,"blind_m":0.94,"link_error_cm":2.4}
+{"t":197.155,"kind":"tick","rover":[-0.453,0.977,155.5],"odom":[-0.848,-0.335],"mode":"path","status":"driving on odometry (not seen for 15 s, 1.01 m), 6 cm to go","seen_age":14.58,"blind_m":1.006,"link_error_cm":2.4}
+{"t":197.656,"kind":"tick","rover":[-0.489,0.997,141.9],"odom":[-0.887,-0.321],"mode":"path","status":"driving on odometry (not seen for 16 s, 1.05 m), 4 cm to go","seen_age":15.09,"blind_m":1.047,"link_error_cm":2.4}
+{"t":198.216,"kind":"tick","rover":[-0.51,1.017,127.0],"odom":[-0.911,-0.305],"mode":"settle","status":"driving on odometry (not seen for 16 s, 1.08 m), 3 cm to go","seen_age":15.65,"blind_m":1.076,"link_error_cm":2.4}
+{"t":198.666,"kind":"end","status":"arrived, 3.2 cm from the goal"}
+{"t":218.511,"kind":"goal","goal":[-0.834,0.348],"start":[-0.509,0.929]}
+{"t":218.883,"kind":"route","points":[[-0.834,0.348]],"margin_m":0.0}
+{"t":219.156,"kind":"route","points":[[-0.834,0.348]],"margin_m":0.0}
+{"t":218.546,"kind":"send","n":28,"blind_m":0.0}
+{"t":218.546,"kind":"tick","rover":[-0.509,0.926,125.8],"odom":[-0.911,-0.305],"mode":"idle","status":"path sent (28), 66 cm to go","seen_age":-0.09,"blind_m":0.0,"link_error_cm":2.4}
+{"t":219.303,"kind":"tick","rover":[-0.509,0.921,125.8],"odom":[-0.91,-0.306],"mode":"path","status":"driving, 66 cm to go","seen_age":0.03,"blind_m":0.0,"link_error_cm":2.0}
+{"t":219.683,"kind":"tick","rover":[-0.509,0.918,125.4],"odom":[-0.909,-0.307],"mode":"path","status":"driving, 66 cm to go","seen_age":-0.09,"blind_m":0.0,"link_error_cm":1.6}
+{"t":220.191,"kind":"tick","rover":[-0.512,0.92,135.4],"odom":[-0.914,-0.304],"mode":"path","status":"driving, 66 cm to go","seen_age":-0.12,"blind_m":0.0,"link_error_cm":1.8}
+{"t":221.142,"kind":"goal","goal":[-0.219,1.315],"start":[-0.508,0.918]}
+{"t":221.413,"kind":"route","points":[[-0.219,1.315]],"margin_m":0.0}
+{"t":221.541,"kind":"route","points":[[-0.219,1.315]],"margin_m":0.0}
+{"t":220.832,"kind":"send","n":29,"blind_m":0.0}
+{"t":220.832,"kind":"tick","rover":[-0.508,0.916,170.4],"odom":[-0.909,-0.305],"mode":"path","status":"path sent (29), 49 cm to go","seen_age":-0.21,"blind_m":0.0,"link_error_cm":1.4}
+{"t":221.982,"kind":"tick","rover":[-0.503,0.914,-144.2],"odom":[-0.9,-0.303],"mode":"path","status":"driving, 49 cm to go","seen_age":0.24,"blind_m":0.0,"link_error_cm":3.3}
+{"t":222.345,"kind":"goal","goal":[-1.01,-0.478],"start":[-0.503,0.914]}
+{"t":222.587,"kind":"route","points":[[-0.747,0.434],[-1.01,-0.478]],"margin_m":0.0}
+{"t":222.322,"kind":"send","n":30,"blind_m":0.0}
+{"t":222.322,"kind":"tick","rover":[-0.512,0.908,-146.6],"odom":[-0.903,-0.306],"mode":"path","status":"path sent (30), 147 cm to go","seen_age":0.05,"blind_m":0.0,"link_error_cm":4.3}
+{"t":223.376,"kind":"goal","goal":[-0.975,-0.232],"start":[-0.532,0.898]}
+{"t":223.447,"kind":"route","points":[[-0.747,0.434],[-0.975,-0.232]],"margin_m":0.0}
+{"t":223.503,"kind":"route","points":[[-0.747,0.434],[-0.975,-0.232]],"margin_m":0.0}
+{"t":222.938,"kind":"send","n":31,"blind_m":0.0}
+{"t":222.938,"kind":"tick","rover":[-0.531,0.898,-162.8],"odom":[-0.92,-0.32],"mode":"path","status":"path sent (31), 121 cm to go","seen_age":-0.07,"blind_m":0.0,"link_error_cm":0.8}
+{"t":223.623,"kind":"tick","rover":[-0.582,0.882,-161.9],"odom":[-0.969,-0.349],"mode":"path","status":"driving, 118 cm to go","seen_age":0.18,"blind_m":0.0,"link_error_cm":2.2}
+{"t":224.016,"kind":"tick","rover":[-0.64,0.858,-153.9],"odom":[-1.023,-0.386],"mode":"path","status":"driving, 114 cm to go","seen_age":0.07,"blind_m":0.0,"link_error_cm":2.0}
+{"t":224.404,"kind":"tick","rover":[-0.673,0.837,-147.5],"odom":[-1.054,-0.415],"mode":"path","status":"driving, 111 cm to go","seen_age":-0.04,"blind_m":0.0,"link_error_cm":3.4}
+{"t":225.062,"kind":"tick","rover":[-0.756,0.754,-126.7],"odom":[-1.119,-0.519],"mode":"path","status":"driving, 101 cm to go","seen_age":0.15,"blind_m":0.0,"link_error_cm":4.7}
+{"t":225.598,"kind":"tick","rover":[-0.773,0.715,-121.8],"odom":[-1.134,-0.562],"mode":"path","status":"driving, 97 cm to go","seen_age":0.02,"blind_m":0.0,"link_error_cm":5.8}
+{"t":226.08,"kind":"tick","rover":[-0.799,0.651,-111.1],"odom":[-1.15,-0.633],"mode":"path","status":"driving, 90 cm to go","seen_age":0.24,"blind_m":0.0,"link_error_cm":5.5}
+{"t":226.564,"kind":"tick","rover":[-0.813,0.56,-97.3],"odom":[-1.146,-0.726],"mode":"path","status":"driving, 81 cm to go","seen_age":0.02,"blind_m":0.0,"link_error_cm":6.3}
+{"t":227.147,"kind":"tick","rover":[-0.809,0.485,-89.8],"odom":[-1.13,-0.801],"mode":"path","status":"driving, 74 cm to go","seen_age":0.2,"blind_m":0.0,"link_error_cm":6.6}
+{"t":227.538,"kind":"tick","rover":[-0.797,0.433,-88.1],"odom":[-1.114,-0.852],"mode":"path","status":"driving, 69 cm to go","seen_age":-0.07,"blind_m":0.0,"link_error_cm":6.8}
+{"t":227.964,"kind":"tick","rover":[-0.785,0.368,-86.7],"odom":[-1.09,-0.917],"mode":"path","status":"driving, 63 cm to go","seen_age":-0.01,"blind_m":0.0,"link_error_cm":6.5}
+{"t":228.631,"kind":"tick","rover":[-0.772,0.284,-87.2],"odom":[-1.061,-0.995],"mode":"path","status":"driving, 55 cm to go","seen_age":-0.25,"blind_m":0.0,"link_error_cm":5.9}
+{"t":229.272,"kind":"tick","rover":[-0.762,0.203,-90.8],"odom":[-1.032,-1.075],"mode":"path","status":"driving, 48 cm to go","seen_age":0.06,"blind_m":0.0,"link_error_cm":5.6}
+{"t":229.772,"kind":"tick","rover":[-0.762,0.124,-98.7],"odom":[-1.011,-1.159],"mode":"path","status":"driving, 41 cm to go","seen_age":-0.01,"blind_m":0.0,"link_error_cm":7.1}
+{"t":230.232,"kind":"tick","rover":[-0.764,0.073,-101.5],"odom":[-1.002,-1.217],"mode":"path","status":"driving, 37 cm to go","seen_age":0.04,"blind_m":0.0,"link_error_cm":7.1}
+{"t":230.745,"kind":"tick","rover":[-0.775,0.003,-108.3],"odom":[-0.995,-1.296],"mode":"path","status":"driving, 31 cm to go","seen_age":-0.18,"blind_m":0.0,"link_error_cm":6.8}
+{"t":231.426,"kind":"tick","rover":[-0.799,-0.064,-117.7],"odom":[-1.001,-1.375],"mode":"path","status":"driving, 24 cm to go","seen_age":0.16,"blind_m":0.0,"link_error_cm":6.4}
+{"t":231.76,"kind":"tick","rover":[-0.822,-0.104,-123.7],"odom":[-1.01,-1.42],"mode":"path","status":"driving, 20 cm to go","seen_age":0.5,"blind_m":0.046,"link_error_cm":6.4}
+{"t":232.129,"kind":"tick","rover":[-0.849,-0.141,-129.5],"odom":[-1.023,-1.464],"mode":"path","status":"driving on odometry (not seen for 1 s, 0.09 m), 16 cm to go","seen_age":0.87,"blind_m":0.092,"link_error_cm":6.4}
+{"t":232.46,"kind":"tick","rover":[-0.872,-0.167,-136.0],"odom":[-1.037,-1.496],"mode":"path","status":"driving on odometry (not seen for 1 s, 0.13 m), 12 cm to go","seen_age":1.2,"blind_m":0.126,"link_error_cm":6.4}
+{"t":232.787,"kind":"tick","rover":[-0.903,-0.192,-150.1],"odom":[-1.058,-1.53],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.17 m), 8 cm to go","seen_age":1.52,"blind_m":0.166,"link_error_cm":6.4}
+{"t":233.186,"kind":"tick","rover":[-0.913,-0.198,-155.9],"odom":[-1.067,-1.539],"mode":"settle","status":"driving on odometry (not seen for 2 s, 0.18 m), 7 cm to go","seen_age":1.92,"blind_m":0.179,"link_error_cm":6.4}
+{"t":233.531,"kind":"send","n":32,"blind_m":0.179}
+{"t":233.531,"kind":"tick","rover":[-0.913,-0.198,-155.9],"odom":[-1.067,-1.539],"mode":"idle","status":"path sent (32) on odometry (not seen for 3 s, 0.18 m), 7 cm to go","seen_age":2.27,"blind_m":0.179,"link_error_cm":6.4}
+{"t":233.981,"kind":"tick","rover":[-0.913,-0.198,-155.9],"odom":[-1.067,-1.539],"mode":"path","status":"driving on odometry (not seen for 3 s, 0.18 m), 7 cm to go","seen_age":2.72,"blind_m":0.179,"link_error_cm":6.4}
+{"t":234.481,"kind":"tick","rover":[-0.946,-0.211,-156.8],"odom":[-1.093,-1.562],"mode":"path","status":"driving on odometry (not seen for 4 s, 0.21 m), 4 cm to go","seen_age":3.22,"blind_m":0.214,"link_error_cm":6.4}
+{"t":235.048,"kind":"end","status":"arrived, 2.5 cm from the goal"}
+{"t":235.652,"kind":"goal","goal":[-1.098,-0.695],"start":[-0.956,-0.216]}
+{"t":235.813,"kind":"route","points":[[-1.098,-0.695]],"margin_m":0.01}
+{"t":236.01,"kind":"route","points":[[-1.098,-0.695]],"margin_m":0.01}
+{"t":235.614,"kind":"send","n":33,"blind_m":0.225}
+{"t":235.614,"kind":"tick","rover":[-0.956,-0.216,-156.9],"odom":[-1.101,-1.57],"mode":"idle","status":"path sent (33) on odometry (not seen for 5 s, 0.22 m), 50 cm to go","seen_age":4.35,"blind_m":0.225,"link_error_cm":6.4}
+{"t":236.157,"kind":"tick","rover":[-0.959,-0.217,-157.0],"odom":[-1.103,-1.572],"mode":"path","status":"driving on odometry (not seen for 5 s, 0.23 m), 50 cm to go","seen_age":4.89,"blind_m":0.228,"link_error_cm":6.4}
+{"t":236.689,"kind":"tick","rover":[-0.961,-0.218,-154.0],"odom":[-1.105,-1.574],"mode":"path","status":"driving on odometry (not seen for 6 s, 0.23 m), 50 cm to go","seen_age":5.43,"blind_m":0.231,"link_error_cm":6.4}
+{"t":237.246,"kind":"tick","rover":[-0.963,-0.221,-128.1],"odom":[-1.106,-1.577],"mode":"path","status":"driving on odometry (not seen for 6 s, 0.23 m), 49 cm to go","seen_age":5.98,"blind_m":0.234,"link_error_cm":6.4}
+{"t":237.797,"kind":"tick","rover":[-0.962,-0.218,-113.3],"odom":[-1.105,-1.574],"mode":"path","status":"driving on odometry (not seen for 7 s, 0.24 m), 50 cm to go","seen_age":6.53,"blind_m":0.238,"link_error_cm":6.4}
+{"t":238.244,"kind":"tick","rover":[-0.975,-0.261,-104.1],"odom":[-1.105,-1.619],"mode":"path","status":"driving on odometry (not seen for 7 s, 0.28 m), 45 cm to go","seen_age":6.98,"blind_m":0.283,"link_error_cm":6.4}
+{"t":238.714,"kind":"tick","rover":[-0.991,-0.326,-102.6],"odom":[-1.098,-1.685],"mode":"path","status":"driving on odometry (not seen for 8 s, 0.35 m), 38 cm to go","seen_age":7.45,"blind_m":0.349,"link_error_cm":6.4}
+{"t":239.228,"kind":"tick","rover":[-1.007,-0.402,-101.5],"odom":[-1.089,-1.762],"mode":"path","status":"driving on odometry (not seen for 8 s, 0.43 m), 31 cm to go","seen_age":7.96,"blind_m":0.427,"link_error_cm":6.4}
+{"t":239.666,"kind":"tick","rover":[-1.018,-0.458,-101.4],"odom":[-1.082,-1.819],"mode":"path","status":"driving on odometry (not seen for 9 s, 0.48 m), 25 cm to go","seen_age":8.4,"blind_m":0.484,"link_error_cm":6.4}
+{"t":240.174,"kind":"tick","rover":[-1.034,-0.532,-101.8],"odom":[-1.073,-1.894],"mode":"path","status":"driving on odometry (not seen for 9 s, 0.56 m), 18 cm to go","seen_age":8.91,"blind_m":0.56,"link_error_cm":6.4}
+{"t":240.584,"kind":"tick","rover":[-1.045,-0.588,-101.3],"odom":[-1.065,-1.951],"mode":"path","status":"driving on odometry (not seen for 10 s, 0.62 m), 12 cm to go","seen_age":9.32,"blind_m":0.617,"link_error_cm":6.4}
+{"t":240.997,"kind":"tick","rover":[-1.055,-0.637,-104.9],"odom":[-1.059,-2.0],"mode":"path","status":"driving on odometry (not seen for 10 s, 0.67 m), 7 cm to go","seen_age":9.73,"blind_m":0.667,"link_error_cm":6.4}
+{"t":241.411,"kind":"tick","rover":[-1.066,-0.672,-113.3],"odom":[-1.059,-2.037],"mode":"path","status":"driving on odometry (not seen for 10 s, 0.70 m), 4 cm to go","seen_age":10.15,"blind_m":0.704,"link_error_cm":6.4}
+{"t":241.815,"kind":"tick","rover":[-1.073,-0.686,-116.9],"odom":[-1.06,-2.053],"mode":"settle","status":"driving on odometry (not seen for 11 s, 0.72 m), 3 cm to go","seen_age":10.55,"blind_m":0.719,"link_error_cm":6.4}
+{"t":242.531,"kind":"end","status":"arrived, 2.5 cm from the goal"}
+{"t":245.703,"kind":"goal","goal":[-0.342,1.174],"start":[-1.074,-0.688]}
+{"t":245.862,"kind":"route","points":[[-0.237,-0.346],[-0.177,-0.256],[-0.027,0.314],[-0.057,0.824],[-0.342,1.174]],"margin_m":0.04}
+{"t":245.953,"kind":"route","points":[[-0.237,-0.346],[-0.177,-0.256],[-0.027,0.314],[-0.057,0.824],[-0.342,1.174]],"margin_m":0.04}
+{"t":245.587,"kind":"send","n":34,"blind_m":0.722}
+{"t":245.587,"kind":"tick","rover":[-1.074,-0.688,-117.1],"odom":[-1.061,-2.055],"mode":"idle","status":"path sent (34) on odometry (not seen for 15 s, 0.72 m), 200 cm to go","seen_age":14.32,"blind_m":0.722,"link_error_cm":6.4}
+{"t":246.074,"kind":"tick","rover":[-1.074,-0.688,-117.1],"odom":[-1.061,-2.055],"mode":"path","status":"driving on odometry (not seen for 15 s, 0.72 m), 200 cm to go","seen_age":14.81,"blind_m":0.722,"link_error_cm":6.4}
+{"t":246.429,"kind":"tick","rover":[-1.077,-0.694,-116.0],"odom":[-1.061,-2.061],"mode":"path","status":"driving on odometry (not seen for 16 s, 0.73 m), 201 cm to go","seen_age":15.17,"blind_m":0.728,"link_error_cm":6.4}
+{"t":246.961,"kind":"tick","rover":[-1.079,-0.697,-96.6],"odom":[-1.062,-2.065],"mode":"path","status":"driving on odometry (not seen for 16 s, 0.73 m), 201 cm to go","seen_age":15.7,"blind_m":0.732,"link_error_cm":6.4}
+{"t":247.462,"kind":"tick","rover":[-1.079,-0.693,-81.8],"odom":[-1.064,-2.061],"mode":"path","status":"driving on odometry (not seen for 17 s, 0.74 m), 201 cm to go","seen_age":16.2,"blind_m":0.737,"link_error_cm":6.4}
+{"t":247.835,"kind":"tick","rover":[-1.079,-0.69,-66.8],"odom":[-1.065,-2.058],"mode":"path","status":"driving on odometry (not seen for 17 s, 0.74 m), 200 cm to go","seen_age":16.57,"blind_m":0.74,"link_error_cm":6.4}
+{"t":248.287,"kind":"tick","rover":[-1.076,-0.695,-50.8],"odom":[-1.06,-2.062],"mode":"path","status":"driving on odometry (not seen for 17 s, 0.75 m), 201 cm to go","seen_age":17.02,"blind_m":0.746,"link_error_cm":6.4}
+{"t":248.747,"kind":"tick","rover":[-1.076,-0.695,-35.7],"odom":[-1.06,-2.062],"mode":"path","status":"driving on odometry (not seen for 18 s, 0.75 m), 201 cm to go","seen_age":17.48,"blind_m":0.746,"link_error_cm":6.4}
+{"t":249.064,"kind":"tick","rover":[-1.076,-0.695,-28.7],"odom":[-1.061,-2.062],"mode":"path","status":"driving on odometry (not seen for 18 s, 0.75 m), 201 cm to go","seen_age":17.8,"blind_m":0.746,"link_error_cm":6.4}
+{"t":249.469,"kind":"tick","rover":[-1.079,-0.695,-0.4],"odom":[-1.063,-2.063],"mode":"path","status":"driving on odometry (not seen for 19 s, 0.75 m), 201 cm to go","seen_age":18.21,"blind_m":0.749,"link_error_cm":6.4}
+{"t":249.863,"kind":"tick","rover":[-1.078,-0.695,10.6],"odom":[-1.062,-2.063],"mode":"path","status":"driving on odometry (not seen for 19 s, 0.75 m), 201 cm to go","seen_age":18.6,"blind_m":0.75,"link_error_cm":6.4}
+{"t":250.24,"kind":"tick","rover":[-1.076,-0.694,17.6],"odom":[-1.061,-2.061],"mode":"path","status":"driving on odometry (not seen for 19 s, 0.75 m), 201 cm to go","seen_age":18.98,"blind_m":0.753,"link_error_cm":6.4}
+{"t":250.552,"kind":"tick","rover":[-1.048,-0.683,25.6],"odom":[-1.037,-2.041],"mode":"path","status":"driving on odometry (not seen for 20 s, 0.78 m), 199 cm to go","seen_age":19.29,"blind_m":0.783,"link_error_cm":6.4}
+{"t":250.834,"kind":"tick","rover":[-1.008,-0.663,28.9],"odom":[-1.007,-2.01],"mode":"path","status":"driving on odometry (not seen for 20 s, 0.83 m), 195 cm to go","seen_age":19.57,"blind_m":0.827,"link_error_cm":6.4}
+{"t":251.379,"kind":"tick","rover":[-0.931,-0.619,30.5],"odom":[-0.948,-1.943],"mode":"path","status":"driving on odometry (not seen for 20 s, 0.92 m), 189 cm to go","seen_age":20.12,"blind_m":0.916,"link_error_cm":6.4}
+{"t":251.939,"kind":"route","points":[[-1.497,-0.196],[-1.767,0.254],[-1.797,0.374],[-1.767,0.584],[-1.257,1.064],[-0.987,1.124],[-0.342,1.174]],"margin_m":0.05}
+{"t":251.591,"kind":"send","n":35,"blind_m":0.944}
+{"t":252.348,"kind":"goal","goal":[-0.623,0.799],"start":[-0.856,-0.575]}
+{"t":252.473,"kind":"route","points":[[-1.497,-0.196],[-1.767,0.254],[-1.797,0.374],[-1.767,0.584],[-1.257,1.064],[-0.987,1.124],[-0.807,1.094],[-0.657,0.884],[-0.623,0.799]],"margin_m":0.05}
+{"t":252.531,"kind":"route","points":[[-1.497,-0.196],[-1.767,0.254],[-1.797,0.374],[-1.767,0.584],[-1.257,1.064],[-0.987,1.124],[-0.807,1.094],[-0.657,0.884],[-0.623,0.799]],"margin_m":0.05}
+{"t":252.097,"kind":"send","n":36,"blind_m":1.003}
+{"t":252.097,"kind":"tick","rover":[-0.856,-0.575,30.5],"odom":[-0.89,-1.878],"mode":"path","status":"path sent (36) on odometry (not seen for 21 s, 1.00 m), 139 cm to go","seen_age":20.83,"blind_m":1.003,"link_error_cm":6.4}
+{"t":252.594,"kind":"tick","rover":[-0.844,-0.567,38.0],"odom":[-0.881,-1.866],"mode":"path","status":"driving on odometry (not seen for 22 s, 1.02 m), 138 cm to go","seen_age":21.33,"blind_m":1.018,"link_error_cm":6.4}
+{"t":253.069,"kind":"route","points":[[-1.467,-0.226],[-1.587,-0.076],[-1.797,0.314],[-1.797,0.554],[-1.257,1.064],[-0.987,1.124],[-0.807,1.094],[-0.657,0.884],[-0.623,0.799]],"margin_m":0.05}
+{"t":252.815,"kind":"send","n":37,"blind_m":1.019}
+{"t":253.216,"kind":"tick","rover":[-0.843,-0.573,73.6],"odom":[-0.879,-1.871],"mode":"path","status":"driving on odometry (not seen for 22 s, 1.03 m), 139 cm to go","seen_age":21.95,"blind_m":1.026,"link_error_cm":6.4}
+{"t":253.687,"kind":"goal","goal":[-0.641,0.623],"start":[-0.845,-0.581]}
+{"t":253.681,"kind":"end","status":"stopped: no way to the goal around the obstacles"}
+{"t":255.35,"kind":"goal","goal":[-0.782,0.606],"start":[-0.844,-0.592]}
+{"t":358.182,"kind":"goal","goal":[-0.254,2.174],"start":[-1.313,-0.402]}
+{"t":357.767,"kind":"tick","rover":[-1.313,-0.402,-36.3],"odom":[-1.305,-1.533],"mode":"idle","status":"planning the route","seen_age":9.45,"blind_m":0.0,"link_error_cm":1.5}
+{"t":358.271,"kind":"route","points":[[-0.919,-0.098],[-0.889,0.052],[-0.829,0.592],[-0.139,1.312],[-0.109,1.792],[-0.254,2.174]],"margin_m":0.0}
+{"t":358.742,"kind":"route","points":[[-0.919,-0.098],[-0.889,0.052],[-0.829,0.592],[-0.139,1.312],[-0.109,1.792],[-0.254,2.174]],"margin_m":0.0}
+{"t":358.271,"kind":"send","n":38,"blind_m":0.0}
+{"t":358.271,"kind":"tick","rover":[-1.313,-0.402,-36.3],"odom":[-1.305,-1.533],"mode":"idle","status":"path sent (38) on odometry (not seen for 10 s, 0.00 m), 279 cm to go","seen_age":9.96,"blind_m":0.0,"link_error_cm":1.5}
+{"t":358.908,"kind":"tick","rover":[-1.313,-0.402,-36.4],"odom":[-1.305,-1.533],"mode":"path","status":"driving on odometry (not seen for 11 s, 0.00 m), 279 cm to go","seen_age":10.59,"blind_m":0.0,"link_error_cm":1.5}
+{"t":359.254,"kind":"tick","rover":[-1.302,-0.41,-29.7],"odom":[-1.292,-1.536],"mode":"path","status":"driving on odometry (not seen for 11 s, 0.01 m), 279 cm to go","seen_age":10.94,"blind_m":0.013,"link_error_cm":1.5}
+{"t":359.609,"kind":"tick","rover":[-1.302,-0.411,-13.3],"odom":[-1.292,-1.537],"mode":"path","status":"driving on odometry (not seen for 12 s, 0.01 m), 279 cm to go","seen_age":11.3,"blind_m":0.015,"link_error_cm":1.5}
+{"t":360.129,"kind":"tick","rover":[-1.307,-0.411,9.8],"odom":[-1.296,-1.539],"mode":"path","status":"driving on odometry (not seen for 12 s, 0.02 m), 279 cm to go","seen_age":11.82,"blind_m":0.019,"link_error_cm":1.5}
+{"t":360.569,"kind":"tick","rover":[-1.31,-0.412,18.5],"odom":[-1.298,-1.541],"mode":"path","status":"driving on odometry (not seen for 13 s, 0.02 m), 279 cm to go","seen_age":12.26,"blind_m":0.023,"link_error_cm":1.5}
+{"t":360.973,"kind":"tick","rover":[-1.311,-0.413,27.2],"odom":[-1.299,-1.542],"mode":"path","status":"driving on odometry (not seen for 13 s, 0.02 m), 279 cm to go","seen_age":12.66,"blind_m":0.023,"link_error_cm":1.5}
+{"t":361.435,"kind":"tick","rover":[-1.303,-0.408,33.9],"odom":[-1.294,-1.535],"mode":"path","status":"driving on odometry (not seen for 13 s, 0.03 m), 279 cm to go","seen_age":13.12,"blind_m":0.032,"link_error_cm":1.5}
+{"t":361.843,"kind":"tick","rover":[-1.263,-0.374,43.9],"odom":[-1.27,-1.487],"mode":"path","status":"driving on odometry (not seen for 14 s, 0.09 m), 274 cm to go","seen_age":13.53,"blind_m":0.085,"link_error_cm":1.5}
+{"t":362.308,"kind":"tick","rover":[-1.218,-0.329,46.9],"odom":[-1.247,-1.428],"mode":"path","status":"driving on odometry (not seen for 14 s, 0.15 m), 268 cm to go","seen_age":13.99,"blind_m":0.149,"link_error_cm":1.5}
+{"t":363.124,"kind":"route","points":[[-0.889,-0.068],[-0.799,0.622],[-0.139,1.312],[-0.109,1.732],[-0.139,1.942],[-0.254,2.174]],"margin_m":0.01}
+{"t":362.669,"kind":"send","n":39,"blind_m":0.207}
+{"t":362.669,"kind":"tick","rover":[-1.179,-0.286,47.9],"odom":[-1.227,-1.373],"mode":"path","status":"path sent (39) on odometry (not seen for 15 s, 0.21 m), 263 cm to go","seen_age":14.36,"blind_m":0.207,"link_error_cm":1.5}
+{"t":363.224,"kind":"tick","rover":[-1.126,-0.221,47.8],"odom":[-1.201,-1.299],"mode":"path","status":"driving, 255 cm to go","seen_age":0.05,"blind_m":0.0,"link_error_cm":4.6}
+{"t":363.665,"kind":"tick","rover":[-1.08,-0.16,47.1],"odom":[-1.177,-1.231],"mode":"path","status":"driving, 248 cm to go","seen_age":-0.07,"blind_m":0.0,"link_error_cm":5.6}
+{"t":364.191,"kind":"tick","rover":[-1.036,-0.104,42.6],"odom":[-1.15,-1.166],"mode":"path","status":"driving, 241 cm to go","seen_age":0.02,"blind_m":0.0,"link_error_cm":5.2}
+{"t":364.577,"kind":"tick","rover":[-1.001,-0.064,38.5],"odom":[-1.126,-1.119],"mode":"path","status":"driving, 236 cm to go","seen_age":-0.16,"blind_m":0.0,"link_error_cm":5.2}
+{"t":365.126,"kind":"tick","rover":[-0.956,-0.022,33.5],"odom":[-1.089,-1.059],"mode":"path","status":"driving, 230 cm to go","seen_age":-0.01,"blind_m":0.0,"link_error_cm":7.8}
+{"t":365.475,"kind":"tick","rover":[-0.94,-0.012,29.4],"odom":[-1.078,-1.043],"mode":"path","status":"driving, 229 cm to go","seen_age":0.34,"blind_m":0.0,"link_error_cm":7.8}
+{"t":366.212,"kind":"route","points":[[-0.889,0.052],[-0.799,0.622],[-0.139,1.312],[-0.109,1.792],[-0.254,2.174]],"margin_m":0.0}
+{"t":365.808,"kind":"send","n":40,"blind_m":0.0}
+{"t":365.808,"kind":"tick","rover":[-0.949,-0.012,30.0],"odom":[-1.076,-1.04],"mode":"path","status":"path sent (40), 229 cm to go","seen_age":-0.03,"blind_m":0.0,"link_error_cm":8.4}
+{"t":366.394,"kind":"tick","rover":[-0.966,-0.017,42.8],"odom":[-1.08,-1.046],"mode":"path","status":"driving, 230 cm to go","seen_age":-0.05,"blind_m":0.0,"link_error_cm":7.7}
+{"t":366.791,"kind":"tick","rover":[-0.96,0.003,55.0],"odom":[-1.071,-1.021],"mode":"path","status":"driving, 228 cm to go","seen_age":-0.08,"blind_m":0.0,"link_error_cm":7.4}
+{"t":367.184,"kind":"tick","rover":[-0.948,0.039,63.7],"odom":[-1.064,-0.978],"mode":"path","status":"driving, 224 cm to go","seen_age":0.01,"blind_m":0.0,"link_error_cm":7.3}
+{"t":367.537,"kind":"tick","rover":[-0.934,0.095,67.7],"odom":[-1.061,-0.916],"mode":"path","status":"driving, 219 cm to go","seen_age":-0.07,"blind_m":0.0,"link_error_cm":7.4}
+{"t":367.919,"kind":"send","n":41,"blind_m":0.0}
+{"t":367.919,"kind":"tick","rover":[-0.928,0.135,72.1],"odom":[-1.062,-0.873],"mode":"path","status":"path sent (41), 215 cm to go","seen_age":0.01,"blind_m":0.0,"link_error_cm":6.8}
+{"t":368.366,"kind":"tick","rover":[-0.921,0.194,75.0],"odom":[-1.067,-0.812],"mode":"path","status":"driving, 209 cm to go","seen_age":-0.08,"blind_m":0.0,"link_error_cm":6.6}
+{"t":368.744,"kind":"tick","rover":[-0.915,0.254,77.8],"odom":[-1.075,-0.751],"mode":"path","status":"driving, 203 cm to go","seen_age":-0.06,"blind_m":0.0,"link_error_cm":5.9}
+{"t":369.14,"kind":"tick","rover":[-0.912,0.311,79.9],"odom":[-1.085,-0.695],"mode":"path","status":"driving, 198 cm to go","seen_age":-0.2,"blind_m":0.0,"link_error_cm":5.1}
+{"t":369.634,"kind":"tick","rover":[-0.908,0.384,81.0],"odom":[-1.099,-0.623],"mode":"path","status":"driving, 191 cm to go","seen_age":-0.14,"blind_m":0.0,"link_error_cm":5.5}
+{"t":370.178,"kind":"tick","rover":[-0.904,0.458,80.2],"odom":[-1.115,-0.549],"mode":"path","status":"driving, 183 cm to go","seen_age":-0.1,"blind_m":0.0,"link_error_cm":5.8}
+{"t":370.642,"kind":"tick","rover":[-0.901,0.521,78.6],"odom":[-1.127,-0.486],"mode":"path","status":"driving, 177 cm to go","seen_age":-0.03,"blind_m":0.0,"link_error_cm":5.5}
+{"t":371.025,"kind":"tick","rover":[-0.9,0.568,77.3],"odom":[-1.135,-0.44],"mode":"path","status":"driving, 173 cm to go","seen_age":-0.05,"blind_m":0.0,"link_error_cm":5.8}
+{"t":371.524,"kind":"tick","rover":[-0.89,0.642,73.6],"odom":[-1.143,-0.365],"mode":"path","status":"driving, 166 cm to go","seen_age":-0.19,"blind_m":0.0,"link_error_cm":6.8}
+{"t":371.958,"kind":"tick","rover":[-0.87,0.709,70.5],"odom":[-1.148,-0.295],"mode":"path","status":"driving, 159 cm to go","seen_age":0.25,"blind_m":0.0,"link_error_cm":6.8}
+{"t":372.4,"kind":"tick","rover":[-0.848,0.761,62.0],"odom":[-1.146,-0.239],"mode":"path","status":"driving on odometry (not seen for 1 s, 0.06 m), 153 cm to go","seen_age":0.69,"blind_m":0.056,"link_error_cm":6.8}
+{"t":373.168,"kind":"route","points":[[-0.139,1.282],[-0.109,1.762],[-0.139,1.942],[-0.254,2.174]],"margin_m":0.01}
+{"t":372.762,"kind":"send","n":42,"blind_m":0.101}
+{"t":372.762,"kind":"tick","rover":[-0.825,0.799,56.9],"odom":[-1.138,-0.195],"mode":"path","status":"path sent (42) on odometry (not seen for 1 s, 0.10 m), 149 cm to go","seen_age":1.05,"blind_m":0.101,"link_error_cm":6.8}
+{"t":373.233,"kind":"tick","rover":[-0.783,0.857,49.2],"odom":[-1.12,-0.126],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.17 m), 142 cm to go","seen_age":1.52,"blind_m":0.172,"link_error_cm":6.8}
+{"t":373.554,"kind":"tick","rover":[-0.756,0.886,45.5],"odom":[-1.105,-0.089],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.21 m), 138 cm to go","seen_age":1.84,"blind_m":0.212,"link_error_cm":6.8}
+{"t":373.933,"kind":"tick","rover":[-0.728,0.925,42.1],"odom":[-1.081,-0.036],"mode":"path","status":"driving, 134 cm to go","seen_age":-0.01,"blind_m":0.0,"link_error_cm":9.2}
+{"t":374.207,"kind":"tick","rover":[-0.715,0.947,41.5],"odom":[-1.066,-0.007],"mode":"path","status":"driving, 131 cm to go","seen_age":-0.07,"blind_m":0.0,"link_error_cm":7.7}
+{"t":374.662,"kind":"tick","rover":[-0.659,1.004,38.6],"odom":[-1.023,0.073],"mode":"path","status":"driving, 124 cm to go","seen_age":0.02,"blind_m":0.0,"link_error_cm":8.6}
+{"t":375.058,"kind":"tick","rover":[-0.633,1.032,36.0],"odom":[-0.999,0.112],"mode":"path","status":"driving, 120 cm to go","seen_age":0.01,"blind_m":0.0,"link_error_cm":7.1}
+{"t":375.623,"kind":"tick","rover":[-0.566,1.085,32.2],"odom":[-0.944,0.19],"mode":"path","status":"driving, 113 cm to go","seen_age":-0.02,"blind_m":0.0,"link_error_cm":8.3}
+{"t":376.075,"kind":"tick","rover":[-0.509,1.121,31.0],"odom":[-0.903,0.244],"mode":"path","status":"driving, 108 cm to go","seen_age":0.43,"blind_m":0.068,"link_error_cm":8.3}
+{"t":377.028,"kind":"route","points":[[-0.169,1.252],[-0.139,1.342],[-0.109,1.702],[-0.109,1.882],[-0.254,2.174]],"margin_m":0.01}
+{"t":376.64,"kind":"send","n":43,"blind_m":0.13}
+{"t":376.64,"kind":"tick","rover":[-0.455,1.152,29.0],"odom":[-0.864,0.293],"mode":"path","status":"path sent (43) on odometry (not seen for 1 s, 0.13 m), 104 cm to go","seen_age":1.0,"blind_m":0.13,"link_error_cm":8.3}
+{"t":377.115,"kind":"tick","rover":[-0.388,1.188,28.0],"odom":[-0.815,0.351],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.21 m), 99 cm to go","seen_age":1.47,"blind_m":0.206,"link_error_cm":8.3}
+{"t":377.408,"kind":"tick","rover":[-0.365,1.212,26.8],"odom":[-0.788,0.381],"mode":"path","status":"driving, 97 cm to go","seen_age":-0.0,"blind_m":0.0,"link_error_cm":9.1}
+{"t":377.874,"kind":"tick","rover":[-0.318,1.247,24.8],"odom":[-0.743,0.43],"mode":"path","status":"driving, 93 cm to go","seen_age":-0.07,"blind_m":0.0,"link_error_cm":8.8}
+{"t":378.316,"kind":"tick","rover":[-0.284,1.27,16.9],"odom":[-0.711,0.461],"mode":"path","status":"driving, 90 cm to go","seen_age":-0.23,"blind_m":0.0,"link_error_cm":6.0}
+{"t":378.956,"kind":"tick","rover":[-0.223,1.285,1.6],"odom":[-0.649,0.5],"mode":"path","status":"driving, 89 cm to go","seen_age":-0.09,"blind_m":0.0,"link_error_cm":8.9}
+{"t":379.528,"kind":"tick","rover":[-0.223,1.29,6.6],"odom":[-0.639,0.505],"mode":"path","status":"driving, 88 cm to go","seen_age":0.08,"blind_m":0.0,"link_error_cm":7.8}
+{"t":379.964,"kind":"tick","rover":[-0.221,1.29,24.8],"odom":[-0.636,0.507],"mode":"path","status":"driving, 88 cm to go","seen_age":0.52,"blind_m":0.003,"link_error_cm":7.8}
+{"t":380.388,"kind":"tick","rover":[-0.229,1.292,46.4],"odom":[-0.635,0.506],"mode":"path","status":"driving, 88 cm to go","seen_age":-0.09,"blind_m":0.0,"link_error_cm":6.3}
+{"t":380.867,"kind":"tick","rover":[-0.234,1.3,53.9],"odom":[-0.634,0.51],"mode":"path","status":"driving, 87 cm to go","seen_age":-0.11,"blind_m":0.0,"link_error_cm":6.0}
+{"t":381.248,"kind":"send","n":44,"blind_m":0.0}
+{"t":381.248,"kind":"tick","rover":[-0.237,1.308,63.7],"odom":[-0.634,0.513],"mode":"path","status":"path sent (44), 87 cm to go","seen_age":-0.07,"blind_m":0.0,"link_error_cm":5.1}
+{"t":381.897,"kind":"tick","rover":[-0.233,1.319,70.3],"odom":[-0.633,0.524],"mode":"path","status":"driving, 86 cm to go","seen_age":0.58,"blind_m":0.011,"link_error_cm":5.1}
+{"t":382.313,"kind":"tick","rover":[-0.231,1.325,70.3],"odom":[-0.633,0.531],"mode":"path","status":"driving on odometry (not seen for 1 s, 0.02 m), 85 cm to go","seen_age":1.0,"blind_m":0.018,"link_error_cm":5.1}
+{"t":382.705,"kind":"tick","rover":[-0.225,1.342,69.3],"odom":[-0.633,0.549],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.04 m), 83 cm to go","seen_age":1.39,"blind_m":0.036,"link_error_cm":5.1}
+{"t":383.157,"kind":"tick","rover":[-0.221,1.351,56.2],"odom":[-0.633,0.559],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.05 m), 82 cm to go","seen_age":1.84,"blind_m":0.046,"link_error_cm":5.1}
+{"t":384.086,"kind":"route","points":[[-0.079,1.672],[-0.079,1.822],[-0.254,2.174]],"margin_m":0.0}
+{"t":383.573,"kind":"send","n":45,"blind_m":0.047}
+{"t":383.573,"kind":"tick","rover":[-0.221,1.351,35.2],"odom":[-0.632,0.558],"mode":"path","status":"path sent (45) on odometry (not seen for 3 s, 0.05 m), 82 cm to go","seen_age":2.26,"blind_m":0.047,"link_error_cm":5.1}
+{"t":384.19,"kind":"tick","rover":[-0.221,1.351,18.1],"odom":[-0.633,0.558],"mode":"path","status":"driving on odometry (not seen for 3 s, 0.05 m), 82 cm to go","seen_age":2.87,"blind_m":0.047,"link_error_cm":5.1}
+{"t":384.6,"kind":"tick","rover":[-0.192,1.36,17.1],"odom":[-0.608,0.577],"mode":"path","status":"driving on odometry (not seen for 4 s, 0.08 m), 82 cm to go","seen_age":3.29,"blind_m":0.078,"link_error_cm":5.1}
+{"t":385.025,"kind":"tick","rover":[-0.14,1.376,17.4],"odom":[-0.565,0.61],"mode":"path","status":"driving on odometry (not seen for 4 s, 0.13 m), 81 cm to go","seen_age":3.71,"blind_m":0.132,"link_error_cm":5.1}
+{"t":385.44,"kind":"tick","rover":[-0.134,1.387,24.5],"odom":[-0.553,0.619],"mode":"path","status":"driving, 80 cm to go","seen_age":-0.18,"blind_m":0.0,"link_error_cm":6.8}
+{"t":385.908,"kind":"tick","rover":[-0.136,1.394,53.1],"odom":[-0.548,0.623],"mode":"path","status":"driving, 79 cm to go","seen_age":-0.21,"blind_m":0.0,"link_error_cm":6.4}
+{"t":386.453,"kind":"send","n":46,"blind_m":0.0}
+{"t":386.453,"kind":"tick","rover":[-0.148,1.391,65.3],"odom":[-0.55,0.613],"mode":"path","status":"path sent (46), 79 cm to go","seen_age":-0.1,"blind_m":0.0,"link_error_cm":5.8}
+{"t":387.008,"kind":"tick","rover":[-0.152,1.398,73.6],"odom":[-0.55,0.616],"mode":"path","status":"driving, 78 cm to go","seen_age":-0.04,"blind_m":0.0,"link_error_cm":4.8}
+{"t":387.504,"kind":"tick","rover":[-0.153,1.433,85.5],"odom":[-0.551,0.649],"mode":"path","status":"driving, 75 cm to go","seen_age":0.02,"blind_m":0.0,"link_error_cm":4.9}
+{"t":388.274,"kind":"route","points":[[-0.109,1.582],[-0.109,1.882],[-0.254,2.174]],"margin_m":0.0}
+{"t":387.891,"kind":"send","n":47,"blind_m":0.0}
+{"t":387.891,"kind":"tick","rover":[-0.162,1.493,91.0],"odom":[-0.561,0.707],"mode":"path","status":"path sent (47), 69 cm to go","seen_age":-0.06,"blind_m":0.0,"link_error_cm":7.1}
+{"t":388.625,"kind":"tick","rover":[-0.166,1.598,92.2],"odom":[-0.583,0.81],"mode":"path","status":"driving on odometry (not seen for 1 s, 0.11 m), 58 cm to go","seen_age":0.67,"blind_m":0.105,"link_error_cm":7.1}
+{"t":389.024,"kind":"tick","rover":[-0.166,1.611,85.2],"odom":[-0.585,0.823],"mode":"path","status":"driving on odometry (not seen for 1 s, 0.12 m), 57 cm to go","seen_age":1.07,"blind_m":0.118,"link_error_cm":7.1}
+{"t":389.872,"kind":"route","points":[[-0.139,1.702],[-0.139,1.942],[-0.254,2.174]],"margin_m":0.01}
+{"t":389.407,"kind":"send","n":48,"blind_m":0.124}
+{"t":389.407,"kind":"tick","rover":[-0.166,1.617,68.1],"odom":[-0.586,0.829],"mode":"path","status":"path sent (48) on odometry (not seen for 2 s, 0.12 m), 56 cm to go","seen_age":1.45,"blind_m":0.124,"link_error_cm":7.1}
+{"t":390.021,"kind":"tick","rover":[-0.166,1.617,42.2],"odom":[-0.586,0.829],"mode":"path","status":"driving on odometry (not seen for 2 s, 0.12 m), 56 cm to go","seen_age":2.07,"blind_m":0.125,"link_error_cm":7.1}
+{"t":390.479,"kind":"tick","rover":[-0.126,1.65,39.3],"odom":[-0.552,0.869],"mode":"path","status":"driving on odometry (not seen for 3 s, 0.18 m), 54 cm to go","seen_age":2.53,"blind_m":0.177,"link_error_cm":7.1}
+{"t":390.838,"kind":"tick","rover":[-0.094,1.677,40.5],"odom":[-0.525,0.901],"mode":"path","status":"driving on odometry (not seen for 3 s, 0.22 m), 52 cm to go","seen_age":2.89,"blind_m":0.219,"link_error_cm":7.1}
+{"t":391.407,"kind":"tick","rover":[-0.06,1.709,54.3],"odom":[-0.498,0.939],"mode":"path","status":"driving on odometry (not seen for 4 s, 0.27 m), 50 cm to go","seen_age":3.45,"blind_m":0.265,"link_error_cm":7.1}
+{"t":392.095,"kind":"tick","rover":[-0.064,1.709,83.1],"odom":[-0.501,0.937],"mode":"path","status":"driving on odometry (not seen for 5 s, 0.27 m), 50 cm to go","seen_age":4.14,"blind_m":0.269,"link_error_cm":7.1}
+{"t":392.605,"kind":"tick","rover":[-0.064,1.705,89.2],"odom":[-0.501,0.933],"mode":"path","status":"driving on odometry (not seen for 5 s, 0.27 m), 51 cm to go","seen_age":4.65,"blind_m":0.273,"link_error_cm":7.1}
+{"t":393.137,"kind":"tick","rover":[-0.064,1.705,95.2],"odom":[-0.501,0.933],"mode":"path","status":"driving on odometry (not seen for 6 s, 0.27 m), 51 cm to go","seen_age":5.19,"blind_m":0.273,"link_error_cm":7.1}
+{"t":393.7,"kind":"tick","rover":[-0.072,1.739,108.7],"odom":[-0.514,0.966],"mode":"path","status":"driving on odometry (not seen for 6 s, 0.31 m), 47 cm to go","seen_age":5.75,"blind_m":0.308,"link_error_cm":7.1}
+{"t":394.236,"kind":"tick","rover":[-0.087,1.778,114.6],"odom":[-0.537,1.001],"mode":"path","status":"driving on odometry (not seen for 7 s, 0.35 m), 43 cm to go","seen_age":6.28,"blind_m":0.35,"link_error_cm":7.1}
+{"t":394.691,"kind":"tick","rover":[-0.12,1.847,115.3],"odom":[-0.581,1.063],"mode":"path","status":"driving on odometry (not seen for 7 s, 0.43 m), 35 cm to go","seen_age":6.74,"blind_m":0.426,"link_error_cm":7.1}
+{"t":395.146,"kind":"tick","rover":[-0.148,1.905,116.7],"odom":[-0.619,1.116],"mode":"path","status":"driving on odometry (not seen for 8 s, 0.49 m), 29 cm to go","seen_age":7.19,"blind_m":0.491,"link_error_cm":7.1}
+{"t":395.515,"kind":"tick","rover":[-0.172,1.952,117.2],"odom":[-0.651,1.158],"mode":"path","status":"driving on odometry (not seen for 8 s, 0.54 m), 24 cm to go","seen_age":7.56,"blind_m":0.544,"link_error_cm":7.1}
+{"t":395.901,"kind":"tick","rover":[-0.194,1.995,117.2],"odom":[-0.679,1.196],"mode":"path","status":"driving on odometry (not seen for 8 s, 0.59 m), 19 cm to go","seen_age":7.95,"blind_m":0.592,"link_error_cm":7.1}
+{"t":396.337,"kind":"tick","rover":[-0.222,2.051,116.5],"odom":[-0.717,1.247],"mode":"path","status":"driving on odometry (not seen for 9 s, 0.65 m), 13 cm to go","seen_age":8.39,"blind_m":0.655,"link_error_cm":7.1}
+{"t":396.849,"kind":"tick","rover":[-0.25,2.108,112.9],"odom":[-0.754,1.298],"mode":"path","status":"driving on odometry (not seen for 9 s, 0.72 m), 7 cm to go","seen_age":8.9,"blind_m":0.718,"link_error_cm":7.1}
+{"t":397.29,"kind":"tick","rover":[-0.263,2.145,106.0],"odom":[-0.773,1.332],"mode":"settle","status":"driving on odometry (not seen for 10 s, 0.76 m), 3 cm to go","seen_age":9.34,"blind_m":0.757,"link_error_cm":7.1}
+{"t":397.643,"kind":"tick","rover":[-0.265,2.154,103.6],"odom":[-0.777,1.341],"mode":"settle","status":"driving on odometry (not seen for 10 s, 0.77 m), 2 cm to go","seen_age":9.69,"blind_m":0.767,"link_error_cm":7.1}
+{"t":398.107,"kind":"end","status":"arrived, 2.3 cm from the goal"}

@@ -141,6 +141,13 @@ the team shares it.
   measured 0.23 m2 instead of 0.125, now 0.125); the map decides on 3 cm cells (a touched cell
   is an obstacle: 1.5 cm of extra margin on average instead of 2.5), the team's 5 cm grid is
   still exported on `/map.json`. `rover_core.py` deployed on the robot (15 Nov, 23:5x).
+* **Second real test** (15 Nov 2026, night, `runs/20261115-234310.jsonl`, all of the above,
+  rover code deployed): 19 clicks, 7 drives arrived, 0.5 to 3.3 m long, 1.4 to 3.5 cm from the
+  point, no pause on six of them (one on the 3.3 m drive), up to 10 s without seeing the rover
+  on the way; 2 clicks refused ("no way around the obstacles"), the others replaced by a new
+  click. The team's verdict: it follows changes in the obstacles well and the rover is no
+  longer an obstacle; the objects' detection, the margins and the noise still need work.
+  Not merged into `main` until it works well.
 * **On a real iPhone** (15 Nov 2026, PC hotspot): the axes are right, the top views of 18
   pictures taken while moving agree within 3 mm; the map of a real scene (boxes, a jacket,
   people) grows as the phone moves, the rover's marker is found, the dashboard reaches the
