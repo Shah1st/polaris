@@ -5,8 +5,10 @@ from guidance_calib.aruco_compat import detect_markers, generate_marker
 from guidance_calib.generate_markers import marker_with_border
 from guidance_calib.ground_plane import (
     MapBounds,
+    aspect_differs,
     estimate_homography,
     map_to_top_down,
+    metres_per_pixel_for_image,
     metres_per_pixel_from_height,
     pixels_to_map,
     straight_down_homography,
@@ -80,6 +82,18 @@ def test_scale_from_camera_height() -> None:
     assert metres_per_pixel_from_height(3.8, 26.0, 4032, 3024) == pytest.approx(
         2 * metres_per_pixel
     )
+
+
+def test_scale_follows_the_image_width() -> None:
+    full = metres_per_pixel_from_height(1.9, 26.0, 4032, 3024)
+
+    # The same field of view, in fewer pixels: each pixel covers more ground.
+    assert metres_per_pixel_for_image(1.9, 26.0, 4032, 3024, 1280) * 1280 == pytest.approx(
+        full * 4032
+    )
+    assert metres_per_pixel_for_image(1.9, 26.0, 4032, 3024, 4032) == pytest.approx(full)
+    assert not aspect_differs((1280, 960), (4032, 3024))
+    assert aspect_differs((1920, 1080), (4032, 3024))
 
 
 def test_straight_down_homography_puts_the_origin_at_the_bottom_left() -> None:

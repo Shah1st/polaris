@@ -19,8 +19,9 @@ from std_msgs.msg import Float64MultiArray
 
 from guidance_calib.aruco_compat import DEFAULT_DICTIONARY, detect_markers
 from guidance_calib.ground_plane import (
+    aspect_differs,
     estimate_homography,
-    metres_per_pixel_from_height,
+    metres_per_pixel_for_image,
     straight_down_homography,
 )
 
@@ -39,6 +40,8 @@ class CalibNode(Node):
     def __init__(self) -> None:
         super().__init__('calib_node')
         self.declare_parameter('mode', 'camera_height')
+        # Measured ground size of one image pixel; 0 derives it from the height and the lens.
+        self.declare_parameter('metres_per_pixel', 0.0)
         self.declare_parameter('camera_height', 1.9)
         self.declare_parameter('focal_length_35mm', 26.0)
         self.declare_parameter('sensor_width_px', 4032)
@@ -65,6 +68,7 @@ class CalibNode(Node):
         self._bridge = CvBridge()
         self._latest_image: Image | None = None
         self._calibrated = False
+        self._warned_aspect = False
         self._publisher = self.create_publisher(
             Float64MultiArray, HOMOGRAPHY_TOPIC, homography_qos()
         )
@@ -77,18 +81,35 @@ class CalibNode(Node):
     def _on_image(self, msg: Image) -> None:
         self._latest_image = msg
 
+    def _metres_per_pixel(self, width: int, height: int) -> float:
+        """The measured scale, or the one from the height and lens for this image width."""
+        measured = float(self.get_parameter('metres_per_pixel').value)
+        if measured > 0.0:
+            return measured
+        sensor = (
+            int(self.get_parameter('sensor_width_px').value),
+            int(self.get_parameter('sensor_height_px').value),
+        )
+        if aspect_differs((width, height), sensor) and not self._warned_aspect:
+            self._warned_aspect = True
+            self.get_logger().warn(
+                f'image {width}x{height} is not shaped like the sensor {sensor[0]}x{sensor[1]}: '
+                'the scale from camera_height may be wrong; set metres_per_pixel (ruler)'
+            )
+        return metres_per_pixel_for_image(
+            float(self.get_parameter('camera_height').value),
+            float(self.get_parameter('focal_length_35mm').value),
+            *sensor,
+            width,
+        )
+
     def _update(self) -> None:
         if self._latest_image is None:
             return
         image = self._bridge.imgmsg_to_cv2(self._latest_image, desired_encoding='bgr8')
         self._latest_image = None
         if self._mode == 'camera_height':
-            metres_per_pixel = metres_per_pixel_from_height(
-                self.get_parameter('camera_height').value,
-                self.get_parameter('focal_length_35mm').value,
-                self.get_parameter('sensor_width_px').value,
-                self.get_parameter('sensor_height_px').value,
-            )
+            metres_per_pixel = self._metres_per_pixel(image.shape[1], image.shape[0])
             homography = straight_down_homography(metres_per_pixel, image.shape[0])
             detections = {}
         else:

@@ -1,7 +1,8 @@
 """Run the overhead pipeline on one image file. No ROS needed.
 
 For tuning on photos taken straight down from a known height, without floor markers. The
-image must be at the camera's native scale (cropping is fine, resizing is not).
+image must show the camera's whole field of view (resizing is fine, cropping is not), or give
+the measured --metres-per-pixel (guidance_global_map.measure_scale), which always works.
 
     python -m guidance_global_map.segment_image photo.jpg out/scene --camera-height 1.9
 
@@ -80,6 +81,9 @@ def main(args: list[str] | None = None) -> None:
     parser.add_argument('--rover-size', type=float, nargs=2, default=list(defaults.rover_size))
     parser.add_argument('--rover-tolerance', type=float, default=defaults.rover_size_tolerance)
     parser.add_argument('--rover-marker', type=int, help='ArUco id on the rover (DICT_4X4_50)')
+    parser.add_argument(
+        '--marker-height', type=float, default=defaults.marker_height, help='marker above floor'
+    )
     options = parser.parse_args(args)
 
     image = cv2.imread(options.image)
@@ -98,6 +102,7 @@ def main(args: list[str] | None = None) -> None:
         cell_size=options.cell_size,
         margin=options.margin,
         rover_marker_id=options.rover_marker,
+        marker_height=options.marker_height,
         rover_size=tuple(options.rover_size),
         rover_size_tolerance=options.rover_tolerance,
     )

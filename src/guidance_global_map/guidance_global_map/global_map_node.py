@@ -30,6 +30,7 @@ from guidance_calib.ground_plane import (
     pixels_to_map,
     warp_to_top_down,
 )
+from guidance_global_map.pipeline import frame_problem
 from guidance_global_map.segmentation import (
     build_cell_grid,
     disc_mask,
@@ -39,6 +40,7 @@ from guidance_global_map.segmentation import (
     scale_polygon,
     segment_obstacles,
 )
+from guidance_rover_pose.pose import correct_parallax
 
 HOMOGRAPHY_TOPIC = '/overhead/image_to_map'
 IMAGE_TOPIC = '/overhead/image_raw'
@@ -77,6 +79,9 @@ class GlobalMapNode(Node):
         self.declare_parameter('position_std', 0.03)
         self.declare_parameter('rover_marker_id', 10)
         self.declare_parameter('rover_radius', 0.20)
+        # Marker mode: the marker's height above the floor and the camera's, for the parallax.
+        self.declare_parameter('marker_height', 0.0)
+        self.declare_parameter('camera_height', 1.9)
         self.declare_parameter('update_period', 1.0)
 
         self._bounds = MapBounds(
@@ -126,8 +131,21 @@ class GlobalMapNode(Node):
             in_map = pixels_to_map(self._homography, corners)
             in_top_down = map_to_top_down(in_map, self._bounds, self._resolution)
             if marker_id == rover_id:
+                # The rover spans from its floor point (parallax corrected) to where its top
+                # appears: mask around both.
+                rows, cols = image.shape[:2]
+                nadir = pixels_to_map(self._homography, np.array([[cols / 2.0, rows / 2.0]]))[0]
+                floor = correct_parallax(
+                    in_map.mean(axis=0, keepdims=True),
+                    nadir,
+                    self.get_parameter('camera_height').value,
+                    self.get_parameter('marker_height').value,
+                )
+                floor_px = map_to_top_down(floor, self._bounds, self._resolution)[0]
                 radius = self.get_parameter('rover_radius').value / self._resolution
-                rover = disc_mask(shape, in_top_down.mean(axis=0), radius)
+                rover = disc_mask(shape, in_top_down.mean(axis=0), radius) | disc_mask(
+                    shape, floor_px, radius
+                )
             else:
                 polygons.append(scale_polygon(in_top_down, MARKER_MASK_SCALE))
         return polygons_mask(shape, polygons), rover
@@ -167,6 +185,11 @@ class GlobalMapNode(Node):
         msg = self._latest_image
         self._latest_image = None
         image = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        problem = frame_problem(image)
+        if problem is not None:
+            # A black, white or uniform frame would publish "everything free".
+            self.get_logger().warn(f'frame rejected: {problem}', throttle_duration_sec=5.0)
+            return
 
         top_down, valid = warp_to_top_down(image, self._homography, self._bounds, self._resolution)
         ignore, rover = None, None

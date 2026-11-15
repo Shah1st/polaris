@@ -3,19 +3,26 @@
 `merging_map` takes the drone's map as tiles and asks the drone side for three things. This
 module provides them from the overhead pipeline:
 
-    camera = OverheadDrone(image_file_reader('photo.jpg'))
+    camera = OverheadDrone(camera_reader('http://phone:8080/video'), settings)
     for message in camera.tiles():          # first survey
         carte.recevoir(message)
-    rover = RaspRoverReel(carte, ..., position_drone=camera.position_drone, drone=camera)
+    rover = RaspRoverReel(carte, ..., position_drone=camera.rover_pose, drone=camera)
+
+(`merging_map/lancer_overhead.lancer` does exactly this.)
 
 - `drone.disponible()` and `drone.zoomer(tile)`: methods of `OverheadDrone`;
-- `position_drone()`: `OverheadDrone.position_drone`.
+- `position_drone()`: `OverheadDrone.rover_pose` (heading None without a marker; the rover
+  adapter then measures the heading from the rover's motion).
+
+Sources: `camera_reader` (live camera, stream, snapshot URL or still file; see
+`camera_source.py`) or `image_file_reader` (a file read again at each call).
 
 Tile format, from `merging_map/README.md`: N x N cells (N = 32), values 1 obstacle, 0 free and
 seen, -1 not seen, row 0 = south, tile (z, x, y) covering x*T <= X < (x+1)*T with T = N * cell
 size. The grid here has 5 cm cells, which is level z = 4 of the fusion's defaults.
 """
 
+import logging
 import math
 import time
 from collections.abc import Callable
@@ -23,10 +30,21 @@ from collections.abc import Callable
 import cv2
 import numpy as np
 
-from guidance_global_map.pipeline import OverheadResult, OverheadSettings, process_image
+from guidance_global_map.camera_source import camera_reader as camera_reader
+from guidance_global_map.pipeline import (
+    OverheadResult,
+    OverheadSettings,
+    brightness_spread,
+    frame_problem,
+    process_image,
+)
 from guidance_global_map.segmentation import grid_to_fusion
 
 UNSEEN = -1
+# Seconds after which a frame that only fails the comparison with the last good frame (the
+# scene's contrast collapsed) becomes the new reference instead of being rejected for ever.
+RELEARN_AFTER = 10.0
+log = logging.getLogger(__name__)
 
 
 def cut_tiles(
@@ -65,6 +83,22 @@ def cut_tiles(
     return messages
 
 
+def unsee_disc(
+    matrix: np.ndarray, cell_size: float, center: tuple[float, float], radius: float
+) -> np.ndarray:
+    """Copy of a fusion matrix (row 0 at y = 0) with the cells near `center` set to -1.
+
+    A cell is cleared when its centre is within `radius` plus half a cell of `center`.
+    """
+    matrix = np.array(matrix, dtype=np.int8, copy=True)
+    rows, cols = matrix.shape
+    ys = (np.arange(rows) + 0.5) * cell_size
+    xs = (np.arange(cols) + 0.5) * cell_size
+    near = np.hypot(xs[None, :] - center[0], ys[:, None] - center[1]) <= radius + cell_size / 2
+    matrix[near] = UNSEEN
+    return matrix
+
+
 def image_file_reader(path: str) -> Callable[[], np.ndarray | None]:
     """Return a reader that gives the image file's current content, or None if unreadable."""
 
@@ -79,7 +113,17 @@ class OverheadDrone:
 
     `read_image()` returns the current BGR image, or None when the camera is not available.
     The image is processed again at most every `period` seconds, since the fusion asks for the
-    rover position many times a second and one image takes a noticeable time.
+    rover position many times a second and one image takes a noticeable time. When the reader
+    has `read_new(timeout)` (`camera_reader`), `refresh(force=True)` waits for a frame taken
+    after the call, so "the picture after the rover stopped" really is one.
+
+    A bad frame (black, white, uniform, scene lost: `pipeline.frame_problem`) is not mapped:
+    the previous result is kept for `bad_frame_hold` seconds, without the rover pose, which
+    may be out of date; after that the camera counts as unavailable.
+
+    When the rover is not found but was seen before, the tiles leave the cells within
+    `lost_rover_radius` of its last position unseen (-1): the unrecognised rover (touching a
+    box, in its shadow) must not become an obstacle under itself.
     """
 
     def __init__(
@@ -90,6 +134,9 @@ class OverheadDrone:
         level: int = 4,
         tile_cells: int = 32,
         clock: Callable[[], float] = time.monotonic,
+        fresh_timeout: float = 2.0,
+        bad_frame_hold: float = 2.0,
+        lost_rover_radius: float = 0.30,
     ) -> None:
         self.settings = settings or OverheadSettings()
         self._read_image = read_image
@@ -97,17 +144,54 @@ class OverheadDrone:
         self._level = level
         self._tile_cells = tile_cells
         self._clock = clock
+        self._fresh_timeout = fresh_timeout
+        self._bad_frame_hold = bad_frame_hold
+        self._lost_rover_radius = lost_rover_radius
         self._result: OverheadResult | None = None
         self._updated: float | None = None
+        self._good: OverheadResult | None = None  # last result of a good frame
+        self._good_time: float | None = None
+        self._reference_std: float | None = None
+        self._held = False  # the result is an older frame's, kept over a bad one
+        self._last_rover: tuple[float, float] | None = None
+        self._bad_since: float | None = None
+        self.problem: str | None = None  # why the last frame was rejected, for logs
 
     def refresh(self, force: bool = False) -> OverheadResult | None:
         """Process a new image if the last one is older than `period`. None: no image."""
         now = self._clock()
         if force or self._updated is None or now - self._updated >= self._period:
-            image = self._read_image()
-            self._result = None if image is None else process_image(image, self.settings)
+            fresh = getattr(self._read_image, 'read_new', None)
+            image = fresh(self._fresh_timeout) if force and fresh else self._read_image()
             self._updated = now
+            self._held = False
+            self._result = self._process(image, now)
         return self._result
+
+    def _process(self, image: np.ndarray | None, now: float) -> OverheadResult | None:
+        problem = 'no image' if image is None else frame_problem(image, self._reference_std)
+        if problem is None or self._bad_since is None:
+            self._bad_since = None if problem is None else now
+        elif now - self._bad_since > RELEARN_AFTER and frame_problem(image) is None:
+            # Only the comparison with the old scene fails, and for long: the scene itself
+            # changed (lights, obstacles moved away). Take it as the new reference.
+            log.warning('overhead camera: scene changed for good, new reference frame')
+            problem, self._bad_since = None, None
+        if problem is None:
+            self.problem = None
+            self._good = process_image(image, self.settings)
+            self._good_time = now
+            self._reference_std = brightness_spread(image)
+            if self._good.rover_position is not None:
+                self._last_rover = self._good.rover_position
+            return self._good
+        if problem != self.problem:
+            log.warning('overhead camera: frame rejected: %s', problem)
+        self.problem = problem
+        if image is None or self._good is None or now - self._good_time > self._bad_frame_hold:
+            return None
+        self._held = True
+        return self._good
 
     # ---- what merging_map asks of the drone ------------------------------------------------
 
@@ -150,7 +234,7 @@ class OverheadDrone:
     def rover_pose(self) -> tuple[float, float, float | None] | None:
         """Rover (x, y, heading); heading is None when unknown. None: rover not seen."""
         result = self.refresh()
-        if result is None or result.rover_position is None:
+        if result is None or result.rover_position is None or self._held:
             return None
         return (*result.rover_position, result.rover_heading)
 
@@ -159,12 +243,17 @@ class OverheadDrone:
         result = self.refresh(force)
         if result is None:
             return []
+        matrix = grid_to_fusion(result.grid)
+        if result.rover_position is None and self._last_rover is not None:
+            matrix = unsee_disc(
+                matrix, self.settings.cell_size, self._last_rover, self._lost_rover_radius
+            )
         return cut_tiles(
-            grid_to_fusion(result.grid),
+            matrix,
             self.settings.cell_size,
             self._level,
             tile_cells=self._tile_cells,
-            t=self._updated,
+            t=self._good_time if self._held else self._updated,
         )
 
     def zone(self) -> tuple[float, float, float, float] | None:
