@@ -298,3 +298,31 @@ def test_without_a_marker_a_heading_read_in_the_picture_is_ignored() -> None:
 def test_the_marker_is_off_by_default_and_can_be_turned_back_on() -> None:
     assert fr.options([]).drone_sans_marqueur is True
     assert fr.options(['--no-drone-sans-marqueur']).drone_sans_marqueur is False
+
+
+def test_the_marker_switch_can_be_set_while_running() -> None:
+    """POST /marqueur, the dashboard's "No marker" box."""
+    f, _ = fusion()
+
+    assert f.regler_marqueur({'sans_marqueur': False}) == (
+        200,
+        {'ok': True, 'sans_marqueur': False},
+    )
+    assert f.args.drone_sans_marqueur is False
+    assert f.regler_marqueur({'sans_marqueur': True})[1]['sans_marqueur'] is True
+    assert f.args.drone_sans_marqueur is True
+    for bad in ({}, {'sans_marqueur': 'yes'}, {'sans_marqueur': 1}):
+        assert f.regler_marqueur(bad)[0] == 400
+    assert f.args.drone_sans_marqueur is True
+
+
+def test_the_switch_changes_how_the_next_picture_is_placed() -> None:
+    found = [None]
+    f, reader = fusion_ia(found)
+
+    model_stop(f, reader, found, 0.50, (20.0, 20.0, 0.0), cap=0.0)
+    assert not f.drone['cale']  # no marker trusted: one picture does not place the map
+
+    f.regler_marqueur({'sans_marqueur': False})
+    model_stop(f, reader, found, 0.50, (20.0, 20.0, 0.0), cap=0.0)
+    assert f.drone['cale'] and f.drone['cale_par'] == 'marker'

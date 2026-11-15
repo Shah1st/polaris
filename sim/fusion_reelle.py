@@ -10,6 +10,9 @@ same format as sim/fusion_live.py, and a mission to a point picked on the map.
     POST /aller              the rover drives to the point by itself (bounded steps, one look of
                              its camera at each stop, around the obstacles it saw)
     POST /arreter            end of the mission and POST /stop to the rover
+    POST /marqueur           {"sans_marqueur": true|false}: ignore (true) or trust (false)
+                             the rover's marker in the drone's picture, while running;
+                             same as --drone-sans-marqueur / --no-drone-sans-marqueur
 
 Outside a mission: read only (GET /state of the rover, GET /obstacles of the perception service).
 Frame: the odometry frame at start (or at the last /reset), origin at the start point, x towards
@@ -329,6 +332,24 @@ class FusionReelle:
             'hauteur_estimee_m': self.hauteur_estimee(),
             'zone_m': [round(m.shape[1] * res, 2), round(m.shape[0] * res, 2)],
         }
+
+    def regler_marqueur(self, corps):
+        """POST /marqueur: turn --drone-sans-marqueur on or off while running. (code, answer)
+
+        On: the heading read in the drone's picture is ignored and the rover's move places
+        the drone map. Off: the marker is trusted again. What the rover's moves have found so
+        far is kept either way."""
+        valeur = corps.get('sans_marqueur')
+        if not isinstance(valeur, bool):
+            return 400, {'error': '{"sans_marqueur": true or false} is expected'}
+        with self.verrou:
+            self.args.drone_sans_marqueur = valeur
+        print(
+            time.strftime('%H:%M:%S'),
+            'drone map placed by the rover move only' if valeur else 'rover marker trusted',
+            flush=True,
+        )
+        return 200, {'ok': True, 'sans_marqueur': valeur}
 
     def hauteur_estimee(self):
         """The camera height that the scale in use means for --drone-champ: once the rover's
@@ -906,6 +927,7 @@ class FusionReelle:
                 else 'no overhead camera connected',
                 'reel': bool(self.args.drone_nom or self.camera is not None),
                 'calibre': bool(etat_drone.get('cale')),
+                'sans_marqueur': bool(self.args.drone_sans_marqueur),
                 'tuiles': n_tuiles_drone,
                 'vue': etat_drone,
             },
@@ -1041,6 +1063,8 @@ def handler(fr):
                     return self._json(*fr.aller())
                 if nom == '/arreter':
                     return self._json(*fr.arreter())
+                if nom == '/marqueur':
+                    return self._json(*fr.regler_marqueur(corps))
             except (KeyError, TypeError, ValueError) as e:
                 return self._json(400, {'error': str(e)[:200]})
             return self._json(404, {'error': 'unknown'})
