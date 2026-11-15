@@ -136,6 +136,19 @@ def serveur_redemarre(avant, apres):
     return False
 
 
+def garde_recule(ctrl):
+    """True si le garde-fou d'inclinaison du serveur fait reculer le rover ou le tient arrete
+    (ctrl.guard.state 'backoff' ou 'hold', champ facultatif) : ctrl.mode est alors 'idle' mais
+    le rover bouge encore."""
+    return ((ctrl.get('guard') or {}).get('state')) in ('backoff', 'hold')
+
+
+def odometre(etat):
+    """odom.odometer (m parcourus par les roues), ou None si le champ manque."""
+    v = (etat.get('odom') or {}).get('odometer')
+    return None if v is None else float(v)
+
+
 def nouvelles_entrees(historique, dernier):
     """Entrees de ctrl.history (la plus recente d'abord) arrivees apres `dernier`."""
     if dernier is None:
@@ -239,6 +252,7 @@ class RaspRoverReel(RobotOdometrie):
         delai_retour=60.0,
         inclinaison_camera=-20,
         portee_camera=2.0,
+        latence_video=0.7,
         marge_pas=0.2,
         signaler=None,
         horloge=time.monotonic,
@@ -258,6 +272,9 @@ class RaspRoverReel(RobotOdometrie):
         # n'est pas une coupure (le cerveau marquerait sinon une zone interdite)
         self.delai_liaison = delai_liaison
         self.inclinaison_camera, self.portee_camera = inclinaison_camera, portee_camera
+        # s : retard du flux video du rover jusqu'a la perception (une image « fraiche » est
+        # arrivee apres la demande, mais a ete prise jusqu'a autant plus tot)
+        self.latence_video = latence_video
         self.horloge, self.dormir = horloge, dormir
         # m : un /path ne part jamais vers un point plus loin que le pas demande + marge_pas
         # de la pose odometrique actuelle (repere faux apres un redemarrage non vu...)
@@ -271,6 +288,9 @@ class RaspRoverReel(RobotOdometrie):
         # lu) et /stop envoyes par l'adaptateur depuis, comptes seulement s'ils ont eu une
         # reponse (un /stop recu dont la reponse se perd donne au pire un faux arret operateur)
         self._stops_vus, self._stops_envoyes = None, 0
+        # odom.odometer a la fin du dernier pas (rover arrete) : s'il a grandi au pas suivant,
+        # quelqu'un a conduit le rover entre les deux (None : rien a comparer)
+        self._odo_fin = None
         super().__init__(carte)  # appelle placer((0, 0)), qui ne parle pas encore au rover
 
     # ---- liaisons et temps -------------------------------------------------
@@ -313,8 +333,17 @@ class RaspRoverReel(RobotOdometrie):
 
     @staticmethod
     def _est_pret(etat):
-        return bool((etat.get('link') or {}).get('connected')) and bool(
-            etat['odom'].get('gyro_ready')
+        """ESP32 connecte, gyroscope calibre, et rien ne fait rouler le rover (pas en cours ou
+        en file, recul du garde-fou d'inclinaison) : sinon un recalage sur image se ferait sur
+        un rover qui roule. Champs ctrl facultatifs (serveur plus ancien : pas controles)."""
+        ctrl = etat.get('ctrl') or {}
+        return (
+            bool((etat.get('link') or {}).get('connected'))
+            and bool(etat['odom'].get('gyro_ready'))
+            and ctrl.get('mode', 'idle') == 'idle'
+            and not ctrl.get('queued')
+            and ctrl.get('current') is None
+            and not garde_recule(ctrl)
         )
 
     def _apres_redemarrage(self):
@@ -327,6 +356,7 @@ class RaspRoverReel(RobotOdometrie):
         self._a_recaler = True
         self.repere = Repere()
         self._appui = self._vue = None
+        self._odo_fin = None
         self.signaler(
             'serveur du rover redemarre (odometrie remise a zero) -> attente du rover, '
             'nouveau recalage sur la camera avant tout mouvement'
@@ -388,6 +418,7 @@ class RaspRoverReel(RobotOdometrie):
         self._appui = None  # (point carte, point odometrie) qui sert a mesurer le cap
         self._vue = None  # (point carte, point odometrie) du dernier recalage a l'arret
         self._a_recaler = True  # au premier pas : image + odometrie, rover arrete
+        self._odo_fin = None
 
     def recaler(self):
         mesure = self._mesure_fraiche()
@@ -455,13 +486,16 @@ class RaspRoverReel(RobotOdometrie):
             etat = self._etat()
             if etat is None:
                 return False
-            if etat.get('link', {}).get('connected') and etat['odom'].get('gyro_ready'):
+            if (etat.get('ctrl') or {}).get('mode') == 'manual':
+                raise ArretOperateur('rover conduit a la main (commande manuelle /cmd)')
+            if self._est_pret(etat):
                 self.pret = True
                 return True
             if self.temps() - debut > self.delai_pret:
                 raise ServeurRoverError(
-                    f'Rover pas pret apres {self.delai_pret:.0f} s : ESP32 non connecte ou '
-                    'gyroscope pas calibre (voir GET /state, link et odom.gyro_ready).'
+                    f'Rover pas pret apres {self.delai_pret:.0f} s : ESP32 non connecte, '
+                    'gyroscope pas calibre ou rover qui roule encore (voir GET /state, link, '
+                    'odom.gyro_ready, ctrl.mode et ctrl.guard).'
                 )
             self.dormir(0.5)
 
@@ -483,16 +517,21 @@ class RaspRoverReel(RobotOdometrie):
         statut du serveur ('done', 'stalled', 'timeout'...), 'delai' s'il ne finit pas,
         'redemarrage' si le serveur a redemarre, ou (None, None) si la liaison est perdue.
         Leve ArretOperateur si un operateur a arrete ou remplace le pas."""
+        self._odo_fin = None
         avant = self._etat()
         if avant is None:
             return None, None
         if self._redemarrage:
+            self.arreter()  # /reset_odom : le controleur peut encore suivre un ancien pas
             return 'redemarrage', avant  # le repere a perime : rien n'est envoye
         self._controler_stops(avant)
         if chemin == '/path':
             self._borner(corps, avant, longueur)
         dernier = (avant['ctrl'].get('history') or [None])[0]
-        reponse, envois = self._envoyer('POST', chemin, corps)
+        if chemin == '/path':
+            reponse, envois = self._envoyer('POST', chemin, corps)
+        else:  # un /move est relatif : renvoye apres une reponse perdue, il se referait
+            reponse, envois = self._demander('POST', chemin, corps), 1
         if reponse is None:
             return None, None
         # le serveur abandonne un pas apres max(20 s, 3 x longueur / vitesse + 10 s) : on lui
@@ -510,7 +549,10 @@ class RaspRoverReel(RobotOdometrie):
                 return None, None  # liaison perdue : le serveur finit le pas puis s'arrete
             derniere_reponse = self.temps()
             if self._redemarrage:
-                return 'redemarrage', etat  # l'historique et l'odometrie sont repartis a zero
+                # l'historique et l'odometrie sont repartis a zero ; apres un /reset_odom le
+                # controleur suit encore le pas, vers une cible de l'ancien repere : on l'arrete
+                self.arreter()
+                return 'redemarrage', etat
             self._suivre(etat)
             ctrl = etat['ctrl']
             if ctrl.get('mode') == 'manual':
@@ -519,6 +561,9 @@ class RaspRoverReel(RobotOdometrie):
                 )
             # en attente, en cours, ou a l'arret le temps de mesurer (settle, 0,4 s)
             en_cours = ctrl.get('mode') in ('move', 'turn', 'path', 'settle')
+            # le garde-fou d'inclinaison finit le pas ('tilt: ...') puis fait reculer le rover
+            # (jusqu'a 15 cm / 3 s) en mode 'idle' : il roule encore
+            en_cours = en_cours or garde_recule(ctrl)
             if en_cours or ctrl.get('queued') or ctrl.get('current') is not None:
                 vu_en_cours = True
                 continue
@@ -527,6 +572,10 @@ class RaspRoverReel(RobotOdometrie):
                 self._controler_operateur(nouvelles, envois)
                 if panne_serveur(nouvelles[0].get('status')):
                     self._panne(nouvelles[0].get('status'), ctrl)
+                if nouvelles[0].get('status') == 'done' and ctrl.get('fault'):
+                    # panne pendant le settle (0,4 s) : l'historique dit 'done', ctrl.fault non
+                    self._panne(nouvelles[0].get('status'), ctrl)
+                self._odo_fin = odometre(etat)
                 return nouvelles[0].get('status'), etat
             if panne_serveur(ctrl.get('fault')):
                 # Pas sorti de la file sans trace, panne apres notre POST (qui remet ctrl.fault
@@ -609,21 +658,25 @@ class RaspRoverReel(RobotOdometrie):
         bloque = None
         pas = round(self._pas_pour_le_cap(), 3)
         for distance in (pas, -pas):
-            # Un /path vers un point ABSOLU de l'odometrie, calcule sur la pose lue juste
-            # avant : renvoye apres une reponse perdue, il ne fait pas le pas deux fois (un
-            # /move relatif repartait de la ou le rover en etait). En arriere, le rover pivote
-            # sur place puis avance : la camera et l'odometrie voient le meme deplacement.
+            # En avant : un /path vers un point ABSOLU de l'odometrie, calcule sur la pose lue
+            # juste avant : renvoye apres une reponse perdue, il ne fait pas le pas deux fois
+            # (un /move relatif repartait de la ou le rover en etait). En arriere : un /move,
+            # envoye une seule fois. Un /path vers un point derriere le rover a moins de
+            # path_lookahead (0,2 m) finit 'done' sans bouger sur le vrai serveur.
             etat = self._etat()
             if etat is None or self._redemarrage:
                 return None
-            xo, yo, ho = pose_odom(etat)
-            but = (xo + distance * math.cos(ho), yo + distance * math.sin(ho))
-            corps = {
-                'points': [[round(but[0], 4), round(but[1], 4)]],
-                'frame': 'odom',
-                'speed': self.vitesse,
-            }
-            statut, etat = self._faire_un_pas('/path', corps, abs(distance))
+            if distance < 0:
+                statut, etat = self._faire_un_pas('/move', {'distance': distance}, -distance)
+            else:
+                xo, yo, ho = pose_odom(etat)
+                but = (xo + distance * math.cos(ho), yo + distance * math.sin(ho))
+                corps = {
+                    'points': [[round(but[0], 4), round(but[1], 4)]],
+                    'frame': 'odom',
+                    'speed': self.vitesse,
+                }
+                statut, etat = self._faire_un_pas('/path', corps, distance)
             if statut is None or statut == 'redemarrage':
                 return None
             patine = self._arret(statut, etat)
@@ -651,6 +704,14 @@ class RaspRoverReel(RobotOdometrie):
             return None
         if (etat.get('ctrl') or {}).get('mode') == 'manual':
             raise ArretOperateur('rover conduit a la main (commande manuelle /cmd) entre deux pas')
+        # Conduite au clavier finie depuis plus de manual_timeout (0,5 s) : ctrl.mode est revenu
+        # a 'idle' sans trace, mais les roues ont tourne depuis la fin du dernier pas
+        odo, fin = odometre(etat), self._odo_fin
+        if odo is not None and fin is not None and not self._redemarrage and odo - fin > 0.05:
+            raise ArretOperateur(
+                f'rover deplace entre deux pas ({odo - fin:.2f} m aux roues sans pas de la '
+                'mission : conduite au clavier ?) : fin de mission'
+            )
         for _ in range(3):  # redemarrages a la suite : on finit par abandonner
             if self._redemarrage:
                 self._apres_redemarrage()
@@ -725,20 +786,57 @@ class RaspRoverReel(RobotOdometrie):
         return False
 
     # ---- perception et drone -----------------------------------------------
+    @staticmethod
+    def _pan(etat):
+        """gimbal.pan (degres) dans une reponse de GET /state, ou None si le champ manque."""
+        pan = ((etat or {}).get('gimbal') or {}).get('pan')
+        return None if pan is None else float(pan)
+
+    def _percevoir_a(self, pan):
+        cap = None if self.cap is None else angle_normalise(self.cap - math.radians(pan))
+        vue = self.percevoir(self.est, cap)
+        if vue is not None:
+            self.publier_vue(*vue)
+
+    def _tourelle_arretee(self):
+        """Apres POST /gimbal : le pan rapporte par GET /state une fois la tourelle arretee
+        (gimbal.moving faux, champ facultatif), ou None si le serveur ne donne pas gimbal."""
+        if self._pan(self._dernier_etat) is None:
+            return None  # serveur sans gimbal dans /state : on garde l'angle commande
+        debut = self.temps()
+        while True:
+            etat = self._demander('GET', '/state')
+            if etat is None:
+                return None
+            if not (etat.get('gimbal') or {}).get('moving') or self.temps() - debut > 5.0:
+                return self._pan(etat)
+            self.dormir(0.2)
+
     def observer(self, tour_complet=False):
         """Ce que voit la camera ; tour_complet : la tourelle fait le tour (8 vues). Pour le
-        serveur, pan + = a droite : le cap de la camera est donc cap - pan."""
-        angles = [-180, -135, -90, -45, 0, 45, 90, 135] if tour_complet else [0]
-        for pan in angles:
-            if tour_complet:
-                self._demander('POST', '/gimbal', {'pan': pan, 'tilt': self.inclinaison_camera})
-                self.dormir(0.4)
-            cap = None if self.cap is None else angle_normalise(self.cap - math.radians(pan))
-            vue = self.percevoir(self.est, cap)
-            if vue is not None:
-                self.publier_vue(*vue)
-        if tour_complet:
-            self._demander('POST', '/gimbal', {'pan': 0, 'tilt': self.inclinaison_camera})
+        serveur, pan + = a droite : le cap de la camera est donc cap - pan. Hors du tour, le
+        pan est celui de la derniere reponse de GET /state (la tourelle se regle au clavier sur
+        la page du rover), 0 si le champ manque."""
+        if not tour_complet:
+            if self._dernier_etat is None:
+                self._demander('GET', '/state')  # avant le premier pas : pan pas encore lu
+            pan = self._pan(self._dernier_etat)
+            self._percevoir_a(0.0 if pan is None else pan)
+            return
+        for pan in [-180, -135, -90, -45, 0, 45, 90, 135]:
+            corps = {'pan': pan, 'tilt': self.inclinaison_camera}
+            if self._demander('POST', '/gimbal', corps) is None:
+                continue  # tourelle peut-etre pas tournee : la vue serait posee de travers
+            self.dormir(0.4)  # pivot de la tourelle
+            reel = self._tourelle_arretee()
+            # puis une image prise apres l'arret de la tourelle doit atteindre la perception
+            self.dormir(self.latence_video)
+            self._percevoir_a(pan if reel is None else reel)
+        corps = {'pan': 0, 'tilt': self.inclinaison_camera}
+        if self._demander('POST', '/gimbal', corps) is not None and self._pan(self._dernier_etat):
+            # la prochaine vue hors tour lit le pan dans _dernier_etat : il n'est plus a jour
+            gimbal = dict(self._dernier_etat['gimbal'], pan=0.0)
+            self._dernier_etat = dict(self._dernier_etat, gimbal=gimbal)
 
     def demander_zoom(self, tuile):
         for msg in self.drone.zoomer(tuile) or []:

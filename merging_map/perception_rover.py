@@ -18,6 +18,7 @@ mieux vaut ne rien dire que de dire faux.
 !! PAS ENCORE ESSAYE AVEC LA CAMERA DU VRAI ROVER (seulement en simulation). !!
 """
 
+import http.client
 import json
 import math
 import urllib.error
@@ -112,7 +113,15 @@ def percevoir_http(
                 float(cap),
                 avance_camera=avance_camera,
             )
-        except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
+        # reponse coupee (IncompleteRead) : ni OSError ni ValueError
+        except (
+            urllib.error.URLError,
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            http.client.HTTPException,
+        ):
             return None
 
     return percevoir

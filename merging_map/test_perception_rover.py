@@ -215,6 +215,7 @@ def test_branche_dans_rasprover_reel(service):
     rover = RaspRoverReel.__new__(RaspRoverReel)  # seulement observer() / publier_vue()
     rover.percevoir = percevoir_http(service.url)
     rover.est, rover.cap = (1.0, 1.0), 0.0
+    rover._dernier_etat = {'gimbal': {'pan': 0.0}}  # derniere reponse de GET /state
     publiees = []
     rover.publier_vue = lambda loc, x0, y0: publiees.append((loc, x0, y0))
     rover.observer()
