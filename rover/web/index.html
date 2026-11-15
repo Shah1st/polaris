@@ -261,6 +261,26 @@
     </section>
 
     <section>
+      <details id="cmdBox" open>
+        <summary><b>Commands received</b> <span class="unit">— what the programs send, and how fast the rover acts (measured on the rover)</span></summary>
+        <div class="status" id="rttInfo" style="margin:8px 0">This page ↔ rover: –</div>
+        <table style="margin-bottom:10px">
+          <thead><tr><th>Client</th><th>Req/s</th><th>Usual gap</th><th>Largest gap</th><th>Last</th></tr></thead>
+          <tbody id="cmdClients"></tbody>
+        </table>
+        <table>
+          <thead><tr><th>When</th><th>From</th><th>Command</th><th>→ ESP32</th><th>→ wheels</th><th>Done</th><th>Status</th></tr></thead>
+          <tbody id="cmdLog"><tr><td colspan="7" class="unit">Nothing received yet</td></tr></tbody>
+        </table>
+        <div class="help" style="text-align:left;margin-top:6px">
+          → ESP32: until the 20 Hz loop sent it (≤ 50 ms is normal). → wheels: until the encoders
+          showed it (moving, or stopped for a STOP). Network latency shows as gaps: a held key
+          repeated with more than 500 ms between two commands lets the rover stop (red).
+        </div>
+      </details>
+    </section>
+
+    <section>
       <h2>Results <span class="unit">(measured by the rover once stopped)</span></h2>
       <table>
         <thead><tr><th>Step</th><th>Measured</th><th>Error</th><th>Fix</th><th>Time</th><th>Status</th></tr></thead>
@@ -688,16 +708,54 @@ function render(s) {
   drawMap(s);
 }
 
+const rtts = [];
 async function poll() {
   try {
+    const t0 = performance.now();
     const r = await fetch('/state');
     state = await r.json();
+    rtts.push(performance.now() - t0); if (rtts.length > 60) rtts.shift();
+    const sorted = [...rtts].sort((a, b) => a - b);
+    $('rttInfo').innerHTML = `This page ↔ rover: <b>${sorted[sorted.length >> 1].toFixed(0)} ms</b> usual,`
+      + ` <b style="color:${sorted[sorted.length - 1] > 500 ? 'var(--bad)' : 'inherit'}">${sorted[sorted.length - 1].toFixed(0)} ms</b> worst (last ${rtts.length} requests)`;
     render(state);
   } catch (e) {
     pill('pLink', 'Server unreachable', 'bad');
   }
   setTimeout(poll, 150);
 }
+
+// ---------------------------------------------------------------- commands received
+function msCell(v, warn, bad) {
+  if (v == null) return '<td class="unit">–</td>';
+  const cls = v > bad ? 'err-bad' : v > warn ? 'err-warn' : '';
+  return `<td class="${cls}">${v} ms</td>`;
+}
+function shortClient(c) { return c.replace(/^\S+ /, '').replace('python-urllib', 'mission (urllib)').replace('python-requests', 'dashboard (requests)'); }
+async function commandsLoop() {
+  while (true) {
+    if ($('cmdBox').open) {
+      try {
+        const s = await (await fetch('/commands')).json();
+        $('cmdClients').innerHTML = s.clients.map(c => `<tr><td>${c.client}</td><td>${c.per_s}</td>`
+          + msCell(c.median_gap_ms, 300, 600) + msCell(c.max_gap_ms, 500, 1000)
+          + `<td>${c.last_s == null ? '–' : c.last_s.toFixed(1) + ' s ago'}</td></tr>`).join('');
+        $('cmdLog').innerHTML = s.entries.length ? s.entries.map(e => {
+          const held = e.count > 1 ? ` <span class="unit">×${e.count} over ${e.held_s.toFixed(1)} s, gap ≤</span>`
+            + `<span class="${e.max_gap_ms > 500 ? 'err-bad' : 'unit'}"> ${e.max_gap_ms} ms</span>` : '';
+          const st = e.status === 'pending' ? '…' : e.status;
+          const stCls = ['done', 'ok'].includes(e.status) ? '' : ['pending', 'superseded'].includes(e.status) ? 'unit' : 'err-bad';
+          return `<tr><td>${e.ago_s.toFixed(1)} s</td><td>${shortClient(e.client)}</td><td>${e.text}${held}</td>`
+            + msCell(e.out_ms, 80, 150) + msCell(e.wheels_ms, 400, 800)
+            + (e.done_ms == null ? '<td class="unit">–</td>' : `<td>${(e.done_ms / 1000).toFixed(1)} s</td>`)
+            + `<td class="${stCls}">${e.code >= 300 ? 'HTTP ' + e.code : st}</td></tr>`;
+        }).join('') : '<tr><td colspan="7" class="unit">Nothing received yet</td></tr>';
+      } catch (err) { /* the state poll shows the link problem */ }
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+}
+commandsLoop();
 
 // ---------------------------------------------------------------- map
 const trail = [], trueTrail = [];

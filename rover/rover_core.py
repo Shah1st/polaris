@@ -1596,6 +1596,202 @@ def tilt_deg(msg: dict) -> dict:
     return {'roll_deg': None, 'pitch_deg': None}
 
 
+class CommandLog:
+    """What the rover received over HTTP, from whom, and how fast it acted on it, measured on
+    the robot itself (one clock: no offset between computers to guess).
+
+    For each order: `out_ms` until the control loop sent it to the ESP32, `wheels_ms` until the
+    wheel encoders showed it (moving, or stopped for a stop), `done_ms` until a step ended.
+    Repeated identical manual commands (a held key, about 10 per second) make one line with
+    their count and the largest gap between two of them: past `manual_timeout` (0.5 s) the
+    rover stops by itself, which is how network latency shows on the robot.
+    Per client (address + program): requests per second and the largest gap between requests.
+    """
+
+    MAX_ENTRIES = 200
+    WINDOW = 10.0  # s, for the per-client figures
+    MOVING = 0.02  # m/s on a wheel: the wheels turn
+    STILL = 0.01  # m/s on both wheels: stopped
+    STEP_ROUTES = ('/move', '/turn', '/sequence', '/path')
+
+    def __init__(self) -> None:
+        self.entries: deque[dict] = deque(maxlen=self.MAX_ENTRIES)
+        self.clients: dict[str, dict] = {}
+        self._lock = threading.Lock()
+        self._next_id = 1
+
+    @staticmethod
+    def client_name(address: str, agent: str | None, name: str | None = None) -> str:
+        """Address and program: the page, the mission (urllib) and the dashboard (requests) can
+        run on the same computer. A client may name itself with the X-Rover-Client header."""
+        if name:
+            return f'{address} {name[:40]}'
+        agent = agent or ''
+        if 'Mozilla' in agent:
+            kind = 'browser'
+        elif 'python-requests' in agent:
+            kind = 'python-requests'
+        elif 'Python-urllib' in agent:
+            kind = 'python-urllib'
+        else:
+            kind = agent.split('/')[0][:30] or 'unknown'
+        return f'{address} {kind}'
+
+    def note_request(self, t: float, client: str) -> None:
+        with self._lock:
+            c = self.clients.setdefault(client, {'times': deque(maxlen=300), 'last_cmd': None})
+            c['times'].append(t)
+
+    @staticmethod
+    def summary(route: str, body: dict) -> tuple[str, str | None, tuple | None]:
+        """(text, expectation 'move'/'stop'/None, manual (v, w) or None) for one request."""
+
+        def num(key, default=0.0):
+            try:
+                return float(body.get(key, default))
+            except (TypeError, ValueError):
+                return float('nan')
+
+        if route == '/cmd':
+            kind = body.get('T')
+            if 'v' in body or 'omega' in body:
+                v, w = num('v'), num('omega')
+            elif kind == 13:
+                v, w = num('X'), num('Z')
+            elif kind == 1:
+                v, w = (num('L') + num('R')) / 2, float('nan')
+            elif kind == 0:
+                return 'stop (T:0)', 'stop', None
+            else:
+                return f'raw {json.dumps(body)[:60]}', None, None
+            moving = not (v == 0 and (w == 0 or w != w))
+            text = f'manual v {v:+.2f} m/s' + ('' if w != w else f', w {w:+.2f} rad/s')
+            manual = (round(v, 3), round(w, 3) if w == w else None)
+            return text, 'move' if moving else 'stop', manual
+        if route == '/move':
+            return f'move {num("distance") * 100:+.0f} cm', 'move', None
+        if route == '/turn':
+            return f'turn {num("angle"):+.0f} deg', 'move', None
+        if route == '/path':
+            pts = body.get('points') if isinstance(body.get('points'), list) else []
+            speed = body.get('speed')
+            return (
+                f'path {len(pts)} pt, {body.get("frame", "local")}'
+                + (f', {num("speed"):.2f} m/s' if speed is not None else ''),
+                'move',
+                None,
+            )
+        if route == '/sequence':
+            steps = body.get('steps') if isinstance(body.get('steps'), list) else []
+            return f'sequence {len(steps)} steps', 'move', None
+        if route == '/stop':
+            return 'STOP', 'stop', None
+        if route == '/gimbal':
+            return f'gimbal {json.dumps(body)[:50]}', None, None
+        return f'{route[1:]} {json.dumps(body)[:50] if body else ""}'.strip(), None, None
+
+    def add(self, t: float, client: str, route: str, body: dict, code: int) -> None:
+        text, expect, manual = self.summary(route, body if isinstance(body, dict) else {})
+        if code >= 300:
+            expect = None  # refused: nothing to measure
+        with self._lock:
+            c = self.clients.setdefault(client, {'times': deque(maxlen=300), 'last_cmd': None})
+            last = c['last_cmd']
+            if (
+                manual is not None
+                and last is not None
+                and last.get('manual') == manual
+                and last['code'] == code
+                and t - last['last_t'] < 1.0
+            ):  # the same held key again: one line
+                gap = t - last['last_t']
+                last['count'] += 1
+                last['max_gap_ms'] = max(last['max_gap_ms'], round(gap * 1000))
+                last['last_t'] = t
+                return
+            if expect is not None:  # a newer order: what the rover does now is not theirs
+                for old in self.entries:
+                    if old['status'] == 'pending':
+                        old['status'] = 'superseded'
+            entry = {
+                'id': self._next_id,
+                't': t,
+                'last_t': t,
+                'client': client,
+                'route': route,
+                'text': text,
+                'code': code,
+                'expect': expect,
+                'manual': manual,
+                'count': 1,
+                'max_gap_ms': 0,
+                'out_ms': None,
+                'wheels_ms': None,
+                'done_ms': None,
+                'status': 'refused' if code >= 300 else ('pending' if expect else 'ok'),
+            }
+            self._next_id += 1
+            self.entries.append(entry)
+            c['last_cmd'] = entry
+
+    def on_tick(self, t: float, v: float, w: float, left: float, right: float, mode: str,
+                last_status: str | None) -> None:  # fmt: skip
+        """Called by the control loop after each command it sends to the ESP32."""
+        with self._lock:
+            for e in list(self.entries)[-12:]:
+                if e['status'] != 'pending':
+                    continue
+                ms = round((t - e['t']) * 1000)
+                moving = abs(v) > 1e-3 or abs(w) > 1e-3
+                if e['out_ms'] is None:
+                    if (e['expect'] == 'move') == moving:
+                        e['out_ms'] = ms
+                elif e['wheels_ms'] is None:
+                    turning = abs(left) > self.MOVING or abs(right) > self.MOVING
+                    still = abs(left) < self.STILL and abs(right) < self.STILL
+                    if (e['expect'] == 'move' and turning) or (e['expect'] == 'stop' and still):
+                        e['wheels_ms'] = ms
+                        if e['route'] not in self.STEP_ROUTES:
+                            e['status'] = 'done'
+                elif e['route'] in self.STEP_ROUTES and mode not in (
+                    'move',
+                    'turn',
+                    'path',
+                    'settle',
+                ):
+                    e['done_ms'] = ms
+                    e['status'] = last_status or 'done'
+                limit = 300.0 if e['route'] in self.STEP_ROUTES and e['wheels_ms'] else 5.0
+                if e['status'] == 'pending' and t - e['t'] > limit:
+                    e['status'] = (
+                        'not sent to the ESP32' if e['out_ms'] is None
+                        else 'wheels did not follow' if e['wheels_ms'] is None
+                        else 'still running'
+                    )  # fmt: skip
+
+    def snapshot(self, now: float, limit: int = 40) -> dict:
+        with self._lock:
+            entries = [
+                {k: v for k, v in e.items() if k not in ('t', 'last_t', 'manual')}
+                | {'ago_s': round(now - e['t'], 2), 'held_s': round(e['last_t'] - e['t'], 2)}
+                for e in list(self.entries)[-limit:]
+            ][::-1]
+            clients = []
+            for name, c in self.clients.items():
+                times = [x for x in c['times'] if now - x <= self.WINDOW]
+                gaps = [b - a for a, b in zip(times, times[1:], strict=False)]
+                last = c['times'][-1] if c['times'] else None
+                clients.append({
+                    'client': name,
+                    'last_s': None if last is None else round(now - last, 2),
+                    'per_s': round(len(times) / self.WINDOW, 1),
+                    'max_gap_ms': round(max(gaps) * 1000) if gaps else None,
+                    'median_gap_ms': round(sorted(gaps)[len(gaps) // 2] * 1000) if gaps else None,
+                })  # fmt: skip
+            clients.sort(key=lambda c: c['last_s'] if c['last_s'] is not None else 1e9)
+        return {'entries': entries, 'clients': clients}
+
+
 class Recorder:
     """20 Hz log of what matters for the tipping tests, downloadable as CSV."""
 
@@ -1651,6 +1847,7 @@ class Rover:
         self._gyro_in_feedback = False  # UGV firmware: gz comes with T:1001
         self.gimbal = Gimbal(cfg)
         self.recorder = Recorder()
+        self.cmdlog = CommandLog()
         self._was_connected = False
         self.loop_errors = 0
         self.last_loop_error: str | None = None
@@ -1749,6 +1946,11 @@ class Rover:
                     gimbal_cmd = self.gimbal.step(t, period) if connected else None
                     if self.recorder.on:
                         self.recorder.add(t, self)
+                    hist = self.ctrl.history
+                    self.cmdlog.on_tick(
+                        t, v, w, self.odom.L, self.odom.R, self.ctrl.mode,
+                        hist[0]['status'] if hist else None,
+                    )  # fmt: skip
             except Exception as e:  # noqa: BLE001 - this loop must outlive any bug: /stop
                 v, w, gimbal_cmd = 0.0, 0.0, None
                 self._loop_error(e, t)
