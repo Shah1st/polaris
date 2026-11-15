@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Polaris — simulation MuJoCo</title>
+<title>Polaris — MuJoCo simulation</title>
 <style>
   html, body { margin:0; background:#111417; color:#e6e9ee;
                font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -28,25 +28,25 @@
 </head>
 <body>
 <header>
-  <h1>Simulation MuJoCo — forêt (rover + drone) et fusion des cartes</h1>
+  <h1>MuJoCo simulation — forest (rover + drone) and map fusion</h1>
   <label>Image <select id="preset">
-    <option value="ld">légère</option><option value="sd" selected>normale</option><option value="hd">pleine</option>
+    <option value="ld">light</option><option value="sd" selected>normal</option><option value="hd">full</option>
   </select></label>
-  <label>Points du rover <select id="source">
-    <option value="camera">caméra du rover (profondeur du simulateur, portée bornée)</option>
-    <option value="d405">D405 (courte portée)</option>
-    <option value="da3" disabled>estimation DA3 du mappeur (à venir)</option>
+  <label>Rover points <select id="source">
+    <option value="camera">rover camera (simulator depth, limited range)</option>
+    <option value="d405">D405 (short range)</option>
+    <option value="da3" disabled>mapper's DA3 estimate (coming soon)</option>
   </select></label>
   <span id="srcMsg" class="note"></span>
 </header>
 <main>
-  <figure><figcaption><b>Caméra du rover</b><span id="fRover">–</span></figcaption><canvas id="rover"></canvas></figure>
-  <figure><figcaption><b>Vue du drone</b><span id="fDrone">–</span></figcaption><canvas id="drone"></canvas></figure>
+  <figure><figcaption><b>Rover camera</b><span id="fRover">–</span></figcaption><canvas id="rover"></canvas></figure>
+  <figure><figcaption><b>Drone view</b><span id="fDrone">–</span></figcaption><canvas id="drone"></canvas></figure>
   <figure>
-    <figcaption><b>Profondeur</b>
+    <figcaption><b>Depth</b>
       <select id="depthMode">
-        <option value="d405">D405 simulée vs profondeur exacte</option>
-        <option value="camera">caméra du rover : profondeur exacte</option>
+        <option value="d405">simulated D405 vs exact depth</option>
+        <option value="camera">rover camera: exact depth</option>
       </select>
       <span id="aDepth">–</span></figcaption>
     <canvas id="depth"></canvas>
@@ -54,26 +54,26 @@
   </figure>
 
   <figure class="map">
-    <figcaption><b>1. Projection des points du rover</b><span id="aRoverMap">–</span></figcaption>
+    <figcaption><b>1. Rover points, projected</b><span id="aRoverMap">–</span></figcaption>
     <canvas id="roverMap"></canvas>
-    <div class="legend">Vue de dessus, nord en haut, 8 × 8 m autour du rover (cadre bleu sur les autres cartes).
-      <br><span class="sw" style="background:#8fd4b4"></span>libre (ce scan)<span class="sw" style="background:#eb6834"></span>obstacle (ce scan)<span class="sw" style="background:#b0177a"></span>vide / falaise (sol attendu absent)<span class="sw" style="background:#dbe6dd"></span><span class="sw" style="background:#e5aa8f"></span>libre / obstacle vus avant
-      <br>Points : <span class="sw" style="background:#6e8c78"></span>sol<span class="sw" style="background:#dc2828"></span>5–30 cm (obstacle)<span class="sw" style="background:#3caa3c"></span>5–30 cm et vert (végétation basse, franchie)<span class="sw" style="background:#2878c8"></span>plus haut (branches, ignorées) · cercle : portée</div>
+    <div class="legend">Top-down view, north up, 8 × 8 m around the rover (blue frame on the other maps).
+      <br><span class="sw" style="background:#8fd4b4"></span>free (this scan)<span class="sw" style="background:#eb6834"></span>obstacle (this scan)<span class="sw" style="background:#b0177a"></span>drop / cliff (expected ground missing)<span class="sw" style="background:#dbe6dd"></span><span class="sw" style="background:#e5aa8f"></span>free / obstacle seen before
+      <br>Points: <span class="sw" style="background:#6e8c78"></span>ground<span class="sw" style="background:#dc2828"></span>5–30 cm (obstacle)<span class="sw" style="background:#3caa3c"></span>5–30 cm and green (low vegetation, driven over)<span class="sw" style="background:#2878c8"></span>higher (branches, ignored) · circle: range</div>
   </figure>
   <figure class="map">
-    <figcaption><b>2. Grille du drone</b><span id="aDroneMap">–</span></figcaption>
+    <figcaption><b>2. Drone grid</b><span id="aDroneMap">–</span></figcaption>
     <canvas id="droneMap"></canvas>
-    <div class="legend">Ce que le drone voit depuis 18 m (grille du simulateur), envoyé à la fusion en tuiles de 5 cm.
-      <br><span class="sw" style="background:#fcfcfb"></span>libre<span class="sw" style="background:#52514e"></span>obstacle / pente / eau<span class="sw" style="background:#e1e0d9"></span>non vu (sous les arbres)<span class="sw" style="background:#e34948"></span>objectif · flèche noire : rover · ○ départ</div>
+    <div class="legend">What the drone sees from 18 m (simulator grid), sent to the fusion as 5 cm tiles.
+      <br><span class="sw" style="background:#fcfcfb"></span>free<span class="sw" style="background:#52514e"></span>obstacle / slope / water<span class="sw" style="background:#e1e0d9"></span>not seen (under the trees)<span class="sw" style="background:#e34948"></span>goal · black arrow: rover · ○ start</div>
   </figure>
   <figure class="map">
-    <figcaption><b>3. Carte fusionnée (code de Paco)</b><span id="aFused">–</span></figcaption>
+    <figcaption><b>3. Fused map (Paco's code)</b><span id="aFused">–</span></figcaption>
     <canvas id="fused"></canvas>
-    <div class="legend">merging_map : CarteFusion.recevoir + decider (A*) vers l'objectif. Le rover vu l'emporte sur le drone.
-      <br><span class="sw" style="background:#fcfcfb"></span>libre (drone)<span class="sw" style="background:#d3eee2"></span>libre (rover)<span class="sw" style="background:#52514e"></span>obstacle (drone)<span class="sw" style="background:#eb6834"></span>obstacle (rover)<span class="sw" style="background:#e1e0d9"></span>inconnu<span class="sw" style="background:#2a78d6"></span>chemin prévu<span class="sw" style="background:#5a5a5a"></span>trace du rover<span class="sw" style="background:#6250d6"></span>tuiles à vérifier / zoom drone</div>
+    <div class="legend">merging_map: CarteFusion.recevoir + decider (A*) toward the goal. What the rover saw wins over the drone.
+      <br><span class="sw" style="background:#fcfcfb"></span>free (drone)<span class="sw" style="background:#d3eee2"></span>free (rover)<span class="sw" style="background:#52514e"></span>obstacle (drone)<span class="sw" style="background:#eb6834"></span>obstacle (rover)<span class="sw" style="background:#e1e0d9"></span>unknown<span class="sw" style="background:#2a78d6"></span>planned path<span class="sw" style="background:#5a5a5a"></span>rover track<span class="sw" style="background:#6250d6"></span>tiles to check / drone zoom</div>
   </figure>
 
-  <div id="status">Fusion : en attente…</div>
+  <div id="status">Fusion: waiting…</div>
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -103,7 +103,7 @@ function view(name, label) {
     }
   }
   for (let i = 0; i < 2; i++) loop();
-  setInterval(() => { $(label).textContent = shown + ' img/s'; shown = 0; }, 1000);
+  setInterval(() => { $(label).textContent = shown + ' fps'; shown = 0; }, 1000);
 }
 view('rover', 'fRover'); view('drone', 'fDrone');
 
@@ -133,32 +133,32 @@ async function fetchPanel(p) {
 
 function fmt(v, d) { return (v === null || v === undefined || isNaN(v)) ? '–' : (+v).toFixed(d); }
 const ACTIONS = {
-  SUIVRE: 'SUIVRE — chemin trouvé',
-  DEMANDER_DRONE: 'DEMANDER_DRONE — zoom du drone demandé',
-  OBJECTIF_DEGRADE: 'OBJECTIF_DEGRADE — aucun passage : point accessible le plus proche',
-  INSPECTER: 'INSPECTER — le rover va voir lui-même',
+  SUIVRE: 'SUIVRE — path found',
+  DEMANDER_DRONE: 'DEMANDER_DRONE — drone zoom requested',
+  OBJECTIF_DEGRADE: 'OBJECTIF_DEGRADE — no way through: closest reachable point',
+  INSPECTER: 'INSPECTER — the rover goes to look for itself',
 };
 
 function showStatus(s) {
   const el = $('status');
-  if (!s) { el.textContent = 'Fusion : pas de réponse (processus arrêté ?)'; return; }
+  if (!s) { el.textContent = 'Fusion: no answer (process stopped?)'; return; }
   const d = s.decision || {}, sc = s.scan || {}, dr = s.drone || {}, du = s.durees || {};
   const goal = s.objectif || [];
   let html = '';
-  if (s.etat === 'erreur') html += `<span class="dead">Erreur de la boucle : ${s.erreur}</span><br>`;
-  html += `<span class="act">Décision n° ${d.numero || 0} : ${ACTIONS[d.action] || d.action || '–'}</span>`
-    + ` · chemin ${fmt(d.longueur_chemin_m, 1)} m vers l'objectif (${fmt(goal[0], 1)}, ${fmt(goal[1], 1)})`
-    + ` · recalculée parce que : ${d.pourquoi || '–'} (il y a ${fmt(d.age_s, 0)} s)`;
-  if (d.distance_restante_m !== null && d.distance_restante_m !== undefined) html += ` · reste ${fmt(d.distance_restante_m, 1)} m jusqu'à l'objectif`;
-  if (d.tuiles && d.tuiles.length) html += ` · tuiles demandées au drone : ${JSON.stringify(d.tuiles)}`;
-  if (d.a_verifier && d.a_verifier.length) html += ` · à vérifier : ${JSON.stringify(d.a_verifier)}`;
+  if (s.etat === 'erreur') html += `<span class="dead">Loop error: ${s.erreur}</span><br>`;
+  html += `<span class="act">Decision #${d.numero || 0}: ${ACTIONS[d.action] || d.action || '–'}</span>`
+    + ` · path ${fmt(d.longueur_chemin_m, 1)} m to the goal (${fmt(goal[0], 1)}, ${fmt(goal[1], 1)})`
+    + ` · recomputed because: ${d.pourquoi || '–'} (${fmt(d.age_s, 0)} s ago)`;
+  if (d.distance_restante_m !== null && d.distance_restante_m !== undefined) html += ` · ${fmt(d.distance_restante_m, 1)} m left to the goal`;
+  if (d.tuiles && d.tuiles.length) html += ` · tiles asked of the drone: ${JSON.stringify(d.tuiles)}`;
+  if (d.a_verifier && d.a_verifier.length) html += ` · to check: ${JSON.stringify(d.a_verifier)}`;
   const rv = s.rover || {};
-  html += `<br>Rover (${fmt(rv.x, 1)}, ${fmt(rv.y, 1)}) m, t simu ${fmt(s.t_sim, 0)} s`
-    + ` · scan : ${sc.points || 0} points, ${sc.free || 0} cases libres, ${sc.obstacle || 0} obstacles, ${sc.drop || 0} vides, ${sc.tuiles_envoyees || 0} tuiles envoyées`
-    + ` · tuiles en mémoire : drone ${dr.tuiles || 0} (niveau z${dr.niveau_z}), rover ${s.tuiles_rover || 0}`
-    + ` · boucle ${fmt(du.total_s, 2)} s (décision ${fmt(du.decision_s, 2)} s)`;
-  html += `<br><span class="note">Points du rover : ${s.source_rover || '–'}. Ce n'est pas l'estimation DA3 du mappeur.`
-    + ` Le rover simulé suit sa propre route : le chemin bleu est ce que la fusion ferait depuis sa position, rien ne lui est envoyé.</span>`;
+  html += `<br>Rover (${fmt(rv.x, 1)}, ${fmt(rv.y, 1)}) m, sim time ${fmt(s.t_sim, 0)} s`
+    + ` · scan: ${sc.points || 0} points, ${sc.free || 0} free cells, ${sc.obstacle || 0} obstacles, ${sc.drop || 0} drops, ${sc.tuiles_envoyees || 0} tiles sent`
+    + ` · tiles in memory: drone ${dr.tuiles || 0} (level z${dr.niveau_z}), rover ${s.tuiles_rover || 0}`
+    + ` · loop ${fmt(du.total_s, 2)} s (decision ${fmt(du.decision_s, 2)} s)`;
+  html += `<br><span class="note">Rover points: ${s.source_rover || '–'}. This is not the mapper's DA3 estimate.`
+    + ` The simulated rover follows its own route: the blue path is what the fusion would do from its position, nothing is sent to it.</span>`;
   el.innerHTML = html;
   if (performance.now() - chosenAt > 5000 && s.source_active) $('source').value = s.source_active;
   if (s.sources) for (const src of s.sources) {
@@ -167,13 +167,13 @@ function showStatus(s) {
   }
   const p = s.profondeur || {};
   if ($('depthMode').value === 'd405') {
-    $('depthNum').textContent = `D405 (modèle de capteur) : ${fmt(p.mesures_pct, 1)} % des pixels mesurés,`
-      + ` ${fmt(p.mesures_dans_portee_pct, 1)} % de ceux dont la vraie profondeur est dans sa portée ${p.d405_portee_m ? p.d405_portee_m.join('–') : '–'} m`
-      + ` · erreur médiane ${fmt(p.erreur_mediane_m * 1000, 1)} mm (${fmt(p.erreur_mediane_rel_pct, 2)} %) sur ${p.pixels_communs || 0} pixels communs`
-      + ` · à droite : profondeur exacte du simulateur, même vue · noir = pas de mesure, gris = au-delà de 1 m`;
+    $('depthNum').textContent = `D405 (sensor model): ${fmt(p.mesures_pct, 1)} % of pixels measured,`
+      + ` ${fmt(p.mesures_dans_portee_pct, 1)} % of those whose true depth is within its range ${p.d405_portee_m ? p.d405_portee_m.join('–') : '–'} m`
+      + ` · median error ${fmt(p.erreur_mediane_m * 1000, 1)} mm (${fmt(p.erreur_mediane_rel_pct, 2)} %) over ${p.pixels_communs || 0} common pixels`
+      + ` · right: exact simulator depth, same view · black = no measurement, grey = beyond 1 m`;
   } else {
-    $('depthNum').textContent = `Caméra du rover, profondeur exacte du simulateur (vérité, pas un capteur), échelle 0–${p.camera_rover_echelle_m || 8} m,`
-      + ` gris = plus loin ou ciel · ${fmt(p.camera_rover_dans_portee_pct, 1)} % des pixels à moins de ${fmt(s.portee_m, 1)} m (portée utilisée pour la carte)`;
+    $('depthNum').textContent = `Rover camera, exact simulator depth (ground truth, not a sensor), scale 0–${p.camera_rover_echelle_m || 8} m,`
+      + ` grey = farther or sky · ${fmt(p.camera_rover_dans_portee_pct, 1)} % of pixels closer than ${fmt(s.portee_m, 1)} m (range used for the map)`;
   }
 }
 
@@ -207,7 +207,7 @@ setInterval(() => {
     const el = $(p.age);
     if (!p.got) { el.textContent = '–'; continue; }
     const age = (p.ageMs + (now - p.got)) / 1000;
-    el.textContent = 'il y a ' + age.toFixed(1) + ' s';
+    el.textContent = age.toFixed(1) + ' s ago';
     el.className = age > 10 ? 'dead' : (age > 4 ? 'old' : '');
   }
 }, 500);
@@ -216,15 +216,15 @@ $('depthMode').addEventListener('change', () => { showStatus(status); });
 $('source').addEventListener('change', async () => {
   chosenAt = performance.now();
   const value = $('source').value;
-  $('srcMsg').textContent = 'changement de source…';
+  $('srcMsg').textContent = 'changing source…';
   try {
     const r = await fetch('/fusion/source', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                               body: JSON.stringify({ source: value }) });
     const j = await r.json();
     $('srcMsg').textContent = r.status === 200
-      ? 'source changée : la couche rover de la carte fusionnée repart de zéro'
-      : ('refusé : ' + (j.error || r.status));
-  } catch (e) { $('srcMsg').textContent = 'échec : ' + e; }
+      ? 'source changed: the rover layer of the fused map starts again from zero'
+      : ('refused: ' + (j.error || r.status));
+  } catch (e) { $('srcMsg').textContent = 'failed: ' + e; }
 });
 </script>
 </body>

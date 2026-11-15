@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Polaris — mission en direct</title>
+<title>Polaris — live mission</title>
 <style>
   /* Made for a projector seen from three metres: large text, strong contrast, no external file. */
   :root { --bg:#0d1014; --panel:#171b21; --line:#2c333d; --fg:#f2f4f7; --dim:#a7b0bc;
@@ -49,45 +49,45 @@
 </head>
 <body>
 <header>
-  <h1>Polaris — le drone guide le rover vers la victime</h1>
-  <span id="etat">EN ATTENTE</span>
+  <h1>Polaris — the drone guides the rover to the victim</h1>
+  <span id="etat">WAITING</span>
   <span id="age">–</span>
 </header>
 <main>
   <section class="box">
-    <h2>Carte fusionnée (drone + rover) <span id="echelle"></span></h2>
+    <h2>Fused map (drone + rover) <span id="echelle"></span></h2>
     <canvas id="carte" width="900" height="900"></canvas>
     <div class="legend">
-      <span class="sw" style="background:#e9edf2"></span>libre
-      <span class="sw" style="background:#3a4049"></span>obstacle vu par le drone
-      <span class="sw" style="background:#ff7a2f"></span>obstacle vu par le rover
-      <span class="sw" style="background:#7d8691"></span>inconnu
-      <br><span class="sw" style="background:#1e7bff"></span>chemin prévu
-      <span class="sw" style="background:#14b88a"></span>trajet parcouru
-      <span class="sw" style="background:#19c2ff"></span>rover (flèche : cap)
-      <span class="sw" style="background:#ff2d2d"></span>victime
-      <span class="sw" style="background:transparent;border:3px dashed #f2b233"></span>zone
+      <span class="sw" style="background:#e9edf2"></span>free
+      <span class="sw" style="background:#3a4049"></span>obstacle seen by the drone
+      <span class="sw" style="background:#ff7a2f"></span>obstacle seen by the rover
+      <span class="sw" style="background:#7d8691"></span>unknown
+      <br><span class="sw" style="background:#1e7bff"></span>planned path
+      <span class="sw" style="background:#14b88a"></span>path travelled
+      <span class="sw" style="background:#19c2ff"></span>rover (arrow: heading)
+      <span class="sw" style="background:#ff2d2d"></span>victim
+      <span class="sw" style="background:transparent;border:3px dashed #f2b233"></span>search area
     </div>
   </section>
   <div class="col">
     <section class="box">
-      <h2>Décision en cours <span id="nDec"></span></h2>
+      <h2>Current decision <span id="nDec"></span></h2>
       <div id="action">–</div>
-      <div id="raison">En attente du premier document de la mission…</div>
+      <div id="raison">Waiting for the first mission document…</div>
       <div id="pos"></div>
     </section>
     <div class="imgs">
       <section class="box">
-        <h2>Caméra du rover <span id="ageCam">–</span></h2>
+        <h2>Rover camera <span id="ageCam">–</span></h2>
         <canvas id="cam" width="640" height="480"></canvas>
       </section>
       <section class="box" id="percBox" hidden>
-        <h2>Ce que le rover détecte <span id="agePerc">–</span></h2>
+        <h2>What the rover detects <span id="agePerc">–</span></h2>
         <canvas id="perc" width="640" height="480"></canvas>
       </section>
     </div>
     <section class="box">
-      <h2>Journal de la mission</h2>
+      <h2>Mission log</h2>
       <pre id="journal">–</pre>
     </section>
   </div>
@@ -99,15 +99,15 @@ const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise(ok => setTimeout(ok, ms));
 const viewer = 'mission-' + Math.random().toString(36).slice(2);
 const ACTIONS = {
-  SUIVRE: 'Le rover suit le chemin',
-  DEMANDER_DRONE: 'Le drone regarde de plus près',
-  OBJECTIF_DEGRADE: 'Pas de passage : point accessible le plus proche',
-  INSPECTER: 'Le rover va voir lui-même',
-  ARRIVE: 'Arrivé près de la victime',
+  SUIVRE: 'The rover follows the path',
+  DEMANDER_DRONE: 'The drone takes a closer look',
+  OBJECTIF_DEGRADE: 'No way through: closest reachable point',
+  INSPECTER: 'The rover goes to look for itself',
+  ARRIVE: 'Arrived next to the victim',
 };
 const ETATS = {
-  en_cours: 'MISSION EN COURS', arrive: 'VICTIME ATTEINTE', arret_operateur: 'ARRÊT OPÉRATEUR',
-  abandon: 'MISSION ABANDONNÉE', erreur: 'ERREUR',
+  en_cours: 'MISSION IN PROGRESS', arrive: 'VICTIM REACHED', arret_operateur: 'STOPPED BY OPERATOR',
+  abandon: 'MISSION ABANDONED', erreur: 'ERROR',
 };
 const COUL = { '0': [233, 237, 242], '1': [58, 64, 73], '2': [255, 122, 47], '?': [125, 134, 145] };
 let version = '', doc = null, docGot = 0, docAge = null, perception = false;
@@ -172,7 +172,7 @@ function dessiner(d) {
     ctx.lineWidth = 4; ctx.strokeStyle = '#fff'; ctx.stroke();
     ctx.beginPath(); ctx.moveTo(vx - 11, vy); ctx.lineTo(vx + 11, vy); ctx.moveTo(vx, vy - 11); ctx.lineTo(vx, vy + 11);
     ctx.lineWidth = 6; ctx.stroke();
-    etiquette('VICTIME', vx, vy - 34, '#ff2d2d');
+    etiquette('VICTIM', vx, vy - 34, '#ff2d2d');
   }
   if (pt(d.rover)) {
     const rx = X(d.rover[0]), ry = Y(d.rover[1]), cap = d.rover[2];
@@ -185,13 +185,13 @@ function dessiner(d) {
     }
     ctx.fillStyle = '#19c2ff'; ctx.fill(); ctx.lineWidth = 4; ctx.strokeStyle = '#03202b'; ctx.stroke();
     ctx.restore();
-    etiquette(num(cap) ? 'ROVER' : 'ROVER (cap inconnu)', rx, ry + 46, '#19c2ff');
+    etiquette(num(cap) ? 'ROVER' : 'ROVER (heading unknown)', rx, ry + 46, '#19c2ff');
   }
   // Scale bar: 1 m, or 50 cm on the arena.
   const L = (x1 - x0) > 3 ? 1 : 0.5;
   ctx.fillStyle = '#000'; ctx.fillRect(16, H - 34, L * s + 8, 16);
   ctx.fillStyle = '#fff'; ctx.fillRect(20, H - 30, L * s, 8);
-  $('echelle').textContent = 'barre blanche : ' + (L === 1 ? '1 m' : '50 cm') + ' · nord en haut';
+  $('echelle').textContent = 'white bar: ' + (L === 1 ? '1 m' : '50 cm') + ' · north up';
 }
 function etiquette(txt, x, y, couleur) {
   const ctx = $('carte').getContext('2d');
@@ -202,19 +202,19 @@ function etiquette(txt, x, y, couleur) {
 
 function afficher(d) {
   const etat = String(d.etat || '');
-  $('etat').textContent = ETATS[etat] || (etat ? etat.toUpperCase() : 'EN ATTENTE');
+  $('etat').textContent = ETATS[etat] || (etat ? etat.toUpperCase() : 'WAITING');
   $('etat').className = etat;
   const dec = d.decision || {}, a = String(dec.action || '');
   $('action').textContent = a ? (ACTIONS[a] ? `${ACTIONS[a]} (${a})` : a) : '–';
-  $('raison').textContent = dec.raison ? 'Pourquoi : ' + dec.raison : '';
+  $('raison').textContent = dec.raison ? 'Why: ' + dec.raison : '';
   const r = d.rover, v = d.victime;
   let pos = '';
-  if (pt(r)) pos += `Rover (${r[0].toFixed(2)} ; ${r[1].toFixed(2)}) m` + (num(r[2]) ? `, cap ${(r[2] * 180 / Math.PI).toFixed(0)}°` : ', cap inconnu');
-  if (pt(r) && pt(v)) pos += ` · victime à ${Math.hypot(v[0] - r[0], v[1] - r[1]).toFixed(2)} m`;
+  if (pt(r)) pos += `Rover (${r[0].toFixed(2)}, ${r[1].toFixed(2)}) m` + (num(r[2]) ? `, heading ${(r[2] * 180 / Math.PI).toFixed(0)}°` : ', heading unknown');
+  if (pt(r) && pt(v)) pos += ` · victim ${Math.hypot(v[0] - r[0], v[1] - r[1]).toFixed(2)} m away`;
   if (Array.isArray(d.chemin) && d.chemin.length > 1) {
     let l = 0; const c = d.chemin.filter(pt);
     for (let i = 1; i < c.length; i++) l += Math.hypot(c[i][0] - c[i - 1][0], c[i][1] - c[i - 1][1]);
-    pos += ` · chemin restant ${l.toFixed(2)} m`;
+    pos += ` · ${l.toFixed(2)} m of path left`;
   }
   $('pos').textContent = pos;
   const j = Array.isArray(d.journal) ? d.journal.map(String) : [];
@@ -229,7 +229,7 @@ async function lireMission() {
   $('percBox').hidden = !perception;
   if (r.status !== 200) {
     docAge = null; doc = null; version = '';
-    $('etat').textContent = 'EN ATTENTE'; $('etat').className = '';
+    $('etat').textContent = 'WAITING'; $('etat').className = '';
     $('action').textContent = '–';
     $('raison').innerHTML = ''; const e = document.createElement('span'); e.className = 'err';
     e.textContent = j.erreur || ('HTTP ' + r.status); $('raison').appendChild(e);
@@ -255,7 +255,7 @@ async function lireImage(url, id) {
 async function boucle() {
   for (;;) {
     const t0 = performance.now();
-    try { await lireMission(); } catch (e) { docAge = null; $('age').textContent = 'serveur injoignable'; $('age').className = 'old'; }
+    try { await lireMission(); } catch (e) { docAge = null; $('age').textContent = 'server unreachable'; $('age').className = 'old'; }
     try { await lireImage(`/frame.jpg?c=${viewer}&p=sd&f=0`, 'cam'); } catch (e) {}
     if (perception) { try { await lireImage('/perception/debug.jpg', 'perc'); } catch (e) {} }
     const reste = 1000 - (performance.now() - t0);
@@ -269,14 +269,14 @@ setInterval(() => {
   const now = performance.now();
   if (docAge !== null) {
     const a = docAge + (now - docGot) / 1000;
-    $('age').textContent = 'mise à jour il y a ' + a.toFixed(1) + ' s';
+    $('age').textContent = 'updated ' + a.toFixed(1) + ' s ago';
     $('age').className = a > 5 ? 'old' : '';
-  } else if ($('age').textContent !== 'serveur injoignable') { $('age').textContent = '–'; $('age').className = ''; }
+  } else if ($('age').textContent !== 'server unreachable') { $('age').textContent = '–'; $('age').className = ''; }
   for (const [id, lab] of [['cam', 'ageCam'], ['perc', 'agePerc']]) {
     const c = cams[id];
-    if (!c.got) { $(lab).textContent = 'pas d\'image'; $(lab).className = 'old'; continue; }
+    if (!c.got) { $(lab).textContent = 'no image'; $(lab).className = 'old'; continue; }
     const a = (c.ageMs + now - c.got) / 1000;
-    $(lab).textContent = 'il y a ' + a.toFixed(1) + ' s';
+    $(lab).textContent = a.toFixed(1) + ' s ago';
     $(lab).className = a > 3 ? 'old' : '';
   }
 }, 250);
