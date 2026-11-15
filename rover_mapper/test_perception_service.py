@@ -383,3 +383,17 @@ def test_post_obstacles_with_the_callers_image():
         srv.server_close()
         cam.close()
         dead.close()
+
+
+def test_snapshot_fetch_failure_is_503_with_its_cost():
+    cam = ps.Camera('http://127.0.0.1:8289/snapshot.jpg', timeout=1.0)  # nobody listens
+    srv = serve(cam, FakePerceiver(), args(cam.source), 8286)
+    try:
+        code, b = get('http://127.0.0.1:8286/obstacles?fresh=1')
+        r = json.loads(b)
+        assert code == 503 and r['error'] == 'snapshot fetch failed' and r['source_error']
+        assert r['fetch_s'] is not None and r['fetch_s'] < 2.0
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        cam.close()

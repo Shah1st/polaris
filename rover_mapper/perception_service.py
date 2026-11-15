@@ -149,7 +149,8 @@ class Camera:
 
     def fetch_s(self, seq: int) -> float | None:
         """How long the GET of snapshot `seq` took; None for other frames."""
-        return self._fetch_s.get(seq)
+        with self._cond:
+            return self._fetch_s.get(seq)
 
     def _publish(self, rgb: np.ndarray) -> tuple[float, int, np.ndarray]:
         with self._cond:
@@ -214,9 +215,10 @@ class Camera:
                 return None
             self.error = None
             frame = self._publish(rgb)
-            self._fetch_s[frame[1]] = frame[0] - t0
-            while len(self._fetch_s) > 16:
-                self._fetch_s.pop(min(self._fetch_s))
+            with self._cond:  # two requests can fetch at the same time
+                self._fetch_s[frame[1]] = frame[0] - t0
+                while len(self._fetch_s) > 16:
+                    self._fetch_s.pop(min(self._fetch_s))
             return frame
         deadline = time.time() + wait
         with self._cond:
@@ -300,8 +302,11 @@ def make_handler(cam: Camera, perceiver: Perceiver, args):
             now = time.time()
             frame = cam.grab(now if fresh else now - args.max_age, args.max_age)
             if frame is None:
-                self._json({'error': 'no frame newer than %.1f s' % args.max_age,
-                            'source_error': cam.error}, 503)
+                snap = cam.mode == 'snapshot'
+                self._json({'error': 'snapshot fetch failed' if snap
+                            else 'no frame newer than %.1f s' % args.max_age,
+                            'source_error': cam.error,
+                            'fetch_s': round(time.time() - now, 3) if snap else None}, 503)
                 return None
             return perceiver.run(frame)
 
