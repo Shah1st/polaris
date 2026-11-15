@@ -9,6 +9,7 @@ from guidance_calib.ground_plane import (
     estimate_homography,
     map_to_top_down,
     metres_per_pixel_for_image,
+    metres_per_pixel_for_view,
     metres_per_pixel_from_height,
     pixels_to_map,
     straight_down_homography,
@@ -115,3 +116,28 @@ def test_warp_of_a_large_image_averages_fine_texture() -> None:
     assert top_down.shape == (100, 100, 3)
     assert valid.all()
     assert top_down[10:90, 10:90].std() < 5.0
+
+
+def test_scale_of_a_full_resized_or_cropped_image() -> None:
+    sensor = (4032, 3024)
+    full = metres_per_pixel_from_height(1.9, 26.0, *sensor)
+
+    assert metres_per_pixel_for_view(1.9, 26.0, sensor, (4032, 3024)) == (full, 'full')
+    # the sensor's shape with fewer pixels: the whole view, resized
+    scale, relation = metres_per_pixel_for_view(1.9, 26.0, sensor, (1280, 960))
+    assert (scale, relation) == (pytest.approx(full * 4032 / 1280), 'resized')
+    # another shape: a crop, which keeps the sensor's scale (a photo cut to 2595 x 2829)
+    assert metres_per_pixel_for_view(1.9, 26.0, sensor, (2595, 2829)) == (full, 'cropped')
+    assert metres_per_pixel_for_view(1.9, 26.0, sensor, (1920, 1080)) == (full, 'cropped')
+    # the scale is the height times a constant of the camera mode
+    assert metres_per_pixel_for_view(3.8, 26.0, sensor, (2595, 2829))[0] == pytest.approx(2 * full)
+
+
+def test_a_portrait_photo_is_compared_with_the_sensor_turned() -> None:
+    sensor = (4032, 3024)
+    full = metres_per_pixel_from_height(1.9, 26.0, *sensor)
+
+    assert metres_per_pixel_for_view(1.9, 26.0, sensor, (3024, 4032)) == (full, 'full')
+    scale, relation = metres_per_pixel_for_view(1.9, 26.0, sensor, (960, 1280))
+    assert (scale, relation) == (pytest.approx(full * 3024 / 960), 'resized')
+    assert metres_per_pixel_for_view(1.9, 26.0, sensor, (2062, 2905)) == (full, 'cropped')

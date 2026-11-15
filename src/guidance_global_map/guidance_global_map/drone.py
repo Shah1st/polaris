@@ -24,6 +24,7 @@ seen, -1 not seen, row 0 = south, tile (z, x, y) covering x*T <= X < (x+1)*T wit
 size. The grid here has 5 cm cells, which is level z = 4 of the fusion's defaults.
 """
 
+import dataclasses
 import logging
 import math
 import threading
@@ -41,6 +42,7 @@ from guidance_global_map.pipeline import (
     frame_problem,
     process_image,
 )
+from guidance_global_map.scale_check import Seen
 from guidance_global_map.segmentation import grid_to_fusion
 
 UNSEEN = -1
@@ -232,6 +234,7 @@ class OverheadDrone:
         self._held = False  # the result is an older frame's, kept over a bad one
         self._last_rover: tuple[float, float] | None = None
         self._bad_since: float | None = None
+        self._image_size: tuple[int, int] | None = None  # (width, height), last good frame
         self.problem: str | None = None  # why the last frame was rejected, for logs
 
     def refresh(self, force: bool = False) -> OverheadResult | None:
@@ -256,6 +259,7 @@ class OverheadDrone:
             problem, self._bad_since = None, None
         if problem is None:
             self.problem = None
+            self._image_size = (image.shape[1], image.shape[0])
             self._good = process_image(image, self.settings)
             self._good_time = now
             self._reference_std = brightness_spread(image)
@@ -332,6 +336,48 @@ class OverheadDrone:
             tile_cells=self._tile_cells,
             t=self._good_time if self._held else self._updated,
         )
+
+    # ---- checking the scale against a move of the rover (scale_check.py) --------------------
+
+    def current_scale(self) -> float | None:
+        """Metres per pixel in use for the camera's images; None before the first image."""
+        if self.refresh() is None or self._image_size is None:
+            return None
+        return self.settings.scale(self._image_size)
+
+    def objects(self, force: bool = False) -> list[Seen] | None:
+        """Everything that stands out from the floor, the rover included: centres and sizes in
+        the camera's metres. None when there is no usable image."""
+        result = self.refresh(force)
+        if result is None or self._held:
+            return None
+        resolution = self.settings.resolution
+        rover = []
+        if self.settings.rover_marker_id is not None and result.rover_position is not None:
+            # found by its marker: it is not among the blobs, which leave the rover out
+            short, long = sorted(self.settings.rover_size)
+            rover = [Seen(*result.rover_position, short, long)]
+        return rover + [
+            Seen(
+                blob.center[0] * resolution,
+                result.bounds.y_max - blob.center[1] * resolution,
+                blob.size[0],
+                blob.size[1],
+            )
+            for blob in result.blobs
+        ]
+
+    def rescale(self, correction: float) -> float:
+        """Multiply the scale by `correction` (see scale_check) and look again. Everything
+        learned at the old scale is dropped. Returns the new metres per pixel."""
+        scale = self.current_scale()
+        if scale is None:
+            raise RuntimeError('no image from the camera: the scale cannot be changed')
+        self.settings = dataclasses.replace(self.settings, metres_per_pixel=scale * correction)
+        self._last_rover = None
+        self._good = None
+        self.refresh(force=True)
+        return self.settings.metres_per_pixel
 
     def zone(self) -> tuple[float, float, float, float] | None:
         """Area (x0, y0, x1, y1) the camera sees, to pass as `zone` to the fusion's planner."""

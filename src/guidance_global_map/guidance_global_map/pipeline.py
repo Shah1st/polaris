@@ -13,9 +13,8 @@ import numpy as np
 from guidance_calib.aruco_compat import DEFAULT_DICTIONARY, detect_markers
 from guidance_calib.ground_plane import (
     MapBounds,
-    aspect_differs,
     map_to_top_down,
-    metres_per_pixel_for_image,
+    metres_per_pixel_for_view,
     metres_per_pixel_from_height,
     pixels_to_map,
     straight_down_homography,
@@ -47,8 +46,9 @@ class OverheadSettings:
 
     # Scale. Either give the ground size of one image pixel directly (measured with a ruler in
     # view: the recommended way for a live camera), or leave it None to derive it from the
-    # camera height and the lens; the image is then taken to show the whole sensor's field of
-    # view across its width, whatever its pixel size.
+    # camera height and the lens of the declared sensor. An image shaped like the sensor is
+    # taken as the whole view, resized; any other shape as a crop at the sensor's own scale
+    # (ground_plane.metres_per_pixel_for_view).
     metres_per_pixel: float | None = None
     # Also used to correct the marker's parallax (marker_height), even with metres_per_pixel.
     camera_height: float = 1.9
@@ -79,10 +79,11 @@ class OverheadSettings:
         """Ground size of one pixel of an image of `image_size` (width, height) pixels.
 
         Without `metres_per_pixel`, the scale follows from the camera height and the lens for
-        the declared sensor size, then from the image width: a 1280-px video frame of the same
-        field of view has pixels 4032 / 1280 times larger than the photo's. A different aspect
-        ratio means the image is cropped (most video modes), so the scale is a guess: measure
-        `metres_per_pixel` instead. None for `image_size` means the sensor size.
+        the declared sensor size. An image with the sensor's shape is the whole view resized:
+        a 1280 x 960 frame of a 4032 x 3024 sensor has pixels 4032 / 1280 times larger. An
+        image with another shape is taken as a crop, at the sensor's own scale: right for a
+        cropped photo, wrong for a video mode (it crops and resizes), hence the warning. None
+        for `image_size` means the sensor size.
         """
         if self.metres_per_pixel is not None:
             return self.metres_per_pixel
@@ -91,21 +92,22 @@ class OverheadSettings:
             return metres_per_pixel_from_height(
                 self.camera_height, self.focal_length_35mm, sensor_width, sensor_height
             )
-        width, height = image_size
-        if aspect_differs(image_size, self.sensor_size):
+        scale, relation = metres_per_pixel_for_view(
+            self.camera_height, self.focal_length_35mm, self.sensor_size, tuple(image_size)
+        )
+        if relation == 'cropped':
+            width, height = image_size
             _warn_once(
-                ('aspect', width, height, sensor_width, sensor_height),
-                'image %dx%d does not have the aspect ratio of the declared sensor %dx%d: the '
-                'scale from the camera height assumes the full sensor width is in view and may '
-                'be wrong; measure metres_per_pixel with a ruler on the floor',
+                ('cropped', width, height, sensor_width, sensor_height),
+                'image %dx%d is not shaped like the declared sensor %dx%d: taken as a crop, at '
+                "the sensor's scale from the camera height. If it is a video frame, that is "
+                'wrong: give metres_per_pixel, measured with a ruler on the floor',
                 width,
                 height,
                 sensor_width,
                 sensor_height,
             )
-        return metres_per_pixel_for_image(
-            self.camera_height, self.focal_length_35mm, sensor_width, sensor_height, width
-        )
+        return scale
 
 
 @dataclass(frozen=True)
