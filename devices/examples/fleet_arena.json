@@ -1,12 +1,13 @@
 {
-  "comment": "The real arena (NOT run yet): the overhead camera plays the drone and locates the rover, the RaspRover drives, its camera service corrects the map, a second camera serves tiles over HTTP. Replace the addresses and the marker id. Declare sensors and locators before the rover that uses them.",
+  "comment": "The real arena (NOT run yet): the overhead camera plays the drone and locates the rover, the RaspRover drives, its camera service (rover_mapper/perception_service.py, port 8095) corrects the map, a second camera serves tiles over HTTP. Replace the addresses, set metres_per_pixel (measured on a picture of this camera; null: the camera is refused, as lancer_overhead --camera without --metres-par-pixel) and marker_height (top of the marker above the floor, m). Declare sensors and locators before the rover that uses them.",
   "map": {"niveau_plan": 4, "rayon_robot": 0.155},
   "devices": [
     {"id": "overhead", "role": "drone", "kind": "overhead-camera", "source": "0",
      "settings": {"tracks": "rasprover", "max_age": 2.0,
-                  "overhead": {"camera_height": 1.9, "rover_marker_id": 7}}},
+                  "overhead": {"metres_per_pixel": null, "camera_height": 1.9,
+                               "marker_height": 0.0, "rover_marker_id": 10}}},
     {"id": "rasprover-eye", "role": "rover", "kind": "rover-perception",
-     "address": "http://127.0.0.1:8000"},
+     "address": "http://127.0.0.1:8095"},
     {"id": "rasprover", "role": "rover", "kind": "rasprover", "address": "http://ROVER-IP:8080",
      "settings": {"locator": "overhead", "perception": "rasprover-eye"}},
     {"id": "wall-cam", "role": "drone", "kind": "tile-http", "address": "http://127.0.0.1:8178"}
