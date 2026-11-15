@@ -1,23 +1,27 @@
 # teleop — drive the real rover and watch its 3D map build
 
-A small web dashboard for the real RaspRover: ZQSD driving and the rover camera on the left, the
-live 3D map of `rover_mapper/` on the right. It runs on the computer that reaches the rover's
-server (`rover/rover_server.py`), for example a cloud machine behind an SSH tunnel, and is
-viewed in a browser, itself often through another tunnel. Plain Python (`requests`, OpenCV,
+A small web dashboard for the real RaspRover: ZQSD driving and the rover camera on the left; on
+the right the drone camera (an iPhone over Wi-Fi) and the three maps of the live fusion (rover,
+drone, fused), or the live 3D map of `rover_mapper/`. It runs on the computer that reaches the
+rover's server (`rover/rover_server.py`), for example a cloud machine behind an SSH tunnel, and
+is viewed in a browser, itself often through another tunnel. Plain Python (`requests`, OpenCV,
 numpy, scipy for the calibration), no ROS.
 
 ```
 rover (rover/rover_server.py)  <--HTTP-->  teleop/server.py  <--browser-->  you
-                                             |  /video_rect (lens removed)
+iPhone camera app (--drone)    ---HTTP-->    |  |  /video_rect (lens removed)
+live fusion (--fusion)         ---HTTP-->    |  v
+                                             | rover_mapper/run.py  -> 3D view on its own port
                                              v
-                                rover_mapper/run.py  -> 3D view on its own port
+                         /drone_feed (one reader of the phone) -> lancer_overhead.py --camera
 ```
 
 ## Run
 
 ```bash
-# 1. the dashboard (rover API reachable at --robot)
-python teleop/server.py --robot http://127.0.0.1:18080 --port 8082
+# 1. the dashboard (rover API reachable at --robot; --drone: the iPhone, see below)
+python teleop/server.py --robot http://127.0.0.1:18080 --port 8082 \
+    [--drone http://<iPhone address>:<port>/video] [--fusion http://127.0.0.1:8094]
 
 # 2. the mapper, fed with the rectified camera (see rover_mapper/README.md for its environment)
 cd rover_mapper && python run.py --source http://127.0.0.1:8082/video_rect \
@@ -28,6 +32,49 @@ cd rover_mapper && python run.py --source http://127.0.0.1:8082/video_rect \
 Open `http://localhost:8082` (the 3D view is taken from port 8081 of the same host, so forward
 both). `http://localhost:8082/sim` shows the forest simulation and the live map fusion of
 `sim/fusion_live.py` when those run (`--sim`, `--fusion`).
+
+## The drone camera (iPhone) and the maps
+
+**Drone camera.** An iPhone stands in for the drone: a camera app on the phone serves its
+picture over Wi-Fi, and `--drone` gives that URL to the dashboard. Two kinds of URL work:
+
+* an MJPEG stream (`multipart/x-mixed-replace`), the usual "video" URL of IP camera apps,
+  e.g. `http://192.168.1.50:8081/video`;
+* a JPEG snapshot URL (one picture per request), asked about 10 times per second.
+
+The team's own app, CamStream (`iphone-camera/`, branch `iphone-camera` on 2026-11-15), serves
+both: `--drone http://<iPhone address>:8080/stream` (MJPEG, preferred) or `.../snapshot.jpg`.
+Its server and this dashboard have not been tried together yet.
+
+RTSP is not read by the dashboard (`lancer_overhead.py --camera` reads it through OpenCV); any
+other answer (a video file, a web page, 401 for a missing password) is refused and its reason
+is written under the picture. A user name and password in the URL (`http://user:pass@...`) are
+used but never shown: the page shows `host:port`, and they are removed from error messages. The
+URL depends on the app: open it in a browser on the same Wi-Fi first.
+
+`server.py` must reach the phone. On a laptop on the phone's Wi-Fi, give the phone's address.
+When `server.py` runs on the cloud machine, forward the phone from a laptop on that Wi-Fi:
+
+```bash
+ssh -N -R 18083:<iPhone address>:<port> <cloud machine>   # on the laptop, next to the phone
+python teleop/server.py ... --drone http://127.0.0.1:18083/video   # on the cloud machine
+```
+
+The phone is read through ONE connection, only while someone looks at it (the page's "Drone et
+cartes" tab, or a reader of `/drone_feed`), and re-served:
+
+* `/frame.jpg?s=overhead`: to the page, one picture per request like the rover camera;
+* `/drone_feed`: as MJPEG for local programs, e.g. the mission with the phone as overhead
+  camera, without a second connection to the phone:
+  `python merging_map/lancer_overhead.py --camera http://127.0.0.1:8082/drone_feed ...`
+
+**Maps.** The three maps are the pictures of the live fusion that `server.py` already relays
+under `/fusion/` (`--fusion`, default `http://127.0.0.1:8094`): `rover.png`, `drone.png`,
+`fused.png` and `status.json`, the same ones as `/sim`. Nothing is computed in the dashboard.
+Today only `sim/fusion_live.py` serves them, from the forest simulation: with the real rover,
+the panels show that simulation (the page writes the source of each map, from `status.json`)
+until a process serves the same four files from the real iPhone and rover perception. The fused
+map of the real mission is on `/mission` (`--suivi`).
 
 ## The mission page (for the jury)
 
@@ -76,7 +123,14 @@ scale of the whole map, so measure it. The rover must stand on the floor, not on
   written over it, in red above 1 s. After a restart of `server.py` the page follows the new
   frame numbers by itself (`X-Boot`).
 * **Figures**: battery, odometry, command delay, frames per second at each hop, browser <-> server
-  round trip.
+  round trip, drone camera.
+* **Right side, "Drone et cartes"**: the drone camera with the age of its picture, the fusion's
+  decision, and the rover, drone and fused maps with their age, about once per second, one
+  request at a time. Driving comes first: the drone camera uses two of the six picture
+  requests the page keeps open (one on a slow link), the maps slow down to one round every 3 s
+  above a 0.7 s round trip, and nothing on that side is fetched while the 3D view or another
+  browser tab is shown. **"Vue 3D du mappeur"**: the mapper's view, loaded the first time the
+  tab is opened. The page remembers the tab.
 
 ## Safety
 
@@ -123,11 +177,20 @@ calibration, and specific to this camera at 640x480.
   the forest simulation (see `rover_mapper/`), not yet on a real drive.
 * `teleop/test_server.py` tests the driving logic against a stand-in rover (`mock_rover.py`,
   never the real one): clamping, refused NaN/infinity, expiry, late commands per browser, the
-  stop latch, malformed requests, the mission document and its relays, MJPEG readers that leave;
+  stop latch, malformed requests, the mission document and its relays, MJPEG readers that leave,
+  the drone camera from a stand-in phone (`MockPhone`: MJPEG and snapshot URL, read once,
+  re-served on `/frame.jpg?s=overhead` and `/drone_feed`, never the rover camera in its place;
+  a 401 or a video file refused with its reason and without the password);
   and it parses the pages' JavaScript with esprima when installed:
   `python -m pytest teleop/test_server.py -q -p no:cacheprovider` (needs requests and OpenCV).
-* No browser has rendered `/mission`, nor the latest `/` and `/sim`: they were checked for
-  syntax and by fetching every endpoint. A real drive worked with an earlier version of `/`.
+* `/` with the drone camera and the maps was rendered in a browser on 2026-11-15 against
+  stand-ins only (rover, phone, and fusion pictures drawn by `sim/fusion_feed.py` on a made-up
+  grid), at 1600x900, 1366x768 and in one column: the pictures and maps showed, and driving
+  commands and a stop reached the stand-in rover while they loaded; `camera_reader` (the
+  mission's) read `/drone_feed`. Not tried with a real iPhone app, the real rover or
+  `fusion_live.py`.
+  No browser has rendered `/mission` nor the latest `/sim`: they were checked for syntax and by
+  fetching every endpoint.
 * Readers of `/video_feed` and `/video_rect` get a line break every 2 s when no frame arrives,
   so a reader that left is noticed (before, each mapper reconnection left a thread behind while
   the robot was offline). MJPEG readers skip it.

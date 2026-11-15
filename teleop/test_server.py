@@ -2,7 +2,7 @@
 
     python -m pytest teleop/test_server.py -q -p no:cacheprovider
 
-Needs requests, OpenCV and numpy (the dashboard's own environment). Ports 8151-8157 on
+Needs requests, OpenCV and numpy (the dashboard's own environment). Ports 8151-8160 on
 127.0.0.1. The JavaScript of the pages is parsed with esprima when it is importable.
 """
 
@@ -337,6 +337,85 @@ def test_mjpeg_reader_that_left_frees_its_thread(rover):
         srv.shutdown()
         srv.server_close()
         dead.close()
+
+
+# --- drone camera (--drone) ----------------------------------------------------------------
+
+
+def test_camera_label_hides_credentials():
+    label = server.camera_label('http://admin:secret@192.168.1.50:8081/video')
+    assert label == '192.168.1.50:8081'
+    assert server.camera_label('http://phone.local/shot.jpg') == 'phone.local'
+    assert server.camera_label(None) is None
+
+
+def first_frame(url: str, timeout: float = 8.0) -> requests.Response:
+    deadline = time.time() + timeout
+    while True:
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200 or time.time() > deadline:
+            return r
+        time.sleep(0.1)
+
+
+@pytest.mark.parametrize('path', ['/video', '/shot.jpg'])  # MJPEG stream, snapshot URL
+def test_drone_camera_is_served(rover, path):
+    phone = mock_rover.MockPhone(8158)
+    drone = server.CameraHub(phone.url + path, snapshots=False)
+    hub = server.CameraHub(rover.url + '/video_feed')
+    handler = server.make_handler(server.Robot(rover.url), hub, 8081, '', {}, overhead=drone)
+    srv = serve(handler, 8159)
+    url = 'http://127.0.0.1:8159'
+    try:
+        r = first_frame(url + '/frame.jpg?s=overhead&c=t&p=ld')
+        assert r.status_code == 200 and r.content[:2] == b'\xff\xd8'
+        assert r.headers['Access-Control-Allow-Origin'] == '*'
+        r2 = first_frame(url + '/frame.jpg?s=overhead&c=t&p=ld')
+        assert int(r2.headers['X-Seq']) > int(r.headers['X-Seq'])  # a new picture each time
+        d = requests.get(url + '/api/state').json()['drone']
+        assert d['configured'] and d['camera'] == '127.0.0.1:8158' and d['error'] is None
+        assert d['mode'] == ('stream' if path == '/video' else 'snapshot URL')
+        # Re-served as MJPEG for local readers (lancer_overhead.py --camera).
+        with requests.get(url + '/drone_feed', stream=True, timeout=8) as feed:
+            assert feed.headers['Content-Type'].startswith('multipart/x-mixed-replace')
+            got = b''
+            for chunk in feed.iter_content(4096):
+                got += chunk
+                if b'\xff\xd9' in got:
+                    break
+        assert b'--frame' in got and b'\xff\xd8' in got
+        if path == '/video':
+            assert phone.readers == 1, 'the phone was read more than once'
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        phone.close()
+
+
+@pytest.mark.parametrize('path, expected', [('/locked', '401'), ('/clip.mp4', 'video/mp4')])
+def test_wrong_drone_url_says_why_without_the_password(path, expected):
+    phone = mock_rover.MockPhone(8160)
+    drone = server.CameraHub(f'http://admin:s3cret@127.0.0.1:8160{path}', snapshots=False)
+    try:
+        deadline = time.time() + 8
+        while drone.error is None and time.time() < deadline:
+            drone.t_viewer = time.time()  # as if the page showed it
+            time.sleep(0.1)
+        assert drone.error is not None and expected in drone.error
+        assert 's3cret' not in drone.error and 'admin' not in drone.error
+        assert drone.seq == 0  # nothing taken for a picture
+    finally:
+        drone.t_viewer = 0.0
+        phone.close()
+
+
+def test_no_drone_camera_never_shows_the_rover_camera(http):
+    url = http['url']
+    first_frame(url + '/frame.jpg?c=t&p=ld&f=0')  # the rover camera works
+    for s in ('overhead', 'nothing'):
+        assert requests.get(url + f'/frame.jpg?s={s}&c=t&p=ld', timeout=5).status_code == 404
+    assert requests.get(url + '/drone_feed', timeout=5).status_code == 404
+    assert requests.get(url + '/api/state').json()['drone'] == {'configured': False}
 
 
 # --- JavaScript syntax ---------------------------------------------------------------------

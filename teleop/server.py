@@ -1,8 +1,14 @@
 """Teleop dashboard for the real rover, served on the VM (loopback only).
 
     python server.py [--robot http://127.0.0.1:18080] [--port 8082]
+                     [--drone http://<phone>:<port>/video]
 
-  GET  /             the page (ZQSD driving on the left, live 3D map on the right)
+  GET  /             the page: ZQSD driving and the rover camera on the left; on the right the
+                     drone camera (--drone) and the rover, drone and fused maps of the live
+                     fusion (/fusion/, below), or the live 3D map of the mapper
+  GET  /drone_feed   the drone camera (--drone: a phone camera app's MJPEG or snapshot URL) as
+                     MJPEG, re-served from ONE connection to the phone, for local readers
+                     (merging_map/lancer_overhead.py --camera)
   GET  /video_feed   the rover camera as MJPEG, re-served from ONE upstream
                      connection (every extra reader of the robot's own
                      /video_feed loads the link). For local readers (the mapper).
@@ -13,6 +19,7 @@
                      these requests open: a slow link then lowers the frame
                      rate instead of piling seconds of video up in the tunnel,
                      which is what a pushed MJPEG stream does.
+                     &s=overhead: the drone camera instead (404 without --drone)
   GET  /api/ping     empty, to time the browser <-> VM round trip
   GET  /sim          the MuJoCo simulation live: rover camera and drone view
                      (/frame.jpg?s=rover|drone, same picture-by-picture delivery),
@@ -21,6 +28,7 @@
                      one picture or the status of the live fusion, relayed from
                      --fusion (127.0.0.1:8094); nothing else is relayed
   POST /fusion/source {"source": "camera"|"d405"}  which rover sensor feeds the fusion
+  POST /fusion/reset   empty the maps of the live fusion (when the fusion offers it)
                      (simulation only: never reaches the robot)
   POST /api/client   what the browser measures (frames shown, delays), logged
   GET  /mission      the live page of the mission for the jury: map, rover, victim, path,
@@ -52,10 +60,12 @@ import argparse
 import json
 import math
 import os
+import re
 import secrets
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 import cv2
 import numpy as np
@@ -83,6 +93,22 @@ FUSION_FILES = {
     'depth_camera.png',
     'status.json',
 }
+SNAPSHOT_PERIOD = 0.1  # s: a camera that answers one picture per request is asked this often
+SNAPSHOT_MAX = 10_000_000  # bytes: a larger "picture" is refused
+
+
+def camera_label(url: str | None) -> str | None:
+    """'host:port' of a camera URL, without the user name and password it may carry."""
+    if not url:
+        return None
+    parts = urlsplit(url)
+    return f'{parts.hostname}:{parts.port}' if parts.port else parts.hostname
+
+
+def error_text(e: Exception) -> str:
+    """An error for the page, without the user name and password of a camera URL (requests
+    writes the whole URL in some of its messages)."""
+    return re.sub(r'//[^/@\s]+@', '//', f'{type(e).__name__}: {e}')[:160]
 
 
 class CameraHub:
@@ -112,6 +138,7 @@ class CameraHub:
         self._small: tuple[int, str, bytes] | None = None  # last transcoded frame
         self.t_viewer = 0.0  # last time a browser asked for a frame
         self.mode = 'stream'
+        self._snap = (0, 0, time.time())  # snapshot URL: pictures, bytes, since when
         for _ in range(
             2 if snapshots else 0
         ):  # a simulator's feed is simply left alone when unwatched
@@ -146,7 +173,7 @@ class CameraHub:
                     self.error = None
                     n, nbytes = n + 1, nbytes + len(jpeg)
             except Exception as e:
-                self.error = f'{type(e).__name__}: {e}'[:160]
+                self.error = error_text(e)
                 time.sleep(1.0)
             if time.time() - t0 >= 2.0:
                 dt = time.time() - t0
@@ -158,11 +185,21 @@ class CameraHub:
             if not self.watched():
                 time.sleep(0.2)
                 continue
-            self.mode = 'stream'
             try:
+                asked = time.time()
                 with requests.get(self.url, stream=True, timeout=8) as r:
                     r.raise_for_status()
                     self.error = None
+                    kind = r.headers.get('Content-Type', '').lower()
+                    if kind.startswith('image/'):
+                        # One picture per request (a phone app's snapshot URL): ask again.
+                        self._one_picture(self._read_picture(r), asked)
+                        continue
+                    if not kind.startswith('multipart'):  # e.g. an mp4 or a web page
+                        raise ValueError(
+                            f'not an MJPEG stream nor a JPEG picture: {kind or "no Content-Type"}'
+                        )
+                    self.mode = 'stream'
                     buf, n, nbytes, t0 = b'', 0, 0, time.time()
                     for chunk in r.iter_content(chunk_size=16384):
                         if not self.watched():
@@ -183,9 +220,33 @@ class CameraHub:
                             self.fps, self.kbps = n / dt, nbytes / 1024 / dt
                             n, nbytes, t0 = 0, 0, time.time()
             except Exception as e:  # tunnel hiccup: retry
-                self.error = f'{type(e).__name__}: {e}'[:160]
+                self.error = error_text(e)
                 self.fps = 0.0
                 time.sleep(1.0)
+
+    @staticmethod
+    def _read_picture(r) -> bytes:
+        body = b''
+        for chunk in r.iter_content(chunk_size=65536):
+            body += chunk
+            if len(body) > SNAPSHOT_MAX:
+                raise ValueError(f'picture larger than {SNAPSHOT_MAX} bytes')
+        return body
+
+    def _one_picture(self, jpeg: bytes, asked: float) -> None:
+        """A snapshot URL answered: keep the picture, count it, wait before asking again."""
+        if jpeg[:2] != b'\xff\xd8':
+            raise ValueError('the camera answered something that is not a JPEG picture')
+        self._publish(jpeg)
+        self.mode = 'snapshot URL'
+        n, nbytes, t0 = self._snap
+        n, nbytes = n + 1, nbytes + len(jpeg)
+        now = time.time()
+        if now - t0 >= 2.0:
+            self.fps, self.kbps = n / (now - t0), nbytes / 1024 / (now - t0)
+            n, nbytes, t0 = 0, 0, now
+        self._snap = (n, nbytes, t0)
+        time.sleep(max(0.0, SNAPSHOT_PERIOD - (now - asked)))
 
     def wait(self, last_seq: int, timeout: float = 5.0):
         with self.cond:
@@ -445,7 +506,10 @@ def make_handler(
     fusion: str = 'http://127.0.0.1:8094',
     suivi: str | None = None,
     perception_debug: str | None = None,
+    overhead: CameraHub | None = None,
 ):
+    """`overhead`: the drone camera (--drone), None without one."""
+
     class H(BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.1'
 
@@ -507,6 +571,23 @@ def make_handler(
                             'error': hub.error,
                             'mode': hub.mode,
                         },
+                        'drone': (
+                            {'configured': False}
+                            if overhead is None
+                            else {
+                                'configured': True,
+                                'camera': camera_label(overhead.url),
+                                'fps': round(overhead.fps, 1),
+                                'kbps': round(overhead.kbps),
+                                'error': overhead.error,
+                                'mode': overhead.mode,
+                                'age_s': (
+                                    round(time.time() - overhead.t_frame, 1)
+                                    if overhead.t_frame
+                                    else None
+                                ),
+                            }
+                        ),
                     }
                 )
             elif path == '/sim':
@@ -565,7 +646,11 @@ def make_handler(
                 q = dict(
                     x.split('=', 1) for x in self.path.partition('?')[2].split('&') if '=' in x
                 )
-                src = sims.get(q.get('s', ''))  # a simulator view, or the robot's camera
+                s = q.get('s', '')
+                # the robot's camera, the drone camera, or a simulator view
+                src = overhead if s == 'overhead' else sims.get(s)
+                if s and src is None:  # never the rover camera in place of another one
+                    return self._json({'error': f'no camera {s!r}'}, 404)
                 got = (
                     src.next_for(q.get('c', 'x'), q.get('p', 'sd'), True)
                     if src is not None
@@ -590,7 +675,10 @@ def make_handler(
                 self.send_header('Access-Control-Expose-Headers', 'X-Seq, X-Age-Ms, X-Boot')
                 self.end_headers()
                 self.wfile.write(jpeg)
-            elif path in ('/video_feed', '/video_rect'):
+            elif path in ('/video_feed', '/video_rect', '/drone_feed'):
+                cam = overhead if path == '/drone_feed' else hub
+                if cam is None:
+                    return self._json({'error': 'no drone camera: start with --drone URL'}, 404)
                 self.send_response(200)
                 self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
                 self.send_header('Cache-Control', 'no-store')
@@ -599,7 +687,11 @@ def make_handler(
                 seq = -1
                 try:
                     while True:
-                        got, jpeg = hub.wait(seq, KEEPALIVE)
+                        if cam is overhead:
+                            # The drone camera has no snapshot reader of its own: this
+                            # reader is what keeps its stream open.
+                            cam.t_viewer = time.time()
+                        got, jpeg = cam.wait(seq, KEEPALIVE)
                         if jpeg is None or got == seq:
                             # No new frame: a byte anyway, or a reader that left while the
                             # robot was offline would hold this thread and its socket for
@@ -612,7 +704,7 @@ def make_handler(
                         if path == '/video_rect':
                             jpeg = hub.rectified(seq, jpeg)
                         else:
-                            hub.t_viewer = time.time()
+                            cam.t_viewer = time.time()
                         self.wfile.write(
                             b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: '
                             + str(len(jpeg)).encode()
@@ -657,11 +749,11 @@ def make_handler(
                         body.get('press'),
                     )
                     return self._json({'ok': True, 'accepted': ok})
-                elif self.path == '/fusion/source':  # simulation only, relayed to the fusion
+                elif self.path in ('/fusion/source', '/fusion/reset'):  # relayed to the fusion
+                    name = self.path[len('/fusion/') :]
+                    data = {'source': str(body.get('source'))} if name == 'source' else {}
                     try:
-                        r = requests.post(
-                            f'{fusion}/source', json={'source': str(body.get('source'))}, timeout=4
-                        )
+                        r = requests.post(f'{fusion}/{name}', json=data, timeout=4)
                     except requests.RequestException as e:
                         return self._json(
                             {'error': f'fusion not running: {type(e).__name__}'}, 503
@@ -713,12 +805,20 @@ if __name__ == '__main__':
         default=None,
         help='URL of one debug picture of the rover perception, shown on /mission (default: none)',
     )
+    ap.add_argument(
+        '--drone',
+        default=None,
+        help='the drone camera: MJPEG stream or JPEG snapshot URL of a phone camera app, e.g. '
+        'http://192.168.1.50:8081/video (default: none)',
+    )
     args = ap.parse_args()
     sims = {
         'rover': CameraHub(args.sim.rstrip('/') + '/video_feed', snapshots=False),
         'drone': CameraHub(args.sim.rstrip('/') + '/drone_feed', snapshots=False),
     }
     hub = CameraHub(args.robot.rstrip('/') + '/video_feed', args.calib, args.rect_fov)
+    # The phone is read only while someone watches it (the page, /drone_feed readers).
+    overhead = CameraHub(args.drone, snapshots=False) if args.drone else None
     srv = ThreadingHTTPServer(
         (args.host, args.port),
         make_handler(
@@ -730,8 +830,11 @@ if __name__ == '__main__':
             args.fusion.rstrip('/'),
             args.suivi,
             args.perception_debug,
+            overhead,
         ),
     )
     srv.daemon_threads = True
     print(f'teleop: http://{args.host}:{args.port}  robot: {args.robot}', flush=True)
+    if overhead is not None:
+        print(f'drone camera: {camera_label(args.drone)}', flush=True)
     srv.serve_forever()

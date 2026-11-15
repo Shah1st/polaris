@@ -45,7 +45,38 @@
   .route.ok { background:#10301c; color:var(--ok); } .route.bad { background:#3a1414; color:var(--bad); }
   .video span.old { color:var(--bad); font-weight:700; }
   iframe { width:100%; height:100%; border:0; background:#111; }
-  @media (max-width: 820px) { .app { grid-template-columns:1fr; grid-template-rows:auto 60vh; } }
+  /* Right side: the drone camera and the maps of the live fusion, or the mapper's 3D view. */
+  .right { display:flex; flex-direction:column; min-width:0; min-height:0; }
+  .tabs { display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:8px 10px;
+          background:var(--panel); border-bottom:1px solid var(--line); }
+  .tabs button { background:#20262d; color:var(--fg); border:1px solid var(--line); border-radius:6px;
+                 padding:5px 12px; font:inherit; cursor:pointer; }
+  .tabs button.on { background:var(--acc); color:#03202b; border-color:var(--acc); font-weight:600; }
+  .tabs a { color:var(--dim); font-size:12px; margin-left:auto; }
+  .tabs a + a { margin-left:10px; }
+  #map { flex:1; height:auto; min-height:0; }
+  .pane { flex:1; min-height:0; overflow:auto; display:grid; grid-template-columns:repeat(3, minmax(0, 1fr));
+          grid-auto-rows:max-content; gap:10px; padding:10px; align-content:start; }
+  .src { padding:5px 10px 0; color:var(--warn); font-size:12px; }
+  .pane figure { margin:0; min-width:0; display:flex; flex-direction:column; background:var(--panel);
+                 border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .pane figcaption { padding:5px 10px; color:var(--dim); display:flex; flex-wrap:wrap; gap:4px 8px;
+                     justify-content:space-between; align-items:center; font-variant-numeric:tabular-nums; }
+  .pane figcaption b { color:var(--fg); font-weight:600; }
+  .pane .feed { grid-column:span 2; }
+  .video.wide { aspect-ratio:auto; height:40vh; min-height:200px; border-radius:0; }
+  .mapfig canvas { display:block; width:100%; height:34vh; min-height:180px; object-fit:contain; background:#e1e0d9; }
+  .legend { padding:4px 10px 7px; color:#aab3bf; font-size:12px; line-height:1.6; }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin:0 3px 0 8px;
+        vertical-align:-1px; border:1px solid #0006; }
+  #fstatus { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 12px;
+             color:#c9d1db; font-size:13px; overflow-wrap:anywhere; }
+  #fstatus b { color:var(--fg); }
+  .maptools { display:flex; gap:10px; align-items:center; font-size:13px; color:#c9d1db; }
+  .maptools button { background:#20262d; color:var(--fg); border:1px solid var(--line); border-radius:6px;
+                     padding:6px 12px; cursor:pointer; }
+  @media (max-width: 1250px) { .pane { grid-template-columns:1fr; } .pane .feed { grid-column:auto; } }
+  @media (max-width: 820px) { .app { grid-template-columns:1fr; grid-template-rows:auto 80vh; } }
 </style>
 </head>
 <body>
@@ -93,17 +124,72 @@
       <tr><td>Commande envoyée</td><td id="cmd">–</td></tr>
       <tr><td>Délai des commandes</td><td id="lat">–</td></tr>
       <tr><td>Caméra (robot / VM / écran)</td><td id="fps">–</td></tr>
+      <tr><td>Caméra du drone (iPhone / écran)</td><td id="dfps">–</td></tr>
       <tr><td>Aller-retour navigateur ↔ VM</td><td id="ping">–</td></tr>
     </table>
     <div class="hint">ZQSD ou flèches (positions physiques des touches, AZERTY ou QWERTY). Le rover
       s'arrête dès que la touche est relâchée, que cette page perd le focus (clic dans la vue 3D)
       ou que la liaison tombe. La liaison a un délai : avance par petites touches.</div>
   </div>
-  <iframe id="map" title="carte 3D"></iframe>
+  <div class="right">
+    <div class="tabs">
+      <button type="button" id="tabMaps" class="on">Drone et cartes</button>
+      <button type="button" id="tab3d">Vue 3D du mappeur</button>
+      <a href="/mission" target="_blank" rel="noopener">page mission</a>
+      <a href="/sim" target="_blank" rel="noopener">simulation</a>
+    </div>
+    <div class="pane" id="paneMaps">
+      <figure class="feed">
+        <figcaption><b>Caméra du drone (iPhone)</b><span id="dsrc">–</span></figcaption>
+        <div class="video wide"><canvas id="droneCam" width="640" height="480"></canvas><span id="dinfo"></span></div>
+      </figure>
+      <div id="fstatus">Cartes : en attente…</div>
+      <div class="maptools"><button id="mapReset" type="button">Réinitialiser les cartes</button><span id="mapResetMsg"></span></div>
+      <figure class="mapfig">
+        <figcaption><b>1. Carte du rover</b><span id="aRover">–</span></figcaption>
+        <canvas id="mRover"></canvas>
+        <div class="src" id="sRover">Source : –</div>
+        <div class="legend">Vue de dessus autour du rover, nord en haut : son dernier scan.
+          <br><span class="sw" style="background:#8fd4b4"></span>libre (ce scan)<span class="sw" style="background:#eb6834"></span>obstacle (ce scan)<span class="sw" style="background:#b0177a"></span>vide (sol attendu absent)<span class="sw" style="background:#dbe6dd"></span><span class="sw" style="background:#e5aa8f"></span>libre / obstacle vus avant
+          <br>Points : <span class="sw" style="background:#6e8c78"></span>sol<span class="sw" style="background:#dc2828"></span>obstacle<span class="sw" style="background:#3caa3c"></span>végétation basse<span class="sw" style="background:#2878c8"></span>plus haut (ignoré) · cercle : portée</div>
+      </figure>
+      <figure class="mapfig">
+        <figcaption><b>2. Carte du drone</b><span id="aDrone">–</span></figcaption>
+        <canvas id="mDrone"></canvas>
+        <div class="src" id="sDrone">Source : –</div>
+        <div class="legend">Ce que le drone voit d'en haut, envoyé à la fusion en tuiles de 5 cm.
+          <br><span class="sw" style="background:#fcfcfb"></span>libre<span class="sw" style="background:#52514e"></span>obstacle<span class="sw" style="background:#e1e0d9"></span>non vu<span class="sw" style="background:#e34948"></span>objectif · flèche noire : rover · ○ départ · cadre bleu : zone de la carte du rover</div>
+      </figure>
+      <figure class="mapfig">
+        <figcaption><b>3. Carte fusionnée</b><span id="aFused">–</span></figcaption>
+        <canvas id="mFused"></canvas>
+        <div class="src" id="sFused">Source : –</div>
+        <div class="legend">merging_map : CarteFusion.recevoir + decider (A*) vers l'objectif. Le rover l'emporte sur le drone.
+          <br><span class="sw" style="background:#fcfcfb"></span>libre (drone)<span class="sw" style="background:#d3eee2"></span>libre (rover)<span class="sw" style="background:#52514e"></span>obstacle (drone)<span class="sw" style="background:#eb6834"></span>obstacle (rover)<span class="sw" style="background:#e1e0d9"></span>inconnu<span class="sw" style="background:#2a78d6"></span>chemin prévu<span class="sw" style="background:#5a5a5a"></span>trace du rover<span class="sw" style="background:#6250d6"></span>tuiles à vérifier / zoom drone</div>
+      </figure>
+    </div>
+    <iframe id="map" title="carte 3D" hidden></iframe>
+  </div>
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
-$('map').src = location.protocol + '//' + location.hostname + ':__MAP_PORT__/';
+const sleep = (ms) => new Promise(ok => setTimeout(ok, ms));
+const esc = (t) => String(t ?? '–').replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+
+// Right side: "maps" (drone camera + the three maps of the live fusion) or "3d" (the mapper's
+// view, loaded only when first shown: the mapper may not be running).
+let pane = 'maps';
+try { if (localStorage.getItem('teleopPane') === '3d') pane = '3d'; } catch (e) {}
+function showPane(p) {
+  pane = p;
+  $('paneMaps').hidden = p !== 'maps'; $('map').hidden = p !== '3d';
+  $('tabMaps').classList.toggle('on', p === 'maps'); $('tab3d').classList.toggle('on', p === '3d');
+  if (p === '3d' && !$('map').src) $('map').src = location.protocol + '//' + location.hostname + ':__MAP_PORT__/';
+  try { localStorage.setItem('teleopPane', p); } catch (e) {}
+}
+$('tabMaps').onclick = () => showPane('maps');
+$('tab3d').onclick = () => showPane('3d');
+showPane(pane);
 
 // Camera: a few /frame.jpg requests kept open in parallel. Each returns one new
 // frame, so a slow link gives fewer frames, never an old picture.
@@ -119,6 +205,8 @@ async function frameLoop(i) {
     try {
       // On a slow link only two requests stay open, so each picture arrives sooner.
       if (i >= 2 && pingMs !== null && pingMs > 700) { await new Promise(ok => setTimeout(ok, 1000)); continue; }
+      // While the drone camera is shown, two of the six connections to frameHost are its own.
+      if (i >= 4 && droneShown()) { await sleep(500); continue; }
       if (direct) { await new Promise(ok => setTimeout(ok, 500)); continue; }
       const r = await fetch(`${frameHost}/frame.jpg?c=${viewer}&p=${$('preset').value}&f=${$('fluid').value}`, { cache: 'no-store' });
       if (r.status !== 200) { await new Promise(ok => setTimeout(ok, 200)); continue; }
@@ -140,6 +228,150 @@ for (let i = 0; i < 6; i++) frameLoop(i);
 // Age of the picture on screen: its age when the server sent it + time since it arrived.
 const shownAge = () => frameAge === null ? null : (frameAge + performance.now() - frameGot) / 1000;
 setInterval(() => { shownFps = shown; shown = 0; }, 1000);
+
+// Drone camera (server.py --drone, the phone): the same picture-by-picture delivery, two
+// requests at most (one on a slow link), from the other loopback name like the rover camera.
+// Nothing is asked while it is not on screen, so the phone's stream is then left closed.
+const dctx = $('droneCam').getContext('2d');
+let droneOn = false, dShownSeq = 0, dShown = 0, dShownFps = 0, dAge = null, dGot = 0, dBoot = '';
+const droneShown = () => droneOn && pane === 'maps' && !document.hidden;
+async function droneLoop(i) {
+  for (;;) {
+    try {
+      if (!droneShown() || (i >= 1 && pingMs !== null && pingMs > 700)) { await sleep(1000); continue; }
+      const r = await fetch(`${frameHost}/frame.jpg?s=overhead&c=${viewer}d&p=${$('preset').value}`, { cache: 'no-store' });
+      if (r.status !== 200) { await sleep(300); continue; }
+      const seq = +r.headers.get('X-Seq'), age = +r.headers.get('X-Age-Ms');
+      const boot = r.headers.get('X-Boot') || '';
+      if (boot !== dBoot) { dBoot = boot; dShownSeq = 0; }
+      const bmp = await createImageBitmap(await r.blob());
+      if (seq > dShownSeq) {
+        dShownSeq = seq; dAge = age; dGot = performance.now(); dShown++;
+        const cv = $('droneCam');
+        if (cv.width !== bmp.width || cv.height !== bmp.height) { cv.width = bmp.width; cv.height = bmp.height; }
+        dctx.drawImage(bmp, 0, 0);
+      }
+      bmp.close();
+    } catch (e) { await sleep(500); }
+  }
+}
+for (let i = 0; i < 2; i++) droneLoop(i);
+setInterval(() => { dShownFps = dShown; dShown = 0; }, 1000);
+let droneInfo = null;  // the drone section of /api/state
+setInterval(() => {
+  const el = $('dinfo');
+  if (!droneOn) {
+    el.textContent = 'pas de caméra drone : lancer server.py avec --drone http://<iPhone>:<port>/…';
+    el.className = 'old'; return;
+  }
+  const a = dAge === null ? null : (dAge + performance.now() - dGot) / 1000;
+  const err = droneInfo && droneInfo.error;
+  el.textContent = (a === null ? 'pas d\'image' : `image d'il y a ${a.toFixed(1)} s · ${dShownFps} img/s`)
+    + (err ? ' · caméra : ' + err : '');
+  el.className = a === null || a > 1 ? 'old' : '';
+}, 250);
+
+// The three maps of the live fusion (relayed by server.py under /fusion/, the same pictures
+// as /sim): ONE short request at a time, about once per second, only while they are shown.
+// The drone map changes little, so it is fetched every few rounds.
+const panels = [
+  { canvas: 'mRover', age: 'aRover', file: 'rover.png', every: 1 },
+  { canvas: 'mFused', age: 'aFused', file: 'fused.png', every: 1 },
+  { canvas: 'mDrone', age: 'aDrone', file: 'drone.png', every: 4 },
+];
+for (const p of panels) { p.got = 0; p.ageMs = 0; }
+async function fetchPanel(p) {
+  const r = await fetch('/fusion/' + p.file, { cache: 'no-store' });
+  if (r.status !== 200) throw new Error('HTTP ' + r.status);
+  const bmp = await createImageBitmap(await r.blob());
+  const cv = $(p.canvas);
+  if (cv.width !== bmp.width || cv.height !== bmp.height) { cv.width = bmp.width; cv.height = bmp.height; }
+  cv.getContext('2d').drawImage(bmp, 0, 0);
+  bmp.close();
+  p.got = performance.now(); p.ageMs = +(r.headers.get('X-Age-Ms') || 0);
+}
+const fmt = (v, d) => (v === null || v === undefined || isNaN(v)) ? '–' : (+v).toFixed(d);
+const ACTIONS = {
+  SUIVRE: 'SUIVRE — chemin trouvé',
+  DEMANDER_DRONE: 'DEMANDER_DRONE — zoom du drone demandé',
+  OBJECTIF_DEGRADE: 'OBJECTIF_DEGRADE — aucun passage : point accessible le plus proche',
+  INSPECTER: 'INSPECTER — le rover va voir lui-même',
+};
+// Where each map comes from, written under it: today only the forest simulation serves /fusion/,
+// so next to the iPhone the maps may be the simulation's.
+function showSources(s) {
+  const dr = (s && s.drone) || {};
+  $('sRover').textContent = 'Source : ' + (s ? s.source_rover || '–' : 'fusion injoignable');
+  $('sDrone').textContent = 'Source : ' + (s ? dr.source || '–' : 'fusion injoignable');
+  $('sFused').textContent = 'Source : ' + (s ? 'merging_map sur les deux cartes ci-contre' : 'fusion injoignable');
+}
+function showStatus(s) {
+  const el = $('fstatus');
+  showSources(s);
+  if (!s) {
+    el.innerHTML = '<b>Cartes</b> : pas de réponse de la fusion (/fusion/status.json). '
+      + 'Elle tourne ? (sim/fusion_live.py, port 8094 par défaut, server.py --fusion)';
+    return;
+  }
+  const d = s.decision || {}, sc = s.scan || {}, dr = s.drone || {}, rv = s.rover || {}, goal = s.objectif || [];
+  let html = '';
+  if (s.etat === 'erreur') html += `<span class="bad">Erreur de la fusion : ${esc(s.erreur)}</span><br>`;
+  html += `<b>Décision n° ${esc(d.numero || 0)} : ${esc(ACTIONS[d.action] || d.action)}</b>`
+    + `<br>chemin ${fmt(d.longueur_chemin_m, 1)} m vers l'objectif (${fmt(goal[0], 1)}, ${fmt(goal[1], 1)})`
+    + ` · recalculée parce que : ${esc(d.pourquoi)} (il y a ${fmt(d.age_s, 0)} s)`;
+  if (d.distance_restante_m !== null && d.distance_restante_m !== undefined)
+    html += ` · reste ${fmt(d.distance_restante_m, 1)} m`;
+  html += `<br>Rover (${fmt(rv.x, 1)}, ${fmt(rv.y, 1)}) m · scan : ${esc(sc.points || 0)} points,`
+    + ` ${esc(sc.free || 0)} cases libres, ${esc(sc.obstacle || 0)} obstacles`
+    + ` · tuiles : drone ${esc(dr.tuiles || 0)}, rover ${esc(s.tuiles_rover || 0)}`;
+  el.innerHTML = html;
+}
+// Empty the maps of the live fusion: a new map starts from where the rover stands now.
+$('mapReset').addEventListener('click', async () => {
+  if (!confirm('Effacer les cartes (rover, fusionnée, trace) et repartir de la position actuelle du rover ?')) return;
+  const msg = $('mapResetMsg');
+  msg.textContent = 'réinitialisation…';
+  try {
+    const r = await fetch('/fusion/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    msg.textContent = r.status === 200 ? 'cartes réinitialisées' : 'refusé (HTTP ' + r.status + ') : cette fusion ne sait pas se réinitialiser';
+    for (const p of panels) p.got = 0;
+  } catch (e) { msg.textContent = 'fusion injoignable'; }
+  setTimeout(() => { msg.textContent = ''; }, 6000);
+});
+async function mapsLoop() {
+  let round = 0;
+  for (;;) {
+    const t0 = performance.now();
+    if (pane !== 'maps' || document.hidden) { await sleep(1000); continue; }
+    try {
+      const r = await fetch('/fusion/status.json', { cache: 'no-store' });
+      showStatus(r.status === 200 ? await r.json() : null);
+      if (r.status === 200) {
+        for (const p of panels) {
+          if (round % p.every !== 0 && p.got) continue;
+          await fetchPanel(p);
+        }
+      }
+    } catch (e) { showStatus(null); await sleep(1500); }
+    round++;
+    // Slower on a slow link: the commands and the rover camera come first.
+    const period = pingMs !== null && pingMs > 700 ? 3000 : 1000;
+    const wait = period - (performance.now() - t0);
+    if (wait > 0) await sleep(wait);
+  }
+}
+mapsLoop();
+// Age of each map: its age when the fusion made it + time since it arrived.
+setInterval(() => {
+  const now = performance.now();
+  for (const p of panels) {
+    const el = $(p.age);
+    if (!p.got) { el.textContent = '–'; continue; }
+    const age = (p.ageMs + (now - p.got)) / 1000;
+    el.textContent = 'il y a ' + age.toFixed(1) + ' s';
+    el.className = age > 10 ? 'bad' : (age > 4 ? 'warn' : '');
+  }
+}, 500);
 // How late this page's own timers run (a busy 3D view slows the whole tab), and a report to the server log.
 let jank = 0, lastTick = performance.now();
 setInterval(() => { const n = performance.now(); jank = Math.max(jank, n - lastTick - 100); lastTick = n; }, 100);
@@ -305,6 +537,12 @@ async function poll() {
     const cf = r.camera ? r.camera.fps : null;
     $('fps').textContent = `${cf ?? '–'} / ${s.video.fps} / ${direct ? 'direct' : shownFps} img/s`;
     vinfoErr = s.video.error;
+    droneInfo = s.drone || null;
+    droneOn = !!(droneInfo && droneInfo.configured);
+    $('dsrc').textContent = droneOn ? droneInfo.camera || '–' : 'non configurée';
+    $('dfps').textContent = !droneOn ? 'non configurée (--drone)'
+      : `${droneInfo.fps} / ${droneShown() ? dShownFps : '–'} img/s` + (droneInfo.error ? ' · erreur' : '');
+    cls($('dfps'), !droneOn ? '' : droneInfo.error ? 'bad' : droneInfo.fps > 0 ? 'ok' : 'warn');
     $('ping').textContent = pingMs == null ? '–' : pingMs.toFixed(0) + ' ms';
     cls($('ping'), pingMs == null ? '' : pingMs > 400 ? 'bad' : pingMs > 200 ? 'warn' : 'ok');
   } catch (e) { $('link').textContent = 'serveur injoignable'; $('link').classList.remove('on'); }

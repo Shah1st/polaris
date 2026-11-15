@@ -2,6 +2,7 @@
 
 Records every POST (time, path, body), answers GET /state, and serves a generated picture on
 /snapshot.jpg (or 503, like a robot without a camera frame). It never moves anything.
+MockPhone stands in for the phone camera app of the drone camera (server.py --drone).
 """
 
 import json
@@ -64,6 +65,82 @@ class MockRover:
                 for e in self.log
                 if e[0] >= after and e[1] == '/cmd' and (e[2].get('v') or e[2].get('omega'))
             ]
+
+    def close(self) -> None:
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+class MockPhone:
+    """A stand-in for a phone camera app: an MJPEG stream on /video (about 10 pictures per
+    second) and one JPEG per request on /shot.jpg. Wrong URLs for the tests: /locked (401,
+    password needed) and /clip.mp4 (an endless video file)."""
+
+    def __init__(self, port: int, text: str = 'camera du drone (iPhone simule)'):
+        self.readers = 0  # stream readers so far
+        phone = self
+
+        class H(BaseHTTPRequestHandler):
+            protocol_version = 'HTTP/1.1'
+
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                if self.path.startswith('/locked'):  # an app with a password, not given
+                    self.send_response(401)
+                    self.send_header('WWW-Authenticate', 'Basic realm="camera"')
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
+                    return
+                if self.path.startswith('/clip.mp4'):  # a video file, not pictures
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'video/mp4')
+                    self.send_header('Connection', 'close')
+                    self.end_headers()
+                    try:
+                        while True:
+                            self.wfile.write(b'\x00' * 65536)
+                            time.sleep(0.01)
+                    except OSError:  # the reader left
+                        pass
+                    self.close_connection = True
+                    return
+                if self.path.startswith('/shot.jpg'):
+                    body = picture(text, 480, 360)
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'image/jpeg')
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if not self.path.startswith('/video'):
+                    self.send_error(404)
+                    return
+                phone.readers += 1
+                self.send_response(200)
+                self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=ipcam')
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                try:
+                    while True:
+                        jpeg = picture(text, 480, 360)
+                        self.wfile.write(
+                            b'--ipcam\r\nContent-Type: image/jpeg\r\nContent-Length: '
+                            + str(len(jpeg)).encode()
+                            + b'\r\n\r\n'
+                            + jpeg
+                            + b'\r\n'
+                        )
+                        time.sleep(0.1)
+                except OSError:  # the reader left
+                    pass
+                self.close_connection = True
+
+        self.srv = ThreadingHTTPServer(('127.0.0.1', port), H)
+        self.srv.daemon_threads = True
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.url = f'http://127.0.0.1:{port}'
 
     def close(self) -> None:
         self.srv.shutdown()
