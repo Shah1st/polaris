@@ -24,6 +24,7 @@ known-first-party = [
     "guidance_global_map",
     "guidance_interfaces",
     "guidance_rover_pose",
+    "guidance_rover_vo",
     "guidance_supervisor",
 ]
 

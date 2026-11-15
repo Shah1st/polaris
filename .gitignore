@@ -15,3 +15,7 @@ __pycache__/
 .vscode/
 .idea/
 .DS_Store
+
+# Simulation data fetched by sim/fetch_scene.py (not stored in git)
+sim/scenes/
+sim/assets/
