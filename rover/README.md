@@ -127,6 +127,24 @@ corners, a square and a circle, 3 cm on an S curve; the end point is reached wit
 Not yet: obstacles (a planner or the depth camera will have to replace or stop the path), and
 the odometry drifts over long runs (no absolute position until the overhead camera).
 
+## Local guard (depth camera) and paths that take over
+
+Off by default (`local_guard` 0), and only tried on the bench so far: see
+[docs/local-navigation.md](../docs/local-navigation.md) before turning it on.
+
+With `local_guard` 1, while a path is followed the controller looks at the obstacle grid of
+the depth camera (`local_map.py`, fed from the capture server's `GET /grid`) along the path
+ahead: it slows down when an obstacle is within `guard_slow_dist` and ends the path with
+status `blocked` and `"obstacle": [x, y]` when one is within `guard_stop_dist`. Without a
+recent grid it drives at `guard_blind_speed` at most. `GET /local_grid` gives the grid;
+`/state` shows `local` and `ctrl.local`. Manual driving and `/move` are not guarded.
+
+A `POST /path` with an `"id"` that replaces a running path takes over at the current speed,
+from the closest point of the new path, instead of stopping and pivoting. The id comes back in
+`ctrl.current` and in the history.
+
+Deploy `local_map.py` with `rover_core.py` and `rover_server.py`.
+
 ## Tilt safety (anti-tipping)
 
 Roll (sideways, + = left side up) and pitch (nose, + = nose up) come from a complementary

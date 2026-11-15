@@ -30,6 +30,8 @@ import traceback
 from collections import deque
 from collections.abc import Callable
 
+from local_map import LocalMap
+
 BAUDRATE = 115200
 
 
@@ -137,6 +139,19 @@ class Config:
     # stops on it and pivots instead of cutting it (0 = never, cut every corner).
     path_corner_deg: float = 45.0
 
+    # Local guard: while following a path, look at the depth camera's grid (local_map.py)
+    # along the path ahead; slow down when an obstacle comes near, stop when it is on the way.
+    local_guard: int = 0  # 1 on, 0 off (off until checked on the real rover)
+    guard_half_width: float = 0.12  # m, half the corridor the rover's body sweeps on the path
+    guard_stop_dist: float = 0.10  # m of free path kept before the obstacle: closer, stop
+    guard_slow_dist: float = 0.60  # m of path looked at; the rover slows down inside it
+    guard_decel: float = 0.3  # m/s^2, braking the slow-down is computed for
+    guard_blind_speed: float = 0.08  # m/s at most while the grid is older than guard_max_age
+    guard_max_age: float = 0.5  # s
+    local_hold: float = 10.0  # s an unseen cell of the grid is remembered
+    d405_x: float = 0.0  # m, the depth camera's lens ahead of the rover's centre of rotation
+    d405_y: float = 0.0  # m, and to its left
+
     # Camera pan-tilt (UGV firmware T:133: pan -180 left .. 180 right, tilt -30 down .. 90 up)
     gimbal_speed: float = 90.0  # deg/s while a ZQSD key is held
     gimbal_hz: float = 20.0  # at most this many pan-tilt commands per second
@@ -218,6 +233,7 @@ class Config:
             ('tilt_min', 'tilt_max'),
             ('roll_warn_deg', 'roll_stop_deg'),
             ('pitch_warn_deg', 'pitch_stop_deg'),
+            ('guard_stop_dist', 'guard_slow_dist'),
         ):
             if merged[lo_name] > merged[hi_name]:
                 raise ValueError(f'{lo_name} must not be above {hi_name}')
@@ -291,6 +307,16 @@ CONFIG_LIMITS: dict[str, tuple[float, float]] = {
     'path_pivot_exit_deg': (0.5, 180.0),
     'path_goal_tol': (0.001, 1.0),
     'path_corner_deg': (0.0, 180.0),
+    'local_guard': (0, 1),
+    'guard_half_width': (0.02, 1.0),
+    'guard_stop_dist': (0.0, 2.0),
+    'guard_slow_dist': (0.05, 5.0),
+    'guard_decel': (0.01, 10.0),
+    'guard_blind_speed': (0.0, 1.0),
+    'guard_max_age': (0.05, 10.0),
+    'local_hold': (0.5, 600.0),
+    'd405_x': (-1.0, 1.0),
+    'd405_y': (-1.0, 1.0),
     'gimbal_speed': (0.0, 720.0),
     'gimbal_hz': (0.5, 50.0),
     'gimbal_timeout': (0.05, 10.0),
@@ -313,6 +339,8 @@ MAX_PATH_POINTS = 1000
 MAX_PATH_LENGTH_M = 50.0  # total length of the waypoints
 MAX_MANUAL_V = 1.0  # m/s, manual speed (the rover tops out well below)
 MAX_MANUAL_W = 6.0  # rad/s, manual rotation
+MAX_STEP_ID = 40  # characters of a path's "id"
+REPLACE_MAX_OFFSET = 0.15  # m: a path this close to the rover replaces the running one in motion
 
 
 class NotReadyError(RuntimeError):
@@ -643,6 +671,9 @@ class Step:
     points: list[list[float]] | None = None
     frame: str = 'local'
     speed: float | None = None  # path cruise speed, m/s (default: path_speed)
+    # Path only, optional: the sender's name for this path, given back in /state (ctrl.current
+    # and history). A path with an id that replaces a running path takes over without a stop.
+    id: str | None = None
 
     def __post_init__(self) -> None:
         # Every step goes through here, whatever built it: no NaN or absurd goal can run.
@@ -656,7 +687,11 @@ class Step:
             raise ValueError(f'unknown step kind {self.kind!r}')
 
     @classmethod
-    def path(cls, points, frame: str = 'local', speed: float | None = None) -> Step:
+    def path(
+        cls, points, frame: str = 'local', speed: float | None = None, id: str | None = None
+    ) -> Step:
+        if id is not None and not (isinstance(id, str) and 0 < len(id) <= MAX_STEP_ID):
+            raise ValueError(f'a path id is a string of 1 to {MAX_STEP_ID} characters')
         if not isinstance(points, list | tuple):
             raise ValueError('path points must be a list of [x, y]')
         if len(points) > MAX_PATH_POINTS:
@@ -679,7 +714,7 @@ class Step:
         length = sum(math.dist(a, b) for a, b in zip(chain, chain[1:], strict=False))
         if length > MAX_PATH_LENGTH_M:
             raise ValueError(f'a path is at most {MAX_PATH_LENGTH_M} m long, not {length:.1f} m')
-        return cls('path', round(length, 3), pts, frame, speed)
+        return cls('path', round(length, 3), pts, frame, speed, id)
 
     @classmethod
     def parse(cls, d: dict) -> Step:
@@ -690,7 +725,7 @@ class Step:
         if 'turn' in d:
             return cls('turn', d['turn'])
         if 'path' in d:
-            return cls.path(d['path'], d.get('frame', 'local'), d.get('speed'))
+            return cls.path(d['path'], d.get('frame', 'local'), d.get('speed'), d.get('id'))
         raise ValueError(
             f'unknown step {d!r}, expected {{"move": m}}, {{"turn": deg}} '
             'or {"path": [[x, y], ...]}'
@@ -699,6 +734,23 @@ class Step:
 
 def wrap_angle(a: float) -> float:
     return (a + math.pi) % (2 * math.pi) - math.pi
+
+
+def trim_path(pos, pts):
+    """(`pts` from the point of the polyline closest to `pos` onwards, that distance)."""
+    best, best_d, best_k = tuple(pts[0]), math.dist(pos, pts[0]), 0
+    for k, (a, b) in enumerate(zip(pts, pts[1:], strict=False)):
+        ux, uy = b[0] - a[0], b[1] - a[1]
+        n2 = ux * ux + uy * uy
+        u = 0.0 if n2 == 0 else clamp(((pos[0] - a[0]) * ux + (pos[1] - a[1]) * uy) / n2, 0, 1)
+        q = (a[0] + u * ux, a[1] + u * uy)
+        d = math.dist(pos, q)
+        if d < best_d:
+            best, best_d, best_k = q, d, k + 1
+    rest = [tuple(p) for p in pts[best_k:]]
+    if not rest or math.dist(best, rest[0]) > 1e-6:
+        rest.insert(0, best)
+    return rest, best_d
 
 
 class PathFollower:
@@ -1009,6 +1061,9 @@ class Controller:
         self.guard_reason: str | None = None
         self._guard: dict = {'blocked_dir': 0.0}
         self._last_v = (0.0, -1e9)  # last non-zero speed command and when
+        self.local = None  # local_map.LocalMap, set by Rover: the depth camera's grid
+        self.local_state: dict = {'state': 'off'}  # the local guard, for /state
+        self._carry: float | None = None  # speed kept when a path replaces a path in motion
 
     # -- commands -------------------------------------------------------------------
 
@@ -1033,8 +1088,16 @@ class Controller:
         """
         if steps and not self.odom.bias_ready:
             raise NotReadyError('gyro not calibrated yet: keep the rover still until "Gyro OK"')
+        # A path with an id over a running path: the mission refreshing its own trajectory.
+        # The new one takes over at the current speed (see _start), without a stop.
+        new_id = steps[0].id if steps and steps[0].kind == 'path' else None
+        self._carry = self.v_cmd if new_id is not None and self.mode == 'path' else None
         if self.mode in ('move', 'turn', 'path', 'settle'):
+            before = len(self.history), (self.history[0] if self.history else None)
             self._abort('replaced by a new command', t)
+            after = len(self.history), (self.history[0] if self.history else None)
+            if new_id is not None and (after[0] != before[0] or after[1] is not before[1]):
+                self.history[0]['replaced_by'] = new_id
         self.queue = deque(steps)
         self.current = None
         self.mode = 'idle'
@@ -1052,6 +1115,7 @@ class Controller:
         self._manual = (0.0, 0.0)
         self.mode = 'idle'
         self.v_cmd = self.w_cmd = 0.0
+        self._carry = None
         if self.guard_state == 'backoff':  # the tilt guard's back-off is a motion too
             self.guard_state, self._guard['hold_until'] = 'hold', t + 1.0
 
@@ -1151,7 +1215,16 @@ class Controller:
                 ]
             else:
                 pts = [(px, py) for px, py in s.points]
-            follower = PathFollower(pts, (x0, y0), self.cfg.path_corner_deg)
+            carry, self._carry = self._carry, None
+            near, offset = trim_path((x0, y0), pts)
+            if carry is not None and offset <= REPLACE_MAX_OFFSET:
+                # Taking over in motion: follow from the closest point of the new path, at
+                # the speed the rover has, pivoting only if the path is far off the nose.
+                follower = PathFollower(near, near[0], self.cfg.path_corner_deg)
+                follower.pivoting = False
+                task['v_ramp'] = abs(carry)
+            else:
+                follower = PathFollower(pts, (x0, y0), self.cfg.path_corner_deg)
             speed = s.speed or self.cfg.path_speed
             task['follower'] = follower
             task['speed'] = speed
@@ -1278,6 +1351,39 @@ class Controller:
             return self._done('done', t)
         if self._failed(t) or self._not_rotating(t, v, w):
             return 0.0, 0.0
+        return self._local_guard(v, w, t)
+
+    def _local_guard(self, v: float, w: float, t: float) -> tuple[float, float]:
+        """Look at the depth camera's grid along the path ahead: slow down when an obstacle
+        comes near, end the step as 'blocked' (with the obstacle's place) when it is on it."""
+        c, lm = self.cfg, self.local
+        if not c.local_guard or lm is None:
+            self.local_state = {'state': 'off'}
+            return v, w
+        f: PathFollower = self._task['follower']
+        n = int(c.guard_slow_dist / f.RESOLUTION) + 2
+        hit = lm.first_obstacle(f.pts[f.i : f.i + n : 2], c.guard_half_width, c.guard_slow_dist)
+        age = lm.age(t)
+        state, cap = 'ok', None
+        if age is None or age > c.guard_max_age:  # no recent picture: only what is remembered
+            state, cap = 'blind', c.guard_blind_speed
+        if hit is not None:
+            dist, (ox, oy) = hit
+            if dist <= c.guard_stop_dist:
+                self.local_state = {'state': 'blocked', 'obstacle_dist': round(dist, 3)}
+                self._done('blocked', t)
+                self._pending_result['obstacle'] = [round(ox, 3), round(oy, 3)]
+                return 0.0, 0.0
+            slow = max(c.v_min, math.sqrt(2.0 * c.guard_decel * (dist - c.guard_stop_dist)))
+            cap = slow if cap is None else min(cap, slow)
+            state = 'slow' if state == 'ok' else state
+        self.local_state = {
+            'state': state,
+            'obstacle_dist': None if hit is None else round(hit[0], 3),
+        }
+        if cap is not None and abs(v) > cap:
+            w *= cap / abs(v)  # same curvature, slower
+            v = math.copysign(cap, v)
         return v, w
 
     def _failed(self, t: float) -> bool:
@@ -1334,6 +1440,10 @@ class Controller:
             entry['error'] = round(math.dist((o.x, o.y), f.end), 4)  # end point miss, m
             entry['max_cte'] = round(f.max_cte, 4)  # largest distance from the path, m
             entry['distance'] = round(o.odometer - k['odo0'], 4)
+            if s.id is not None:
+                entry['id'] = s.id
+            if 'obstacle' in res:  # 'blocked': where the local guard saw the obstacle (odom)
+                entry['obstacle'] = res['obstacle']
         else:
             entry['error'] = round(turned - s.value, 2)
         self.history.appendleft(entry)
@@ -1377,6 +1487,7 @@ class Controller:
                 'blocked_dir': self._guard['blocked_dir'],
             },
             'path': follower.snapshot() if follower else None,
+            'local': self.local_state if self.mode == 'path' else {'state': 'off'},
             'history': list(self.history),
             'fault': self.fault,
         }
@@ -1649,6 +1760,9 @@ class Rover:
         self.lock = threading.RLock()
         self.odom = Odometry(cfg)
         self.ctrl = Controller(cfg, self.odom)
+        self.local = LocalMap(hold=cfg.local_hold)
+        self.ctrl.local = self.local
+        self._poses: deque[tuple[float, float, float, float]] = deque(maxlen=60)  # 3 s
         self.link = Esp32Link(opener, self._on_message, wait_boot)
         self.chassis: dict = {}  # last T:1001
         self.imu: dict = {}  # last T:1002
@@ -1692,6 +1806,34 @@ class Rover:
         finally:
             self.link.send({'T': 13, 'X': 0, 'Z': 0})
 
+    def feed_grid(self, grid: dict, t: float | None = None) -> None:
+        """One grid of the depth camera (d405_server GET /grid) into the local map, placed
+        with the pose the rover had when the picture was taken (`age_s` ago)."""
+        t = time.monotonic() if t is None else t
+        taken = t - float(grid.get('age_s') or 0.0)
+        with self.lock:
+            poses = list(self._poses)
+            c = self.cfg
+            dx, dy, hold = c.d405_x, c.d405_y, c.local_hold
+            now = (t, self.odom.x, self.odom.y, self.odom.heading)
+        _, x, y, h = min(poses or [now], key=lambda p: abs(p[0] - taken))
+        cam = (x + dx * math.cos(h) - dy * math.sin(h), y + dx * math.sin(h) + dy * math.cos(h), h)
+        self.local.hold = hold
+        self.local.integrate(grid['cells'], grid['x0'], grid['y0'], grid['res'], cam, t)
+
+    def local_grid(self) -> dict:
+        """The local map around the rover, in the odometry frame (GET /local_grid)."""
+        t = time.monotonic()
+        with self.lock:
+            pose = (self.odom.x, self.odom.y, self.odom.heading)
+        age = self.local.age(t)
+        return {
+            **self.local.snapshot(pose[:2]),
+            'pose': [round(pose[0], 4), round(pose[1], 4), round(pose[2], 4)],
+            'age_s': None if age is None else round(age, 3),
+            'frames': self.local.frames,
+        }
+
     def reset_odometry(self) -> None:
         # Stop first: a step in the 'odom' frame aims at absolute points of the old origin and
         # would drive the whole way back to them from the new one.
@@ -1699,6 +1841,8 @@ class Rover:
             with self.lock:
                 self.ctrl.stop(time.monotonic(), 'odometry reset')
                 self.odom.reset()
+                self.local.clear()  # its cells were placed in the old frame
+                self._poses.clear()
         finally:
             self.link.send({'T': 13, 'X': 0, 'Z': 0})
 
@@ -1760,6 +1904,7 @@ class Rover:
                         self.ctrl.fail('ESP32 link lost', t)
                     v, w = self.ctrl.step(t)
                     self.odom.commanded = abs(v) > 1e-4 or abs(w) > 1e-4
+                    self._poses.append((t, self.odom.x, self.odom.y, self.odom.heading))
                     if connected and not self._was_connected:
                         self.gimbal.resend()  # the ESP32 (re)booted: put the camera back
                     gimbal_cmd = self.gimbal.step(t, period) if connected else None

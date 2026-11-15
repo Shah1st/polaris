@@ -596,3 +596,50 @@ def test_defaults_for_a_small_arena() -> None:
     assert (a.rayon, a.pas, a.drone_ombres) == (0.15, 0.15, True)
     f, _ = fusion()
     assert f.carte.rayon_robot == 0.15 and f.carte.rayon_effectif == 0.15
+
+
+# ---- the rover's own obstacle grid (--source-locale rover) and continuous driving ------------
+
+
+def test_the_rover_grid_is_fused_at_its_place_also_while_the_rover_moves() -> None:
+    """The rover is at odometry (1, 2) heading 90 degrees when the maps start: that is
+    (20, 20) heading 0 on the maps. Its grid has one obstacle 0.5 m ahead of that pose."""
+    cells = [[-1] * 50 for _ in range(50)]
+    for i in range(50):
+        for j in range(50):
+            cells[i][j] = 0
+    # odometry point (1, 2.5): 0.5 m ahead of the start pose; grid origin (-0.25, 0.75)
+    cells[int((2.52 - 0.75) / 0.05)][int((1.02 + 0.25) / 0.05)] = 1
+    local = {'res': 0.05, 'x0': -0.25, 'y0': 0.75, 'cells': cells, 'age_s': 0.3, 'error': None}
+
+    def requete(methode, chemin, corps=None):
+        if chemin == '/local_grid':
+            return local
+        return {'odom': {'x': 1.0, 'y': 2.0, 'heading_deg': 90.0, 'v': 0.2}}  # driving
+
+    f = fr.FusionReelle(
+        fr.options(['--carte-locale', '--source-locale', 'rover']),
+        requete=requete,
+        percevoir=lambda *a: pytest.fail('the perception service is not asked'),
+        percevoir_frais=lambda *a: pytest.fail('the perception service is not asked'),
+    )
+    f.tour()
+    g = f.carte.grille(20.4, 19.9, 20.6, 20.1)
+    assert (g.val == 1).sum() == 1
+    i, j = np.argwhere(g.val == 1)[0]
+    x, y = g.xy(i, j)
+    assert abs(x - 20.52) < 0.04 and abs(y - 19.98) < 0.04  # ahead of the rover, on its axis
+    assert f.status['local']['source'] == 'rover' and f.status['local']['age_s'] == 0.3
+    assert 'depth camera' in f.status['source_rover'] and f.status['info'] == "rover's grid fused"
+
+    local['age_s'] = 60.0  # the feed died: nothing more is fused
+    vues = f.vues
+    f.tour()
+    assert f.vues == vues and 'no recent grid' in f.status['info']
+
+
+def test_continuous_driving_and_the_rover_grid_are_off_by_default() -> None:
+    a = fr.options([])
+    assert (a.continu, a.source_locale, a.carte_locale) == (False, 'service', False)
+    f, _ = fusion()
+    assert f.status.get('conduite') in (None, 'pas')

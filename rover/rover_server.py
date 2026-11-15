@@ -23,9 +23,14 @@ HTTP API (JSON bodies). The first two match the shared simulation in sim/run_wor
   POST /turn           {"angle": deg}             (+ left, - right)
   POST /sequence       {"steps": [{"move": 0.5}, {"turn": 90}, {"path": [[x, y], ...]}, ...]}
   POST /path           follow a trajectory: {"points": [[x, y], ...], "frame": "local"|"odom",
-                       "speed": m/s}. local (default) = metres relative to the rover now, x
-                       forward, y left; odom = the odometry frame (x, y in /state). Sent again,
-                       it replaces the running one. Progress and errors in /state ctrl.path.
+                       "speed": m/s, "id": "name"}. local (default) = metres relative to the
+                       rover now, x forward, y left; odom = the odometry frame (x, y in /state).
+                       Sent again, it replaces the running one. Progress and errors in /state
+                       ctrl.path. With an "id" (given back in ctrl.current and history), a path
+                       that replaces a running path takes over without stopping the rover.
+                       With the setting local_guard = 1 the rover slows down near obstacles
+                       seen by the depth camera and ends the path with status "blocked" and
+                       "obstacle": [x, y] (odometry frame) when one is on its way.
   POST /stop           stop now and drop the queued steps
   POST /reset_odom     pose back to (0, 0, 0 deg)
   POST /calibrate_gyro measure the gyro bias again (rover must stand still 2 s)
@@ -45,6 +50,11 @@ HTTP API (JSON bodies). The first two match the shared simulation in sim/run_wor
                        (rover_mapper/d405_server.py, --d405 URL): colour picture, depth as a
                        colour map (red near, blue at max metres), health and centre distance.
                        503 {"error"} when that server does not answer.
+  GET  /local_grid     the obstacles seen by the depth camera around the rover, kept for a few
+                       seconds: {"res", "x0", "y0", "cells": rows of -1 not seen / 0 free /
+                       1 obstacle, "pose": [x, y, heading rad], "age_s", "frames"}; cell [i][j]
+                       starts at (x0 + j*res, y0 + i*res), odometry frame. Asking for it (or
+                       local_guard = 1) starts the feed from the capture server's GET /grid.
 
 Numbers must be finite and within the limits of rover_core (MAX_*, CONFIG_LIMITS): otherwise
 HTTP 400 and nothing moves or changes. Steps before "Gyro OK": HTTP 409.
@@ -62,6 +72,7 @@ import signal
 import socket
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from d405_view import DEFAULT_URL as D405_URL
@@ -273,6 +284,79 @@ def read_cpu_temp() -> float | None:
         return None
 
 
+class GridFeed:
+    """Feeds the rover's local map with the grids of the D405 capture server (GET /grid).
+
+    It only polls while someone needs the map: the setting local_guard is on, or a client
+    asked for /local_grid in the last IDLE seconds (the RDK has no fan)."""
+
+    IDLE = 5.0  # s
+
+    def __init__(self, app, url: str | None, hz: float = 10.0, opener=None) -> None:
+        self.app = app
+        self.url = url.rstrip('/') if url else None
+        self.period = 1.0 / hz
+        self._open = opener or urllib.request.urlopen
+        self.error: str | None = None if self.url else 'no D405 capture server (--d405 off)'
+        self.grids = 0
+        self._seq = None
+        self._wanted = float('-inf')
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name='grid-feed', daemon=True)
+
+    def start(self) -> None:
+        if self.url:
+            self._thread.start()
+
+    def close(self) -> None:
+        self._stop.set()
+
+    def want(self) -> None:
+        self._wanted = time.monotonic()
+
+    def active(self) -> bool:
+        rover = self.app.rover
+        guard = rover is not None and bool(rover.cfg.local_guard)
+        return self.url is not None and (guard or time.monotonic() - self._wanted < self.IDLE)
+
+    def poll(self) -> bool:
+        """One request; True when a new grid went into the map."""
+        try:
+            with self._open(self.url + '/grid', timeout=1.0) as r:
+                grid = json.loads(r.read())
+            if 'cells' not in grid:
+                raise ValueError(grid.get('error') or 'no cells in the answer')
+        except Exception as e:  # noqa: BLE001 - no grid: the guard sees its age and slows down
+            self.error = f'{type(e).__name__}: {e}'[:200]
+            return False
+        self.error = None
+        if grid.get('seq') is not None and grid.get('seq') == self._seq:
+            return False  # the same picture as last time
+        self._seq = grid.get('seq')
+        self.app.rover.feed_grid(grid)
+        self.grids += 1
+        return True
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            if not self.active():
+                self._stop.wait(0.5)
+                continue
+            self.poll()
+            self._stop.wait(1.0 if self.error else self.period)
+
+    def snapshot(self) -> dict:
+        local = self.app.rover.local
+        age = local.age(time.monotonic())
+        return {
+            'feed': self.active(),
+            'error': self.error,
+            'grids': self.grids,
+            'age_s': None if age is None else round(age, 3),
+            **local.counts(),
+        }
+
+
 class App:
     """The rover being driven, real or simulated, and the switch between the two."""
 
@@ -288,6 +372,8 @@ class App:
         self._switch_lock = threading.Lock()
         d405 = getattr(args, 'd405', D405_URL)
         self.d405 = D405View(None if d405 in (None, '', 'off') else d405)
+        self.grid_feed = GridFeed(self, self.d405.url)
+        self.grid_feed.start()
         self.save_lock = threading.Lock()  # POST /config: one settings file write at a time
 
     def set_mode(self, mode: str) -> None:
@@ -328,6 +414,7 @@ class App:
             )
 
     def close(self) -> None:
+        self.grid_feed.close()
         if self.rover is not None:
             self.rover.close()
         if self.camera is not None:
@@ -338,6 +425,7 @@ class App:
         s['cpu_temp'] = read_cpu_temp()
         s['camera'] = {'error': self.camera.error, 'fps': round(self.camera.measured_fps, 1)}
         s['mode'] = self.mode
+        s['local'] = self.grid_feed.snapshot()
         s['real_available'] = self.serial_port is not None
         s['sim'] = self.sim_board is not None
         s['boot_id'] = BOOT_ID
@@ -428,6 +516,9 @@ def make_handler(app: App):
                 self._snapshot()
             elif path.startswith('/d405/'):
                 self._d405(path)
+            elif path == '/local_grid':
+                app.grid_feed.want()
+                self._json({**app.rover.local_grid(), 'error': app.grid_feed.error})
             else:
                 self._json({'error': 'not found'}, 404)
 
@@ -448,7 +539,14 @@ def make_handler(app: App):
                     rover.run([Step.parse(s) for s in body['steps']])
                 elif path == '/path':
                     rover.run(
-                        [Step.path(body['points'], body.get('frame', 'local'), body.get('speed'))]
+                        [
+                            Step.path(
+                                body['points'],
+                                body.get('frame', 'local'),
+                                body.get('speed'),
+                                body.get('id'),
+                            )
+                        ]
                     )
                 elif path == '/stop':
                     rover.stop()

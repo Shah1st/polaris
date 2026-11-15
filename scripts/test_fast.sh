@@ -21,5 +21,8 @@ python3 -m pytest -q -p no:cacheprovider \
     src/guidance_supervisor/test/test_fusion_bridge.py \
     merging_map/test_lancer_overhead.py \
     merging_map/test_fusion_carte.py \
+    merging_map/test_suivi_continu.py \
+    rover/tests/test_local_map.py \
+    rover/tests/test_path_guard.py \
     sim \
     "$@"

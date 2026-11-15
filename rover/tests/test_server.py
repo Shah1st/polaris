@@ -285,3 +285,51 @@ def test_sigterm_stops_the_rover_like_ctrl_c(tmp_path) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+
+
+def test_local_grid_is_fed_from_the_capture_server_and_paths_carry_their_id(bench: Bench) -> None:
+    """GET /local_grid: the depth camera's grids (here a stand-in for the capture server's
+    GET /grid) placed around the rover; POST /path "id" comes back in /state."""
+    import io
+
+    cells = [[0] * 25 for _ in range(50)]
+    cells[25][12] = 1  # 0.6 m ahead of the camera
+    grid = {'res': 0.05, 'x0': 0.0, 'y0': -1.25, 'cells': cells, 'seq': 7, 'age_s': 0.05}
+    asked = []
+
+    def opener(url, timeout=None):
+        asked.append(url)
+        return io.BytesIO(json.dumps(grid).encode())
+
+    feed = rover_server.GridFeed(bench.app, 'http://capture', opener=opener)
+    bench.app.grid_feed = feed
+    assert not feed.active()  # nobody needs the map: the capture server is left alone
+
+    code, _, data = bench.request('GET', '/local_grid')
+    assert code == 200 and strict_json(data)['age_s'] is None  # asked: the feed wakes up
+    assert feed.active() and feed.poll() and asked == ['http://capture/grid']
+    assert not feed.poll()  # the same picture (seq) is not integrated twice
+
+    code, _, data = bench.request('GET', '/local_grid')
+    local = strict_json(data)
+    x, y, _ = local['pose']
+    i = int((y + 0.02 - local['y0']) / local['res'])
+    j = int((x + 0.62 - local['x0']) / local['res'])
+    assert local['cells'][i][j] == 1 and local['age_s'] < 2.0 and local['frames'] == 1
+    assert len(local['cells']) == 50 and local['error'] is None
+    state = strict_json(bench.request('GET', '/state')[2])
+    assert state['local']['obstacle'] == 1 and state['local']['grids'] == 1
+    assert state['ctrl']['local'] == {'state': 'off'}
+
+    code, _, _ = bench.request('POST', '/path', '{"points": [[0.3, 0]], "id": "t-1"}')
+    assert code == 200
+    assert wait_for(
+        lambda: (strict_json(bench.request('GET', '/state')[2])['ctrl']['current'] or {}).get('id')
+        == 't-1',
+        2.0,
+    )
+    code, _, data = bench.request('POST', '/path', '{"points": [[0.3, 0]], "id": ""}')
+    assert code == 400 and b'path id' in data
+    bench.request('POST', '/reset_odom')
+    assert strict_json(bench.request('GET', '/local_grid')[2])['frames'] == 1
+    assert bench.rover.local.counts() == {'obstacle': 0, 'free': 0}  # placed in the old frame

@@ -16,6 +16,16 @@ les demande (et une seule fois par image).
     GET /color.jpg   même image couleur, pour un coup d'oeil dans un navigateur
     GET /depth.png   même profondeur brute 16 bits
     GET /health      {"ok", "device", "age_s", "frames", "errors", "last_error", "mode", ...}
+    GET /grid        the obstacles in front of the rover, from the depth alone (no model), for
+                     the rover's local guard (rover/local_map.py): {"res": 0.05, "x0", "y0",
+                     "cells": rows of -1 not seen / 0 floor seen free / 1 obstacle, "floor",
+                     "plane": "calibrated"|"fitted", "seq", "age_s", "stats"}. Cell [i][j] starts
+                     at (x0 + j*res, y0 + i*res), x forward, y left, origin on the floor under
+                     the lens. Computed (--grid-hz, 10 a second) only while someone asks.
+    POST /calibrate_floor   rover on a flat, empty floor: fit the floor plane in the current
+                     picture and keep it (--floor-file) for every later grid; the mount is
+                     rigid. 422 when no floor is found or its height is not --cam-height
+                     (within --cam-height-tol); ?force=1 keeps it anyway. GET /calibration.
 
 503 {"error": ...} sans caméra ou quand la dernière image a plus de --max-age s. Les âges sont
 mesurés avec time.monotonic() : l'horloge du robot a environ 8 h d'écart, l'heure murale ne
@@ -34,6 +44,8 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
+import os
 import signal
 import threading
 import time
@@ -287,7 +299,148 @@ class Encoder:
         return buf.getvalue()
 
 
-def make_handler(cap: Capture, enc: Encoder, max_age: float):
+class GridMaker:
+    """The latest depth picture as a grid of 5 cm cells in front of the rover (GET /grid).
+
+    Same geometry as the perception service's D405 mode (rovermap/perception.py, numpy and
+    OpenCV only): points 4 to 40 cm above the floor are obstacles, the floor seen is free,
+    what an obstacle hides is not seen. The floor plane comes from POST /calibrate_floor when
+    there is one (the mount is rigid, and a wall filling the picture defeats a fit); otherwise
+    it is fitted in each picture.
+
+    A thread of its own, at most `hz` grids a second, and only while GET /grid is asked.
+    """
+
+    IDLE = 3.0  # s without a request before the thread rests
+
+    def __init__(self, cap: Capture, hz: float = 10.0, cam_height: float = 0.15,
+                 height_tol: float = 0.03, floor_file: str | None = None, stride: int = 2,
+                 max_range: float = 1.25, band: tuple[float, float] = (0.04, 0.40),
+                 depth_min: float = 0.07, depth_max: float = 3.0, log=print):
+        self.cap, self.hz = cap, hz
+        self.cam_height, self.height_tol = cam_height, height_tol
+        self.floor_file = floor_file
+        self.stride, self.max_range, self.band = max(1, int(stride)), max_range, band
+        self.depth_min, self.depth_max = depth_min, depth_max
+        self.log = log
+        self.plane = None                  # (normal, distance in m), camera frame
+        self.calibration: dict | None = None
+        self.error: str | None = None
+        self.grids = 0
+        self.cpu_s = 0.0
+        self._cond = threading.Condition()
+        self._latest: dict | None = None   # {'seq', 't' (capture, monotonic), 'grid'}
+        self._wanted = float('-inf')
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True, name='d405-grid')
+        self._load()
+
+    # -- floor plane ---------------------------------------------------------------------
+    def _load(self) -> None:
+        if not self.floor_file or not os.path.exists(self.floor_file):
+            return
+        try:
+            with open(self.floor_file, encoding='utf-8') as f:
+                c = json.load(f)
+            self.plane = (np.asarray(c['normal'], np.float64), float(c['d']))
+            self.calibration = c
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            self.log(f'[d405] floor file {self.floor_file} unreadable ({e}): fitting each picture',
+                     flush=True)
+
+    def depth_m(self, snap: dict, stride: int = 1):
+        """(depth in metres with out-of-range pixels at 0, K for that stride)."""
+        info = snap['info']
+        d = snap['depth'][::stride, ::stride].astype(np.float32) * np.float32(info['depth_scale_m'])
+        d[(d < self.depth_min) | (d > self.depth_max)] = 0
+        K = np.asarray(info['depth']['K'], np.float64).copy()
+        K[:2] /= stride
+        return d, K
+
+    def calibrate(self, snap: dict, force: bool = False) -> dict:
+        """Fit the floor in `snap` and keep it. Raises ValueError when there is no floor or
+        its height is not the mount's."""
+        from rovermap.perception import fit_floor, valid_depth
+
+        depth, K = self.depth_m(snap)
+        plane = fit_floor(depth, K, valid_depth(depth))
+        if plane is None:
+            raise ValueError('no floor found in the picture (is the rover on a flat, empty floor?)')
+        n, d = np.asarray(plane[0], np.float64), float(plane[1])
+        tilt = math.degrees(math.acos(max(-1.0, min(1.0, -float(n[1])))))
+        if abs(d - self.cam_height) > self.height_tol and not force:
+            raise ValueError(f'the floor is {d:.3f} m under the lens, expected {self.cam_height:.3f} m '
+                             f'(+-{self.height_tol:g}): wrong surface, or pass --cam-height / ?force=1')
+        c = {'normal': [float(v) for v in n], 'd': d, 'height_m': round(d, 4),
+             'tilt_deg': round(tilt, 2), 'seq': int(snap['seq'])}
+        if self.floor_file:
+            tmp = self.floor_file + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(c, f, indent=2)
+            os.replace(tmp, self.floor_file)
+        self.plane, self.calibration = (n, d), c
+        return c
+
+    # -- grid ----------------------------------------------------------------------------
+    def compute(self, snap: dict) -> dict:
+        from rovermap.perception import perceive
+
+        depth, K = self.depth_m(snap, self.stride)
+        per = perceive(depth, K, cam_height=self.cam_height, plane=self.plane, scale=1.0,
+                       max_range=self.max_range, band=self.band)
+        out = per.to_json()
+        out['plane'] = 'calibrated' if self.plane is not None else ('fitted' if per.floor else None)
+        out['seq'] = int(snap['seq'])
+        return out
+
+    def start(self) -> None:
+        if self.hz > 0:
+            self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+
+    def _run(self) -> None:
+        last_t = float('-inf')
+        while not self._stop.is_set():
+            if time.monotonic() - self._wanted > self.IDLE:
+                self._stop.wait(0.05)
+                continue
+            snap = self.cap.wait_newer(last_t, 0.5)
+            if snap is None:
+                continue
+            last_t = snap['t']
+            c0 = time.thread_time()
+            try:
+                grid = self.compute(snap)
+                self.error = None
+            except Exception as e:  # a bad picture or a missing module: /grid says why
+                self.error, grid = f'{type(e).__name__}: {e}', None
+            with self._cond:
+                if grid is not None:
+                    self._latest = {'seq': snap['seq'], 't': snap['t'], 'grid': grid}
+                    self.grids += 1
+                    self.cpu_s += time.thread_time() - c0
+                self._cond.notify_all()
+            self._stop.wait(max(0.0, 1.0 / self.hz - (time.monotonic() - last_t)))
+
+    def get(self, max_age: float, wait: float = 1.0) -> dict | None:
+        """The newest grid, its picture at most `max_age` s old (waits `wait` s for the thread
+        to wake up); None when there is none."""
+        self._wanted = time.monotonic()
+        deadline = time.monotonic() + wait
+        with self._cond:
+            while self._latest is None or time.monotonic() - self._latest['t'] > max_age:
+                left = deadline - time.monotonic()
+                if left <= 0 or self.hz <= 0:
+                    return None
+                self._cond.wait(left)
+            return self._latest
+
+
+def make_handler(cap: Capture, enc: Encoder, max_age: float, grid: GridMaker | None = None):
     stats_lock = threading.Lock()
     cpu: dict[str, list[float]] = {}  # route -> [requêtes, secondes CPU]
 
@@ -345,6 +498,12 @@ def make_handler(cap: Capture, enc: Encoder, max_age: float):
                 # Temps CPU moyen par requête (ms) et par image capturée : à surveiller sur le robot.
                 'cpu_ms_per_request': cpu_ms,
                 'cpu_ms_per_capture': round(1000 * cap.cpu_capture_s / cap.seq, 3) if cap.seq else None,
+                # GET /grid: its CPU time per grid is the number to watch next to the rover server.
+                'grid': None if grid is None else {
+                    'hz': grid.hz, 'grids': grid.grids, 'error': grid.error,
+                    'floor': 'calibrated' if grid.plane is not None else 'fitted in each picture',
+                    'cpu_ms_per_grid': round(1000 * grid.cpu_s / grid.grids, 2) if grid.grids else None,
+                },
             }
 
         def do_GET(self) -> None:  # noqa: N802
@@ -372,6 +531,10 @@ def make_handler(cap: Capture, enc: Encoder, max_age: float):
                         self._json(info)
                 elif url.path == '/health':
                     self._json(self._health())
+                elif url.path == '/grid':
+                    self._grid()
+                elif url.path == '/calibration':
+                    self._json({'calibration': None if grid is None else grid.calibration})
                 else:
                     self._json({'error': 'introuvable'}, 404)
                     return
@@ -388,12 +551,53 @@ def make_handler(cap: Capture, enc: Encoder, max_age: float):
                 s[0] += 1
                 s[1] += time.thread_time() - c0
 
+        def _grid(self) -> None:
+            if grid is None or grid.hz <= 0:
+                self._json({'error': 'no grid (--grid-hz 0)'}, 503)
+                return
+            if not cap.device:
+                self._json({'error': 'pas de D405', 'last_error': cap.last_error}, 503)
+                return
+            latest = grid.get(max_age)
+            if latest is None:
+                self._json({'error': grid.error or 'no grid from a recent picture'}, 503)
+                return
+            age = time.monotonic() - latest['t']
+            body = json.dumps({**latest['grid'], 'age_s': round(age, 3)}).encode()
+            self._send(200, body, 'application/json', age)
+
+        def do_POST(self) -> None:  # noqa: N802
+            url = urlparse(self.path)
+            n = int(self.headers.get('Content-Length') or 0)
+            if n:
+                self.rfile.read(n)
+            try:
+                if url.path != '/calibrate_floor' or grid is None:
+                    self._json({'error': 'introuvable'}, 404)
+                    return
+                snap = self._snap(True)
+                if snap is None:
+                    return
+                force = parse_qs(url.query).get('force', ['0'])[0] not in ('0', '', 'false')
+                try:
+                    self._json({'ok': True, 'calibration': grid.calibrate(snap, force)})
+                except ValueError as e:
+                    self._json({'error': str(e)}, 422)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except Exception as e:
+                try:
+                    self._json({'error': f'{type(e).__name__}: {e}'}, 500)
+                except Exception:
+                    pass
+
     return Handler
 
 
-def make_server(host: str, port: int, cap: Capture, max_age: float = 2.0, jpeg_quality: int = 85):
+def make_server(host: str, port: int, cap: Capture, max_age: float = 2.0, jpeg_quality: int = 85,
+                grid: GridMaker | None = None):
     ThreadingHTTPServer.allow_reuse_address = True
-    srv = ThreadingHTTPServer((host, port), make_handler(cap, Encoder(jpeg_quality), max_age))
+    srv = ThreadingHTTPServer((host, port), make_handler(cap, Encoder(jpeg_quality), max_age, grid))
     srv.daemon_threads = True
     return srv
 
@@ -408,16 +612,29 @@ def main(argv=None) -> None:
     ap.add_argument('--max-age', type=float, default=2.0, help='503 si la dernière image a plus de N s')
     ap.add_argument('--jpeg-quality', type=int, default=85)
     ap.add_argument('--serial', default=None, help='numéro de série si plusieurs RealSense sont branchées')
+    ap.add_argument('--grid-hz', type=float, default=10.0,
+                    help='GET /grid: obstacle grids a second at most, computed only while asked (0: off)')
+    ap.add_argument('--cam-height', type=float, default=0.15, help='lens centre above the floor, m')
+    ap.add_argument('--cam-height-tol', type=float, default=0.03,
+                    help='POST /calibrate_floor refuses a floor farther than this from --cam-height')
+    ap.add_argument('--floor-file',
+                    default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'd405_floor.json'),
+                    help='where POST /calibrate_floor keeps the floor plane')
+    ap.add_argument('--grid-stride', type=int, default=2, help='GET /grid: one depth pixel in N')
+    ap.add_argument('--grid-range', type=float, default=1.25, help='GET /grid: metres ahead')
     args = ap.parse_args(argv)
 
     cap = Capture(args.width, args.height, args.fps, serial=args.serial)
-    srv = make_server(args.host, args.port, cap, args.max_age, args.jpeg_quality)
+    grid = GridMaker(cap, args.grid_hz, args.cam_height, args.cam_height_tol, args.floor_file,
+                     args.grid_stride, args.grid_range)
+    srv = make_server(args.host, args.port, cap, args.max_age, args.jpeg_quality, grid)
 
     def on_term(*_):  # SIGTERM (systemd, kill) : même sortie propre que Ctrl+C
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, on_term)
     cap.start()
+    grid.start()
     print(f'D405 : http://{args.host}:{args.port}/health  (modes essayés : '
           + ', '.join(f'{w}x{h}@{f}' for w, h, f in cap.modes) + ')', flush=True)
     try:
@@ -426,6 +643,7 @@ def main(argv=None) -> None:
         pass
     finally:
         srv.server_close()
+        grid.stop()
         cap.stop()
 
 

@@ -88,6 +88,16 @@ Sans caméra branchée, `d405_server.py` la recherche après 2 s, puis 4, 8 et 1
 
 Sans le robot : `scripts/fake_d405.py` sert le même contrat HTTP à partir du simulateur de l'appartement (`--sim http://127.0.0.1:8090`, 2 images/s au plus ; jamais celui de la forêt sur 5050). Tests : `test_d405_source.py` (faux serveur D405 avec extrinsèques non triviales, sans appareil ni modèle).
 
+## Grille d'obstacles sur le robot (`d405_server.py`, `GET /grid`)
+
+Pour la navigation locale ([docs/local-navigation.md](../docs/local-navigation.md)) : le serveur
+de capture calcule lui-même, sur le robot, la grille de cases de 5 cm devant la caméra à partir
+de la profondeur mesurée (`rovermap/perception.py`, numpy et OpenCV seulement, sans modèle), 10
+fois par seconde au plus et seulement quand on la demande. `POST /calibrate_floor`, rover posé
+sur un sol plat et dégagé, mesure le plan du sol une fois et le garde (`d405_floor.json`).
+Hauteur de l'objectif : `--cam-height 0.15`. Le dossier `rovermap/` doit être à côté du serveur
+sur le robot. Essayé seulement avec une fausse caméra (`test_d405_grid.py`).
+
 ## Perception du rover pour la mission (une seule image, sans suivi)
 
 `perception_service.py` donne à `merging_map` (interface 4 : `merging_map/perception_rover.py`, `percevoir_http(url)`) les cases de 5 cm devant le rover : 1 obstacle, 0 sol vu, -1 inconnu. À chaque demande : dernière image de la caméra → DA3 sur cette seule image → plan du sol (RANSAC, moitié basse) → échelle donnée par `--cam-height` → repère rover (x devant = axe optique projeté sur le sol, y à gauche, z depuis le sol) → obstacle = points entre `--band-low` 4 cm et `--band-high` 40 cm au-dessus du sol ; ce qui est derrière un obstacle ou hors du champ reste -1 (un 0 effacerait les obstacles du drone). Pas de suivi : celui du mappeur n'a pas tenu sur le vrai rover.
