@@ -41,7 +41,7 @@ class CalibNode(Node):
         self.declare_parameter('mode', 'camera_height')
         # Measured ground size of one image pixel; 0 derives it from the height and the lens.
         self.declare_parameter('metres_per_pixel', 0.0)
-        self.declare_parameter('camera_height', 1.9)
+        self.declare_parameter('camera_height', 1.8)
         self.declare_parameter('focal_length_35mm', 26.0)
         self.declare_parameter('sensor_width_px', 4032)
         self.declare_parameter('sensor_height_px', 3024)

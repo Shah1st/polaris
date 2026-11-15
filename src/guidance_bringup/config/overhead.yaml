@@ -15,7 +15,7 @@ calib_node:
     # (python -m guidance_global_map.measure_scale). Recommended for any live stream.
     # 0.0: derived from camera_height and the lens below.
     metres_per_pixel: 0.0
-    camera_height: 1.9
+    camera_height: 1.8
     # 35 mm equivalent focal length and the full, uncropped image size it refers to. These are
     # for an iPhone 12 Pro Max main camera photo. An image shaped like the sensor (4:3, either
     # way up) with other pixel counts is the whole view resized, and the scale follows its
@@ -75,7 +75,7 @@ global_map_node:
     # Height of the rover's marker above the floor, and the camera's (same as calib_node), to
     # correct the marker's parallax. 0.0: no correction. Write floats (0.0, not 0).
     marker_height: 0.0
-    camera_height: 1.9
+    camera_height: 1.8
     update_period: 1.0
 
 rover_pose_node:
@@ -91,4 +91,4 @@ rover_pose_node:
     yaw_std: 0.05
     # As in global_map_node. The correction assumes a camera looking straight down.
     marker_height: 0.0
-    camera_height: 1.9
+    camera_height: 1.8

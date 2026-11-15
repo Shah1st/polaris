@@ -608,7 +608,19 @@ def analyser(argv=None):
         help='aucun POST au rover : affiche zone, rover, echelle, premiere decision et '
         "premiers pas, puis s'arrete",
     )
-    p.add_argument('--hauteur', type=float, default=1.9, help='hauteur de la camera (m)')
+    p.add_argument(
+        '--hauteur',
+        type=float,
+        default=1.8,
+        help="hauteur de la camera (m) ; approximative suffit : l'echelle est ensuite "
+        'mesuree sur le marqueur (--taille-marqueur) ou sur le deplacement du rover',
+    )
+    p.add_argument(
+        '--taille-marqueur',
+        type=float,
+        help='cote du carre noir du marqueur ArUco du rover (m), avec --marqueur : '
+        "l'echelle de la camera est mesuree sur lui, sans regle ni hauteur exacte",
+    )
     p.add_argument(
         '--metres-par-pixel',
         type=float,
@@ -666,6 +678,8 @@ def reglages_camera(args):
         reglages['sensor_size'] = tuple(args.capteur)
     if args.marqueur is not None:
         reglages['rover_marker_id'] = args.marqueur
+    if getattr(args, 'taille_marqueur', None) is not None:
+        reglages['marker_size'] = args.taille_marqueur
     if getattr(args, 'hauteur_marqueur', None) is not None:
         reglages['marker_height'] = args.hauteur_marqueur
     return reglages

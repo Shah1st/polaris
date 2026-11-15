@@ -42,7 +42,7 @@ class RoverPoseNode(Node):
         # Height of the marker above the floor; its position is corrected for the parallax
         # (pose.correct_parallax), assuming a camera looking straight down from camera_height.
         self.declare_parameter('marker_height', 0.0)
-        self.declare_parameter('camera_height', 1.9)
+        self.declare_parameter('camera_height', 1.8)
 
         self._bridge = CvBridge()
         self._homography: np.ndarray | None = None

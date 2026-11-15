@@ -51,7 +51,7 @@ class OverheadSettings:
     # (ground_plane.metres_per_pixel_for_view).
     metres_per_pixel: float | None = None
     # Also used to correct the marker's parallax (marker_height), even with metres_per_pixel.
-    camera_height: float = 1.9
+    camera_height: float = 1.8
     focal_length_35mm: float = 26.0
     sensor_size: tuple[int, int] = (4032, 3024)
     # Obstacle detection.
@@ -72,6 +72,9 @@ class OverheadSettings:
     # Height of the rover's marker above the floor. Its position is moved towards the point
     # under the camera by (camera_height - marker_height) / camera_height. 0: no correction.
     marker_height: float = 0.0
+    # Side of the marker's black square, in metres. When given, and no scale was measured,
+    # the scale is read off the marker in the image: no ruler and no exact camera height.
+    marker_size: float | None = None
     rover_size: tuple[float, float] = (0.20, 0.23)
     rover_size_tolerance: float = 0.2
 
@@ -108,6 +111,26 @@ class OverheadSettings:
                 sensor_height,
             )
         return scale
+
+
+def marker_scale(image: np.ndarray, settings: OverheadSettings) -> float | None:
+    """Ground size of one pixel, read off the rover's marker: its known side over its side in
+    pixels. None when there is no `marker_size`, no marker id, or the marker is not seen.
+
+    The marker sits `marker_height` above the floor, closer to the camera, so it looks larger
+    than it would on the floor: the result is brought down to the floor with the camera
+    height, which only needs to be roughly right for that (10 cm of error on 1.8 m changes
+    the scale by 0.3 % for a marker 10 cm up).
+    """
+    if settings.marker_size is None or settings.rover_marker_id is None:
+        return None
+    corners = detect_markers(image, settings.dictionary).get(settings.rover_marker_id)
+    if corners is None:
+        return None
+    sides = np.linalg.norm(corners - np.roll(corners, -1, axis=0), axis=1)
+    at_marker = settings.marker_size / float(sides.mean())
+    height = settings.camera_height
+    return at_marker * height / max(height - settings.marker_height, 1e-6)
 
 
 @dataclass(frozen=True)
@@ -167,7 +190,11 @@ def process_image(image: np.ndarray, settings: OverheadSettings | None = None) -
     settings = settings or OverheadSettings()
     resolution = settings.resolution
     rows, cols = image.shape[:2]
-    metres_per_pixel = settings.scale((cols, rows))
+    metres_per_pixel = None
+    if settings.metres_per_pixel is None:
+        metres_per_pixel = marker_scale(image, settings)
+    if metres_per_pixel is None:
+        metres_per_pixel = settings.scale((cols, rows))
     homography = straight_down_homography(metres_per_pixel, rows)
     bounds = MapBounds(0.0, 0.0, cols * metres_per_pixel, rows * metres_per_pixel)
     top_down, valid = warp_to_top_down(image, homography, bounds, resolution)

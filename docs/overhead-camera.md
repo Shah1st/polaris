@@ -182,6 +182,18 @@ Plain Python: the fields of `OverheadSettings` (`pipeline.py`). ROS: the same na
     the scale follows the width;
   - any other shape: a crop, at the sensor's own scale. Right for a cropped photo; wrong for
     a video mode, which crops and resizes, hence one warning in the log.
+- **Where the camera height goes.** `--hauteur` of `lancer_overhead.py`, `--camera-height` of
+  `segment_image`, and `camera_height` in `overhead.yaml` (three nodes). The default is 1.8 m
+  everywhere. It only has to be roughly right when one of the two checks below measures the
+  scale. The dashboard's real-rover maps (`sim/fusion_reelle.py`) take no height: they do not
+  use the overhead camera's map yet.
+- **Scale read off the rover's marker** (`marker_size`, `--taille-marqueur`,
+  `segment_image --marker-size`): with the side of the marker's black square given, the scale
+  is its real side over its side in pixels, with no ruler and no exact height
+  (`pipeline.marker_scale`). `OverheadDrone` keeps the value while the marker is hidden. A
+  measured `metres_per_pixel` wins over it. The marker's side is read to about a pixel, so a
+  marker 30 pixels wide gives the scale to about 3 %: make the marker as large as the rover's
+  top allows.
 - **Another phone or lens** changes `focal_length_35mm` (and `sensor_size` if the photo size
   differs). The 0.5x ultrawide lens of an iPhone 14 is 13 mm equivalent, still 4032 x 3024:
   `--focale-35mm 13` for `lancer_overhead.py`, `--focal-length-35mm 13` for `segment_image`,

@@ -4,7 +4,7 @@ For tuning on photos taken straight down from a known height, without floor mark
 image must show the camera's whole field of view (resizing is fine, cropping is not), or give
 the measured --metres-per-pixel (guidance_global_map.measure_scale), which always works.
 
-    python -m guidance_global_map.segment_image photo.jpg out/scene --camera-height 1.9
+    python -m guidance_global_map.segment_image photo.jpg out/scene --camera-height 1.8
 
 It writes, with the given prefix:
 
@@ -82,6 +82,11 @@ def main(args: list[str] | None = None) -> None:
     parser.add_argument('--rover-tolerance', type=float, default=defaults.rover_size_tolerance)
     parser.add_argument('--rover-marker', type=int, help='ArUco id on the rover (DICT_4X4_50)')
     parser.add_argument(
+        '--marker-size',
+        type=float,
+        help="side of the rover marker's black square (m): the scale is read off it",
+    )
+    parser.add_argument(
         '--marker-height', type=float, default=defaults.marker_height, help='marker above floor'
     )
     options = parser.parse_args(args)
@@ -103,6 +108,7 @@ def main(args: list[str] | None = None) -> None:
         margin=options.margin,
         rover_marker_id=options.rover_marker,
         marker_height=options.marker_height,
+        marker_size=options.marker_size,
         rover_size=tuple(options.rover_size),
         rover_size_tolerance=options.rover_tolerance,
     )

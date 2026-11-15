@@ -306,7 +306,7 @@ def test_command_line_wires_camera_scale_and_options(faux_modules, monkeypatch) 
     assert faux_modules['options_lecteur'] == {'latency': 0.5}  # --latence by default
     assert faux_modules['ferme'] is True  # the live reader is closed at the end
     assert faux_modules['reglages'] == {
-        'camera_height': 1.9,
+        'camera_height': 1.8,
         'metres_per_pixel': 0.002,
         'focal_length_35mm': 24.0,
         'sensor_size': (1280, 720),

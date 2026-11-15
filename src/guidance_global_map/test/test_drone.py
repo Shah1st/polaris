@@ -1,3 +1,4 @@
+import dataclasses
 import math
 import time
 
@@ -469,3 +470,65 @@ def test_a_rover_found_by_its_marker_is_among_the_objects() -> None:
     assert (rover.x, rover.y) == pytest.approx((0.80, 0.90), abs=0.01)
     assert (rover.short, rover.long) == (0.20, 0.23)
     assert len(seen) == 2  # the rover and the box
+
+
+# ---- scale read off the rover's marker ---------------------------------------------------------
+
+
+def test_scale_is_read_off_the_marker_whatever_the_height_says() -> None:
+    """The scene is at 300 px per metre and its marker is 10 cm wide. With a camera height
+    that is badly wrong, the marker still gives the right scale, area and rover position."""
+    image = render_top_down(scene_with_marked_rover())
+    wrong = OverheadSettings(camera_height=3.0, floor_window=0.6, rover_marker_id=10)
+
+    assert process_image(image, wrong).bounds.x_max != pytest.approx(2.6, abs=0.2)
+    with_marker = dataclasses.replace(wrong, marker_size=0.10)
+    result = process_image(image, with_marker)
+
+    # a 30-pixel marker: its side is read to about a pixel, 3 %
+    assert pipeline.marker_scale(image, with_marker) == pytest.approx(1 / 300, rel=0.04)
+    assert result.bounds.x_max == pytest.approx(2.6, rel=0.04)
+    assert result.rover_position == pytest.approx((0.80, 0.90), abs=0.03)
+
+
+def test_marker_above_the_floor_is_brought_down_to_the_floor() -> None:
+    image = render_top_down(scene_with_marked_rover())
+    flat = OverheadSettings(camera_height=2.0, rover_marker_id=10, marker_size=0.10)
+    raised = dataclasses.replace(flat, marker_height=0.20)
+
+    assert pipeline.marker_scale(image, raised) == pytest.approx(
+        pipeline.marker_scale(image, flat) * 2.0 / 1.8
+    )
+
+
+def test_no_marker_scale_without_a_size_an_id_or_a_marker_in_view() -> None:
+    image = render_top_down(scene_with_marked_rover())
+    empty = render_top_down(Scene(marker_positions={}))
+
+    assert pipeline.marker_scale(image, OverheadSettings(rover_marker_id=10)) is None
+    assert pipeline.marker_scale(image, OverheadSettings(marker_size=0.10)) is None
+    assert (
+        pipeline.marker_scale(empty, OverheadSettings(rover_marker_id=10, marker_size=0.1)) is None
+    )
+    # a measured scale wins over the marker
+    measured = OverheadSettings(metres_per_pixel=0.01, rover_marker_id=10, marker_size=0.10)
+    assert process_image(image, measured).bounds.x_max == pytest.approx(7.8)
+
+
+def test_the_marker_scale_is_kept_while_the_marker_is_hidden() -> None:
+    seen = render_top_down(scene_with_marked_rover())
+    hidden = render_top_down(Scene(marker_positions={}, boxes=scene_with_marked_rover().boxes))
+    camera = FakeCamera(seen)
+    now = [0.0]
+    drone = OverheadDrone(
+        camera,
+        OverheadSettings(camera_height=3.0, floor_window=0.6, rover_marker_id=10, marker_size=0.1),
+        clock=lambda: now[0],
+    )
+
+    assert drone.zone()[2] == pytest.approx(2.6, rel=0.04)
+    assert drone.current_scale() == pytest.approx(1 / 300, rel=0.04)
+    camera.image, now[0] = hidden, 10.0
+
+    assert drone.zone()[2] == pytest.approx(2.6, rel=0.04)  # not back to the height's scale
+    assert drone.rover_pose() is None

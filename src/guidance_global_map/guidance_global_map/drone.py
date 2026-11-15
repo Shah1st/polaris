@@ -40,6 +40,7 @@ from guidance_global_map.pipeline import (
     OverheadSettings,
     brightness_spread,
     frame_problem,
+    marker_scale,
     process_image,
 )
 from guidance_global_map.scale_check import Seen
@@ -235,6 +236,7 @@ class OverheadDrone:
         self._last_rover: tuple[float, float] | None = None
         self._bad_since: float | None = None
         self._image_size: tuple[int, int] | None = None  # (width, height), last good frame
+        self._marker_scale: float | None = None  # scale read off the rover's marker, kept
         self.problem: str | None = None  # why the last frame was rejected, for logs
 
     def refresh(self, force: bool = False) -> OverheadResult | None:
@@ -260,7 +262,7 @@ class OverheadDrone:
         if problem is None:
             self.problem = None
             self._image_size = (image.shape[1], image.shape[0])
-            self._good = process_image(image, self.settings)
+            self._good = process_image(image, self._settings_for(image))
             self._good_time = now
             self._reference_std = brightness_spread(image)
             if self._good.rover_position is not None:
@@ -343,7 +345,28 @@ class OverheadDrone:
         """Metres per pixel in use for the camera's images; None before the first image."""
         if self.refresh() is None or self._image_size is None:
             return None
+        if self.settings.metres_per_pixel is None and self._marker_scale is not None:
+            return self._marker_scale
         return self.settings.scale(self._image_size)
+
+    def _settings_for(self, image: np.ndarray) -> OverheadSettings:
+        """The settings to map this image with. With `marker_size` and no measured scale, the
+        scale read off the rover's marker is used, and kept for the frames where the marker
+        is hidden; it is replaced only when a new reading differs by more than 3 %, so the
+        map does not change size from one frame to the next."""
+        if self.settings.metres_per_pixel is not None or self.settings.marker_size is None:
+            return self.settings
+        reading = marker_scale(image, self.settings)
+        kept = self._marker_scale
+        if reading is not None and (kept is None or abs(reading / kept - 1.0) > 0.03):
+            log.warning(
+                "overhead camera: scale read off the rover's marker: %.3f mm per pixel",
+                reading * 1000,
+            )
+            self._marker_scale = reading
+        if self._marker_scale is None:
+            return self.settings
+        return dataclasses.replace(self.settings, metres_per_pixel=self._marker_scale)
 
     def objects(self, force: bool = False) -> list[Seen] | None:
         """Everything that stands out from the floor, the rover included: centres and sizes in
@@ -375,6 +398,7 @@ class OverheadDrone:
             raise RuntimeError('no image from the camera: the scale cannot be changed')
         self.settings = dataclasses.replace(self.settings, metres_per_pixel=scale * correction)
         self._last_rover = None
+        self._marker_scale = None
         self._good = None
         self.refresh(force=True)
         return self.settings.metres_per_pixel

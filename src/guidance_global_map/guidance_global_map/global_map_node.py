@@ -81,7 +81,7 @@ class GlobalMapNode(Node):
         self.declare_parameter('rover_radius', 0.20)
         # Marker mode: the marker's height above the floor and the camera's, for the parallax.
         self.declare_parameter('marker_height', 0.0)
-        self.declare_parameter('camera_height', 1.9)
+        self.declare_parameter('camera_height', 1.8)
         self.declare_parameter('update_period', 1.0)
 
         self._bounds = MapBounds(
