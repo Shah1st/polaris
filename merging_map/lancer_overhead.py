@@ -222,6 +222,13 @@ def reglages_camera(args):
         reglages['metres_per_pixel'] = args.metres_par_pixel
     if args.marqueur is not None:
         reglages['rover_marker_id'] = args.marqueur
+    if getattr(args, 'epaisseur_min', None):
+        reglages['min_obstacle_width'] = args.epaisseur_min
+    if getattr(args, 'photo_unique', False):
+        if args.depart:  # the rover is the blob there, whatever its size (cables...)
+            reglages['rover_hint'] = tuple(args.depart)
+        if args.effacer_objectif > 0:  # the goal's mark on the floor is not an obstacle
+            reglages['clear_areas'] = ((*args.victime, args.effacer_objectif),)
     return reglages
 
 
@@ -289,6 +296,20 @@ def main(argv=None):
         type=float,
         help="largeur reelle (m) de la zone couverte par la photo (photo recadree sur l'arene "
         'par exemple) : donne l echelle, a la place de --metres-par-pixel',
+    )
+    p.add_argument(
+        '--epaisseur-min',
+        type=float,
+        default=0.0,
+        help="ignore ce qui est plus fin que cette largeur (m) sur l'image : scotch au sol, "
+        'cables. 0,03 conseille sur une photo ; un vrai obstacle aussi fin serait ignore aussi',
+    )
+    p.add_argument(
+        '--effacer-objectif',
+        type=float,
+        default=0.10,
+        help="avec --photo-unique : rayon (m) autour de la victime qui n'est pas un obstacle "
+        '(son repere au sol). 0 pour garder tout',
     )
     args = p.parse_args(argv)
     if args.photo_unique:

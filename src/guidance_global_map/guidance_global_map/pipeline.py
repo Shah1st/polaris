@@ -6,6 +6,7 @@ right and y up. Used by `segment_image` (photos) and `drone.OverheadDrone` (the 
 
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 
 from guidance_calib.aruco_compat import DEFAULT_DICTIONARY, detect_markers
@@ -44,6 +45,9 @@ class OverheadSettings:
     lightness_weight: float = 0.7
     floor_window: float = 1.0
     min_obstacle_area: float = 0.0005
+    # Parts of the obstacle mask thinner than this are dropped (morphological opening): tape
+    # lines on the floor, a goal marker, cables. 0 = off. Also drops real obstacles that thin.
+    min_obstacle_width: float = 0.0
     # Grid.
     cell_size: float = 0.05
     margin: float = 0.0
@@ -55,6 +59,13 @@ class OverheadSettings:
     yaw_offset: float = 0.0
     rover_size: tuple[float, float] = (0.20, 0.23)
     rover_size_tolerance: float = 0.2
+    # Map point (x, y) known to be the rover's centre: the rover is then the blob under it
+    # (or the nearest within 0.25 m), whatever its size (cables, payload), and its position is
+    # this point. None: found by size only.
+    rover_hint: tuple[float, float] | None = None
+    # Discs (x, y, radius) in map metres forced to free floor, e.g. a goal marker taped on the
+    # floor, which is not an obstacle.
+    clear_areas: tuple[tuple[float, float, float], ...] = ()
 
     def scale(self) -> float:
         """Ground size of one image pixel."""
@@ -76,6 +87,19 @@ class OverheadResult:
     top_down: np.ndarray  # the view from above at `resolution`
     blobs: list[Blob]  # obstacle blobs, the rover's included when it was found by size
     rover_mask: np.ndarray | None  # top-down pixels of the rover
+
+
+def _blob_at(blobs, col: float, row: float, max_distance_px: float):
+    """The blob covering top-down pixel (col, row), else the nearest one within reach."""
+    best, best_distance = None, max_distance_px
+    for blob in blobs:
+        r, c = int(round(row)), int(round(col))
+        if 0 <= r < blob.mask.shape[0] and 0 <= c < blob.mask.shape[1] and blob.mask[r, c]:
+            return blob
+        distance = float(np.hypot(blob.center[0] - col, blob.center[1] - row))
+        if distance <= best_distance:
+            best, best_distance = blob, distance
+    return best
 
 
 def process_image(image: np.ndarray, settings: OverheadSettings | None = None) -> OverheadResult:
@@ -108,16 +132,29 @@ def process_image(image: np.ndarray, settings: OverheadSettings | None = None) -
         min_area_px=int(round(settings.min_obstacle_area / resolution**2)),
         floor_window_px=int(round(settings.floor_window / resolution)),
     )
+    for x, y, radius in settings.clear_areas:
+        centre = ((x - bounds.x_min) / resolution, (bounds.y_max - y) / resolution)
+        obstacles = obstacles & ~disc_mask(obstacles.shape, centre, radius / resolution)
+    if settings.min_obstacle_width > 0:
+        side = max(1, int(round(settings.min_obstacle_width / resolution)))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (side, side))
+        obstacles = cv2.morphologyEx(obstacles.astype(np.uint8), cv2.MORPH_OPEN, kernel) > 0
     blobs = find_blobs(obstacles, resolution)
 
     if settings.rover_marker_id is None:
         rover = find_rover_blob(blobs, settings.rover_size, settings.rover_size_tolerance)
+        if settings.rover_hint is not None:
+            hx, hy = settings.rover_hint
+            col, row = (hx - bounds.x_min) / resolution, (bounds.y_max - hy) / resolution
+            rover = _blob_at(blobs, col, row, 0.25 / resolution)
         if rover is not None:
             rover_mask = rover.mask
             rover_position = (
                 rover.center[0] * resolution,
                 bounds.y_max - rover.center[1] * resolution,
             )
+            if settings.rover_hint is not None:
+                rover_position = tuple(settings.rover_hint)
             obstacles = obstacles & ~rover.mask
 
     grid = build_cell_grid(
