@@ -20,6 +20,8 @@ class FauxRover:
         self.commandes = []  # (t, commande)
         self.joignable = True
         self.drone_ok = True
+        self.cap_visible = True  # False: the overhead camera finds the rover by size, no marker
+        self.odometrie_ok = True
 
     def envoyer(self, commande):
         self.commandes.append((self.t, commande))
@@ -47,10 +49,12 @@ class FauxRover:
         return self.t
 
     def odometrie(self):
-        return self.odl, self.odr
+        return (self.odl, self.odr) if self.odometrie_ok else None
 
     def vu_par_le_drone(self):
-        return (self.x, self.y, self.cap) if self.drone_ok else None
+        if not self.drone_ok:
+            return None
+        return self.x, self.y, (self.cap if self.cap_visible else None)
 
 
 class FauxDrone:
@@ -143,4 +147,51 @@ def test_the_brain_drives_the_real_adapter() -> None:
         journal=lignes.append,
     )
     assert 'ARRIVE pres de la victime' in '\n'.join(lignes)
+    assert math.dist((faux.x, faux.y), (3.0, 4.0)) <= 0.6
+
+
+def test_unknown_heading_is_measured_from_the_rover_motion() -> None:
+    """No marker on the rover: the camera gives (x, y, None). The adapter believes the rover
+    faces north, it really faces east; a short straight line seen by the camera fixes it."""
+    faux = FauxRover(1.0, 1.0, 0.0)
+    faux.cap_visible = False
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    assert r.drone_disponible() and not r.cap_fiable  # a position without heading counts
+    assert r.deplacer((1.6, 1.3)) is None
+    assert r.cap_fiable and abs(angle_normalise(r.cap - faux.cap)) < 0.15
+    assert math.dist((faux.x, faux.y), (1.6, 1.3)) < 0.05
+    assert r.incertitude() == 0  # the camera corrects the position at every step
+
+
+def test_unknown_heading_and_no_odometry() -> None:
+    """Neither marker nor wheel odometry: turns are estimated from the commands sent, and the
+    heading is measured again on every straight stretch."""
+    faux = FauxRover(1.0, 1.0, math.pi)
+    faux.cap_visible, faux.odometrie_ok = False, False
+    r = robot(faux)
+    r.placer((1.0, 1.0))
+    for cible in [(0.7, 1.0), (0.7, 1.4), (1.1, 1.6)]:
+        assert r.deplacer(cible) is None
+        assert math.dist((faux.x, faux.y), cible) < 0.06
+
+
+def test_the_brain_runs_with_a_position_without_heading() -> None:
+    carte = CarteFusion(n=16, res_fine=0.1, zmax=2, niveau_plan=2, niveau_zoom=1)
+    for msg in decouper(np.zeros((16, 16)), 0, 0, 0, carte, 'drone'):
+        carte.recevoir(msg)
+    faux = FauxRover(1.0, 1.0, -math.pi / 2)  # faces south, the goal is north
+    faux.cap_visible = False
+    lignes = []
+    cerveau.mission(
+        robot(faux, carte),
+        carte,
+        (1.0, 1.0),
+        (3.0, 4.0),
+        zone=(0, 0, 6.4, 6.4),
+        journal=lignes.append,
+    )
+    texte = '\n'.join(lignes)
+    assert 'ARRIVE pres de la victime' in texte
+    assert 'LIAISON DRONE PERDUE' not in texte  # the camera counts as the drone
     assert math.dist((faux.x, faux.y), (3.0, 4.0)) <= 0.6

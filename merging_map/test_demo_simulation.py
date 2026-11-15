@@ -1,12 +1,9 @@
-"""Tests for the simulated rover camera used by the demo (needs matplotlib)."""
+"""Tests for the simulated world and missions (numpy only: matplotlib is not needed)."""
 
+import demo_fusion as demo
 import numpy as np
 import pytest
-
-pytest.importorskip('matplotlib')
-
-import demo_fusion as demo  # noqa: E402
-from fusion_carte import INCONNU, LIBRE, OBSTACLE, CarteFusion  # noqa: E402
+from fusion_carte import INCONNU, LIBRE, OBSTACLE, CarteFusion
 
 
 def vue_rover(occlusion: bool) -> np.ndarray:

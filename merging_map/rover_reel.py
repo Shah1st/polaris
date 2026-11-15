@@ -14,9 +14,12 @@ Ce qui est fait ici :
   - le tour d'horizon avec la tourelle, et l'attente du retour autonome (liaison perdue).
 
 Ce qui se branche de l'exterieur (a ecrire / brancher par l'equipe) :
-  - position_drone() -> (x, y, cap) du rover vu par le drone (marqueur ArUco), ou None ;
+  - position_drone() -> (x, y, cap) du rover vu par le drone, ou None. Le cap peut etre
+    None (rover trouve par sa taille, sans marqueur) : on garde alors celui de l'odometrie et
+    on le mesure d'apres le mouvement du rover entre deux images ;
   - lire_odometrie() -> (odl, odr) en METRES (le retour T:1001 donne des cm), ou None.
-    L'application du Pi ne les expose pas en HTTP : petit script a ajouter sur le Pi ;
+    L'application du Pi ne les expose pas en HTTP : petit script a ajouter sur le Pi. Sans
+    odometrie, le rover estime son deplacement d'apres les commandes envoyees ;
   - percevoir(position, cap) -> (matrice -1/0/1, x0, y0) : ce que voit la camera, a la
     resolution la plus fine de la carte, dans le repere de la carte (perception a ecrire) ;
   - drone : objet avec disponible() -> bool et zoomer(tuile) -> liste de messages-tuiles ;
@@ -97,6 +100,7 @@ class RaspRoverReel(RobotOdometrie):
         delai_segment=8.0,
         duree_patinage=0.6,
         delai_retour=60.0,
+        base_cap=0.1,
         inclinaison_camera=-20,
         portee_camera=2.0,
         voie=VOIE_RASPROVER,
@@ -109,16 +113,25 @@ class RaspRoverReel(RobotOdometrie):
         self.periode, self.tolerance = periode, tolerance  # s, m
         self.delai_segment, self.duree_patinage = delai_segment, duree_patinage  # s
         self.delai_retour = delai_retour  # s, attente du retour autonome
+        # cap mesure d'apres le mouvement : distance en ligne droite entre deux mesures (m)
+        self.base_cap = base_cap
         self.inclinaison_camera, self.portee_camera = inclinaison_camera, portee_camera
         self.horloge, self.dormir = horloge, dormir
         self.odometrie = Odometrie(voie)
         self.cap = math.pi / 2
+        self.cap_fiable = False  # cap donne par le drone, ou mesure d'apres le mouvement
         self.joignable = True
+        self._x_commande = self._z_commande = 0.0  # derniere commande T:13 (m/s, rad/s)
+        self._ancre = None  # debut de la ligne droite en cours, pour mesurer le cap
         super().__init__(carte)
 
     # ---- liaisons et temps -------------------------------------------------
     def commander(self, commande):
         self.joignable = bool(self.envoyer_brut(commande))
+        if commande['T'] == 13:
+            self._x_commande, self._z_commande = commande['X'], commande['Z']
+        elif commande['T'] == 1:
+            self._x_commande = self._z_commande = 0.0
         return self.joignable
 
     def arreter(self):
@@ -143,6 +156,9 @@ class RaspRoverReel(RobotOdometrie):
         lecture = self.lire_odometrie()
         if lecture:
             self.odometrie.increment(*lecture)  # point de depart de l'odometrie
+        mesure = self.position_drone() if self.drone.disponible() else None
+        if mesure is not None and mesure[2] is not None:
+            self.cap, self.cap_fiable = mesure[2], True
 
     def recaler(self):
         mesure = self.position_drone()
@@ -151,17 +167,44 @@ class RaspRoverReel(RobotOdometrie):
         x, y, cap = mesure
         erreur = math.dist(self.est, (x, y))
         self._recaler((x, y))
-        self.cap = cap
+        if cap is not None:
+            self.cap, self.cap_fiable = cap, True
         return erreur
+
+    def _increment(self):
+        """(distance, rotation) depuis la mesure precedente : odometrie des roues, ou a
+        defaut la derniere commande envoyee (estime)."""
+        lecture = self.lire_odometrie()
+        if lecture:
+            return self.odometrie.increment(*lecture)
+        return self._x_commande * self.periode, self._z_commande * self.periode
+
+    def _cap_par_le_mouvement(self, pos):
+        """Sans cap venant du drone : en ligne droite, la direction entre deux positions vues
+        par le drone, a au moins base_cap m d'ecart, donne le cap."""
+        en_ligne_droite = self._x_commande > 0.02 and abs(self._z_commande) < 0.15
+        if not en_ligne_droite:
+            self._ancre = None
+        elif self._ancre is None:
+            self._ancre = pos
+        elif math.dist(self._ancre, pos) >= self.base_cap:
+            self.cap = math.atan2(pos[1] - self._ancre[1], pos[0] - self._ancre[0])
+            self.cap_fiable = True
+            self._ancre = pos
 
     def _mesurer(self):
         """Nouvelle position estimee : celle du drone s'il voit le rover, sinon l'odometrie
-        (et l'incertitude grandit)."""
-        lecture = self.lire_odometrie()
-        distance, rotation = self.odometrie.increment(*lecture) if lecture else (0.0, 0.0)
+        (et l'incertitude grandit). Le cap vient du drone s'il le connait, sinon de
+        l'odometrie, corrige d'apres le mouvement."""
+        distance, rotation = self._increment()
         mesure = self.position_drone() if self.drone.disponible() else None
         if mesure is not None:
-            x, y, self.cap = mesure
+            x, y, cap = mesure
+            if cap is not None:
+                self.cap, self.cap_fiable = cap, True
+            else:
+                self.cap += rotation
+                self._cap_par_le_mouvement((x, y))
             self._recaler((x, y))
         else:
             cap_milieu = self.cap + rotation / 2
@@ -174,10 +217,30 @@ class RaspRoverReel(RobotOdometrie):
             )
 
     # ---- action ------------------------------------------------------------
+    def _mesurer_le_cap(self):
+        """Cap inconnu (rover sans marqueur) : une courte ligne droite, vue par le drone,
+        suffit a le mesurer. Renvoie le point d'impact si le rover est bloque."""
+        debut, depart = self.temps(), self.est
+        self._ancre = None
+        while not self.cap_fiable and self.temps() - debut < 3.0:
+            if not self.commander({'T': 13, 'X': self.vitesse, 'Z': 0}):
+                return None
+            self.dormir(self.periode)
+            self._mesurer()
+            if self.temps() - debut > 1.0 and math.dist(depart, self.est) < 0.02:
+                self.arreter()
+                return self.est[0], self.est[1]  # il ne bouge pas : quelque chose devant
+        self.arreter()
+        return None
+
     def deplacer(self, cible):
         """Suit le segment jusqu'a `cible` : tourne sur place si l'ecart de cap est grand,
         sinon avance en corrigeant le cap. Renvoie le point d'impact si le rover est bloque
         (roues commandees mais position qui n'avance plus), sinon None."""
+        if not self.cap_fiable and self.drone_disponible():
+            impact = self._mesurer_le_cap()
+            if impact is not None:
+                return impact
         debut, immobile = self.temps(), 0.0
         impact = None
         while self.temps() - debut < self.delai_segment:

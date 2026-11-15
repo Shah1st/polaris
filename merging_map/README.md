@@ -42,7 +42,7 @@ rover = RaspRoverReel(
     carte,
     envoyer=envoyeur_http('http://192.168.50.5:5000'),  # the Pi web app
     lire_odometrie=...,   # -> (odl, odr) in metres, from T:1001 (small script on the Pi)
-    position_drone=...,   # -> (x, y, heading) of the rover's ArUco marker, or None
+    position_drone=...,   # -> (x, y, heading or None) of the rover seen from above, or None
     percevoir=...,        # -> (matrix -1/0/1, x0, y0): what the rover camera sees
     drone=...,            # object with disponible() and zoomer(tile) -> list of tiles
 )
@@ -50,9 +50,52 @@ mission(rover, carte, depart=(3.0, 3.0), victime=(8.0, 20.0))
 ```
 
 `RaspRoverReel` already handles the motor commands (`T:13` at 5 Hz, stop `T:1`, pan-tilt
-`T:133`), wheel odometry, segment following and bump detection. What remains to plug in is
-listed at the top of `rover_reel.py`: drone position, odometry reading, camera perception,
-drone control, and the on-board safety program for rover link losses.
+`T:133`), wheel odometry, segment following and bump detection. The heading may be unknown
+(`None`, rover found by its size without a marker): the position is still corrected by the
+drone, the heading is kept from odometry and measured again from the rover's own motion on
+each straight stretch (a short straight line first if it is not known at all). Without wheel
+odometry, motion is estimated from the commands sent. What remains to plug in is listed at
+the top of `rover_reel.py`: odometry reading, camera perception, drone control, and the
+on-board safety program for rover link losses.
+
+## With the overhead camera (branch `overhead-camera`)
+
+The overhead camera pipeline (`guidance_global_map.drone.OverheadDrone`) plays the drone.
+`lancer_overhead.py` wires it to the rover and runs a mission:
+
+```bash
+PYTHONPATH=merging_map:src/guidance_calib:src/guidance_global_map:src/guidance_rover_pose \
+    python merging_map/lancer_overhead.py --image overhead.jpg --victime 1.2 0.9
+```
+
+* **The adapter is used as asked**: first survey from `camera.tiles()`, rover position from
+  `camera.rover_pose` (with or without a heading), `drone=camera`, `zone=camera.zone()`.
+  The start defaults to where the camera sees the rover.
+* **Small-area settings** (`REGLAGES_PETITE_ZONE`): `CarteFusion(niveau_plan=4,
+  rayon_robot=0.155)`, i.e. 5 cm planning cells, and `tolerance=0.15`. `rayon_robot` is the
+  radius of the circle around the whole rover: hypot(0.20, 0.23) / 2 = 0.152 m for the
+  0.20 x 0.23 m rover, rounded up. The 0.115 in the overhead camera's doc is the half-length,
+  which let a corner of the rover hit an obstacle when turning on the spot.
+  Provisional until a test drive gives real numbers.
+* **Frame**: the camera's, origin at the image's bottom-left corner, x right, y up, metres.
+  Start and goal outside the camera's view are refused with a message saying so; tiles from
+  the rover camera must use the same frame.
+* Needs the `overhead-camera` modules on `PYTHONPATH` and `opencv-contrib-python`. Tested here
+  only with a fake camera that has the same methods (`test_lancer_overhead.py`): the real
+  `OverheadDrone` has not been run with it yet.
+
+**ROS node** (`src/guidance_supervisor`, `merging_map_node`): subscribes to `/map` and
+`/rover/pose_overhead` (and `/goal_pose`, or the `goal_x` / `goal_y` parameters), runs the
+fusion's planner about once a second and publishes `/fusion/map` (merged `OccupancyGrid`),
+`/fusion/plan` (`nav_msgs/Path`) and `/fusion/decision` (JSON). It plans; it does not drive
+the rover. The conversion logic is in `fusion_bridge.py` (no ROS, tested with plain pytest);
+the node finds `merging_map/` by itself in the repo, or through `MERGING_MAP_PATH`.
+
+```bash
+ros2 run guidance_supervisor merging_map_node --ros-args -p goal_x:=1.2 -p goal_y:=0.9
+```
+
+The node itself has not been run: it needs the ROS container.
 
 ```bash
 cd merging_map
@@ -215,8 +258,12 @@ the alert.
 ## Tests and lint
 
 ```bash
-pytest merging_map                     # needs numpy (also run by a plain `pytest` from the root)
-ruff check merging_map && ruff format --check merging_map
+pytest merging_map                     # numpy only; matplotlib is needed only for the figure
+PYTHONPATH=src/guidance_supervisor pytest src/guidance_supervisor/test/test_fusion_bridge.py
+ruff check . && ruff format --check .
 ```
+
+Outside the ROS container, run `pytest merging_map` rather than a bare `pytest` at the root,
+which stops on the ROS packages.
 
 Code comments and identifiers are in French.
