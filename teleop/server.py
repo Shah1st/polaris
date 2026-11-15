@@ -47,6 +47,8 @@
                      (read from that file) with its age; ?v=<version> -> {"inchange": true}
                      while the file has not changed, so a slow link carries the map once
   GET  /perception/debug.jpg  one picture relayed from --perception-debug (default: none)
+  GET  /d405/color.jpg, /d405/depth.jpg?max=1.0, /d405/status   the rover's depth camera
+                     (Intel RealSense D405), relayed from the robot's own server
 
 Two ways to drive. "Direct": when the browser is on the robot's own network it
 talks to the robot itself (camera and commands), which avoids two trips across
@@ -56,6 +58,10 @@ through this server (the only way from elsewhere).
   GET  /api/state    robot telemetry + link figures (camera fps, command latency)
   POST /api/cmd      {"v": m/s, "omega": rad/s}  wanted speed, repeat while held
   POST /api/stop     stop now
+  POST /api/gimbal   camera pan-tilt, relayed to the robot's POST /gimbal:
+                     {"pan_rate": -1..1, "tilt_rate": -1..1} repeat while held,
+                     {"pan": deg, "tilt": deg} (either one; pan + = right, tilt + = up),
+                     or {"center": true}
 
 Safety: nothing is sent to the robot until a key is pressed. Speeds are clamped
 here, and anything that is not a finite number is refused (400). A wanted speed
@@ -86,6 +92,12 @@ STALE = 0.6  # s a command may lag behind the fastest one seen before it is drop
 HOLD = 0.45  # s a wanted speed stays valid without a new browser message
 # s pause between repeats: the link delay (~0.25 s) already spaces them; robot timeout 0.5 s
 RESEND = 0.05
+# Camera pan-tilt. A turn rate expires after GIMBAL_HOLD s without a new browser message (the
+# robot's own timeout is 1 s) and is repeated every GIMBAL_RESEND s while held. Angles beyond
+# the limits are refused; the robot clamps the others to its own (pan -180..180, tilt -30..90).
+GIMBAL_HOLD = 0.6
+GIMBAL_RESEND = 0.3
+PAN_LIMIT, TILT_LIMIT = 180.0, 90.0
 # Picture sizes for the browser: (width or None = as received, JPEG quality).
 PRESETS = {'hd': (None, 0), 'sd': (480, 55), 'ld': (320, 50)}
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -94,6 +106,10 @@ BOOT = secrets.token_hex(6)
 SESSION_IDLE = 5.0  # s without a command after which a browser's delay reference is relearnt
 KEEPALIVE = 2.0  # s: an MJPEG reader gets a byte this often, so a gone reader is noticed
 MISSION_MAX = 8_000_000  # bytes: larger mission documents are refused
+# The rover's depth camera (Intel RealSense D405), relayed from the robot's own server
+# (rover/rover_server.py): its colour picture, its depth in false colours up to ?max= metres
+# (0.1-10), and its state. Read only.
+D405_GETS = {'/d405/color.jpg', '/d405/depth.jpg', '/d405/status'}
 # What /fusion/ relays from the live fusion process (simulation only).
 FUSION_FILES = {
     'rover.png',
@@ -348,7 +364,11 @@ class Robot:
         self._latch_legacy = False  # stop latch for clients that do not number their presses
         self.n_stale, self.n_latched, self.n_stop = 0, 0, 0
         self.refused: tuple[float, str] | None = None  # (time, reason) of the last refusal
+        # Camera pan-tilt: held turn rate, one pending angle order, what was sent, last error.
+        self.g_rate, self.g_rate_t, self.g_order = (0.0, 0.0), 0.0, None
+        self.g_sent, self.g_sent_t, self.g_err = (0.0, 0.0), 0.0, None
         threading.Thread(target=self._sender, daemon=True).start()
+        threading.Thread(target=self._gimbal_sender, daemon=True).start()
         threading.Thread(target=self._poller, daemon=True).start()
 
     @staticmethod
@@ -431,6 +451,7 @@ class Robot:
             press = None  # a stop is obeyed whatever comes with it
         with self.lock:
             self.want, self.stop_req = (0.0, 0.0), True
+            self.g_rate = (0.0, 0.0)
             self.n_stop += 1
             self._latch_legacy = True
             for s in self._sessions.values():
@@ -475,6 +496,57 @@ class Robot:
                 # Released: say so at once instead of waiting for the robot's timeout.
                 if self._post(sess, '/cmd', {'v': 0.0, 'omega': 0.0}):
                     self.sent = (0.0, 0.0)
+
+    def gimbal(self, body: dict) -> None:
+        """A camera pan-tilt order from a browser: {"pan_rate", "tilt_rate"} (-1..1, repeated
+        while a key is held), {"pan": deg, "tilt": deg} (either one), or {"center": true}.
+        ValueError for anything that is not a finite number, or an angle beyond the limits."""
+        if body.get('center') is True:
+            order = {'center': True}
+        elif 'pan' in body or 'tilt' in body:
+            order = {}
+            for k, limit in (('pan', PAN_LIMIT), ('tilt', TILT_LIMIT)):
+                if k in body:
+                    a = self._number(body[k], k)
+                    if abs(a) > limit:
+                        raise ValueError(f'{k}: beyond {limit:g} deg')
+                    order[k] = round(a, 1)
+        else:
+            pan, tilt = (
+                max(-1.0, min(1.0, self._number(body.get(k, 0), k)))
+                for k in ('pan_rate', 'tilt_rate')
+            )
+            with self.lock:
+                self.g_rate, self.g_rate_t = (pan, tilt), time.monotonic()
+            return
+        with self.lock:
+            self.g_rate, self.g_order = (0.0, 0.0), order  # an angle ends a held key
+
+    def _gimbal_post(self, sess, body: dict) -> bool:
+        try:
+            sess.post(self.base + '/gimbal', json=body, timeout=3).raise_for_status()
+            self.g_err = None
+            return True
+        except Exception as e:
+            self.g_err = error_text(e)
+            return False
+
+    def _gimbal_sender(self) -> None:
+        # Its own thread and connection: a slow camera order never delays a wheel command.
+        sess = requests.Session()
+        while True:
+            time.sleep(0.03)
+            now = time.monotonic()
+            with self.lock:
+                if now - self.g_rate_t > GIMBAL_HOLD:
+                    self.g_rate = (0.0, 0.0)
+                rate, order, self.g_order = self.g_rate, self.g_order, None
+            held = rate != (0.0, 0.0)
+            if rate != self.g_sent or (held and now - self.g_sent_t >= GIMBAL_RESEND):
+                if self._gimbal_post(sess, {'pan_rate': rate[0], 'tilt_rate': rate[1]}):
+                    self.g_sent, self.g_sent_t = rate, time.monotonic()
+            if order is not None:
+                self._gimbal_post(sess, order)  # not retried: a late angle would surprise
 
     def _poller(self) -> None:
         sess = requests.Session()
@@ -582,8 +654,17 @@ def make_handler(
                     {
                         'robot': {
                             k: s.get(k)
-                            for k in ('battery_v', 'link', 'odom', 'camera', 'sim', 'cpu_temp')
+                            for k in (
+                                'battery_v',
+                                'link',
+                                'odom',
+                                'camera',
+                                'sim',
+                                'cpu_temp',
+                                'gimbal',
+                            )
                         },
+                        'gimbal_err': robot.g_err,
                         'ctrl': {
                             k: (s.get('ctrl') or {}).get(k) for k in ('mode', 'v_cmd', 'w_cmd')
                         },
@@ -659,6 +740,31 @@ def make_handler(
                 self.send_header('Cache-Control', 'no-store')
                 if 'X-Age-Ms' in r.headers:
                     self.send_header('X-Age-Ms', r.headers['X-Age-Ms'])
+                self.end_headers()
+                self.wfile.write(r.content)
+            elif path in D405_GETS:  # the rover's depth camera, relayed from its own server
+                q = self.path.partition('?')[2]
+                url = robot.base + path
+                if path == '/d405/depth.jpg':
+                    try:
+                        m = dict(x.split('=', 1) for x in q.split('&') if '=' in x).get('max', '1')
+                        max_m = float(m)
+                    except ValueError:
+                        max_m = math.nan
+                    if not (math.isfinite(max_m) and 0.1 <= max_m <= 10.0):
+                        return self._json({'error': 'max must be between 0.1 and 10 m'}, 400)
+                    url += f'?max={max_m:g}'
+                try:
+                    r = requests.get(url, timeout=5)
+                except requests.RequestException as e:
+                    return self._json({'error': f'robot unreachable: {error_text(e)}'}, 503)
+                self.send_response(r.status_code)
+                self.send_header('Content-Type', r.headers.get('Content-Type', 'image/jpeg'))
+                self.send_header('Content-Length', str(len(r.content)))
+                self.send_header('Cache-Control', 'no-store')
+                for h in ('X-Age-Ms',):
+                    if h in r.headers:
+                        self.send_header(h, r.headers[h])
                 self.end_headers()
                 self.wfile.write(r.content)
             elif path.startswith('/fusion/'):
@@ -787,6 +893,8 @@ def make_handler(
                         body.get('press'),
                     )
                     return self._json({'ok': True, 'accepted': ok})
+                elif self.path == '/api/gimbal':
+                    robot.gimbal(body)
                 elif self.path in FUSION_POSTS:  # relayed to the fusion
                     name = self.path[len('/fusion/') :]
                     data = {k: body[k] for k in FUSION_POSTS[self.path] if k in body}

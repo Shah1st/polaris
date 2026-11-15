@@ -22,11 +22,15 @@
   .video span { position:absolute; left:8px; bottom:6px; font-size:12px; color:#fff;
                 text-shadow:0 0 4px #000; font-variant-numeric:tabular-nums; }
   .pad { display:grid; grid-template-columns:repeat(3,56px); gap:6px; justify-content:center; }
-  .key { height:52px; border-radius:8px; border:1px solid var(--line); background:#20262d; color:var(--fg);
+  .key, .gkey { height:52px; border-radius:8px; border:1px solid var(--line); background:#20262d; color:var(--fg);
          font-size:17px; font-weight:600; cursor:pointer; user-select:none; touch-action:none; }
-  .key small { display:block; font-size:10px; font-weight:400; color:var(--dim); }
-  .key.held { background:var(--acc); color:#03202b; border-color:var(--acc); }
-  .key.held small { color:#03202b; }
+  .key small, .gkey small { display:block; font-size:10px; font-weight:400; color:var(--dim); }
+  .key.held, .gkey.held { background:var(--acc); color:#03202b; border-color:var(--acc); }
+  .key.held small, .gkey.held small { color:#03202b; }
+  .camctl { display:flex; flex-direction:column; gap:6px; padding-top:10px; border-top:1px solid var(--line); }
+  .camctl h2 { font-size:13px; margin:0; display:flex; justify-content:space-between; font-weight:600; }
+  .camctl button.center { height:32px; border:1px solid var(--line); border-radius:8px; background:#20262d;
+                          color:var(--fg); font:inherit; cursor:pointer; }
   .stop { width:100%; height:44px; border:0; border-radius:8px; background:var(--bad); color:#fff;
           font-size:15px; font-weight:700; cursor:pointer; }
   label { display:flex; justify-content:space-between; align-items:center; color:var(--dim); font-size:12px; }
@@ -78,7 +82,17 @@
                      padding:6px 12px; cursor:pointer; }
   .maptools button.go { background:#1f5c36; } .maptools button.halt { background:#7a1f1f; font-weight:bold; }
   #mFused, #mDrone { cursor:crosshair; }
+  .d405 { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:10px; padding:10px; }
+  .d405pics { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px; }
+  .d405pics figure { margin:0; min-width:0; background:var(--panel); border:1px solid var(--line);
+                     border-radius:8px; overflow:hidden; }
+  .d405pics figcaption { padding:5px 10px; color:var(--dim); display:flex; justify-content:space-between;
+                         font-variant-numeric:tabular-nums; }
+  .d405pics figcaption b { color:var(--fg); font-weight:600; }
+  .d405pics canvas { display:block; width:100%; aspect-ratio:4/3; object-fit:contain; background:#000; }
+  #d405Info { font-variant-numeric:tabular-nums; }
   @media (max-width: 1250px) { .pane { grid-template-columns:1fr; } .pane .feed { grid-column:auto; } }
+  @media (max-width: 1000px) { .d405pics { grid-template-columns:1fr; } }
   @media (max-width: 820px) { .app { grid-template-columns:1fr; grid-template-rows:auto 80vh; } }
 </style>
 </head>
@@ -120,6 +134,20 @@
       <label>Turn rate <span id="wlab"></span></label>
       <input type="range" id="turn" min="0.4" max="1.5" step="0.1" value="0.9">
     </div>
+    <div class="camctl">
+      <h2>Rover camera (pan-tilt) <span id="glab" class="hint">–</span></h2>
+      <div class="pad" id="gpad">
+        <span></span><button class="gkey" data-g="u" type="button">I<small>up</small></button><span></span>
+        <button class="gkey" data-g="l" type="button">J<small>left</small></button>
+        <button class="gkey" data-g="d" type="button">K<small>down</small></button>
+        <button class="gkey" data-g="r" type="button">L<small>right</small></button>
+      </div>
+      <label>Pan (left − / right +) <span id="panlab"></span></label>
+      <input type="range" id="pan" min="-180" max="180" step="1" value="0">
+      <label>Tilt (down − / up +) <span id="tiltlab"></span></label>
+      <input type="range" id="tilt" min="-30" max="90" step="1" value="0">
+      <button class="center" id="gCenter" type="button">Center the camera (C)</button>
+    </div>
     <table>
       <tr><td>Battery</td><td id="bat">–</td></tr>
       <tr><td>Position (odometry)</td><td id="odo">–</td></tr>
@@ -132,11 +160,13 @@
     </table>
     <div class="hint">ZQSD or arrow keys (physical key positions: ZQSD on AZERTY, WASD on QWERTY). The rover
       stops as soon as the key is released, this page loses focus (click in the 3D view)
-      or the link drops. The link has a delay: move in short presses.</div>
+      or the link drops. The link has a delay: move in short presses.
+      Camera: hold I J K L to turn it, C centers it; on a slow link, the sliders go to an angle.</div>
   </div>
   <div class="right">
     <div class="tabs">
       <button type="button" id="tabMaps" class="on">Drone and maps</button>
+      <button type="button" id="tabD405">Depth camera (D405)</button>
       <button type="button" id="tab3d">Mapper 3D view</button>
       <a href="/mission" target="_blank" rel="noopener">mission page</a>
       <a href="/sim" target="_blank" rel="noopener">simulation</a>
@@ -178,6 +208,31 @@
           <br><span class="sw" style="background:#fcfcfb"></span>free (drone)<span class="sw" style="background:#d3eee2"></span>free (rover)<span class="sw" style="background:#52514e"></span>obstacle (drone)<span class="sw" style="background:#eb6834"></span>obstacle (rover)<span class="sw" style="background:#e1e0d9"></span>unknown<span class="sw" style="background:#2a78d6"></span>planned path<span class="sw" style="background:#5a5a5a"></span>rover track<span class="sw" style="background:#6250d6"></span>tiles to check / drone zoom</div>
       </figure>
     </div>
+    <div class="d405" id="paneD405" hidden>
+      <div class="maptools">
+        <label>Depth colours up to
+          <select id="d405Max">
+            <option value="0.5">0.5 m</option>
+            <option value="1" selected>1 m</option>
+            <option value="2">2 m</option>
+            <option value="3">3 m</option>
+          </select></label>
+        <span id="d405Info">–</span>
+      </div>
+      <div class="d405pics">
+        <figure>
+          <figcaption><b>Colour</b><span id="d405ColorAge">–</span></figcaption>
+          <canvas id="d405Color" width="640" height="480"></canvas>
+        </figure>
+        <figure>
+          <figcaption><b>Depth</b><span id="d405DepthAge">–</span></figcaption>
+          <canvas id="d405Depth" width="640" height="480"></canvas>
+        </figure>
+      </div>
+      <div class="legend">The rover's Intel RealSense D405, relayed from the robot's own server.
+        Depth: red = near, blue = at the chosen range or farther, black = no measure (too near,
+        shiny or very dark surface). The D405 measures best between 7 cm and 1 m.</div>
+    </div>
     <iframe id="map" title="3D map" hidden></iframe>
   </div>
 </div>
@@ -189,16 +244,18 @@ const esc = (t) => String(t ?? '–').replace(/[&<>"]/g, c => ({ '&':'&amp;', '<
 // Right side: "maps" (drone camera + the three maps of the live fusion) or "3d" (the mapper's
 // view, loaded only when first shown: the mapper may not be running).
 let pane = 'maps';
-try { if (localStorage.getItem('teleopPane') === '3d') pane = '3d'; } catch (e) {}
+try { const p = localStorage.getItem('teleopPane'); if (p === '3d' || p === 'd405') pane = p; } catch (e) {}
 function showPane(p) {
   pane = p;
-  $('paneMaps').hidden = p !== 'maps'; $('map').hidden = p !== '3d';
+  $('paneMaps').hidden = p !== 'maps'; $('map').hidden = p !== '3d'; $('paneD405').hidden = p !== 'd405';
   $('tabMaps').classList.toggle('on', p === 'maps'); $('tab3d').classList.toggle('on', p === '3d');
+  $('tabD405').classList.toggle('on', p === 'd405');
   if (p === '3d' && !$('map').src) $('map').src = location.protocol + '//' + location.hostname + ':__MAP_PORT__/';
   try { localStorage.setItem('teleopPane', p); } catch (e) {}
 }
 $('tabMaps').onclick = () => showPane('maps');
 $('tab3d').onclick = () => showPane('3d');
+$('tabD405').onclick = () => showPane('d405');
 showPane(pane);
 
 // Camera: a few /frame.jpg requests kept open in parallel. Each returns one new
@@ -567,6 +624,7 @@ const postRobot = (path, body) => fetch(LAN + path, { method:'POST', mode:'no-co
   });
 function post(path, body) {
   if (direct && path === '/api/cmd') return postRobot('/cmd', body);
+  if (direct && path === '/api/gimbal') return postRobot('/gimbal', body);
   if (direct && path === '/api/stop') { postRobot('/stop'); }   // and through the VM too, below
   return postVM(path, body);
 }
@@ -583,7 +641,7 @@ function paint() {
   document.querySelectorAll('.key').forEach(b => b.classList.toggle('held', held.has(b.dataset.k)));
 }
 function release() { held.clear(); paint(); if (driving) { post('/api/cmd', { v:0, omega:0, c: viewer, press }); driving = false; } }
-function stopAll() { held.clear(); paint(); driving = false; post('/api/stop', { c: viewer, press }); }
+function stopAll() { held.clear(); paint(); driving = false; post('/api/stop', { c: viewer, press }); grelease(); }
 
 setInterval(() => {  // repeat while held: the server drops a command after 0.45 s of silence
   if (held.size) { post('/api/cmd', command()); driving = true; }
@@ -619,13 +677,80 @@ function focusState() {
   $('focus').textContent = slow ? `Link too slow to drive (${(pingMs / 1000).toFixed(1)} s round trip)`
     : on ? 'Keyboard active: ZQSD / WASD to drive' : 'Click here to drive with the keyboard';
   if (!on || slow) release();
+  if (!on) grelease();
 }
 window.addEventListener('blur', focusState);
 window.addEventListener('focus', focusState);
-document.addEventListener('visibilitychange', () => { if (document.hidden) release(); });
-window.addEventListener('pagehide', release);
+document.addEventListener('visibilitychange', () => { if (document.hidden) { release(); grelease(); } });
+window.addEventListener('pagehide', () => { release(); grelease(); });
 $('side').addEventListener('pointerdown', () => { $('side').focus(); setTimeout(focusState, 0); });
 setInterval(focusState, 500);
+
+// ---- rover camera pan-tilt (the robot's POST /gimbal). Held I J K L turn it, repeated like the
+// wheels (the robot stops turning after 1 s of silence); C or the button centers it; the sliders
+// send an angle, which suits a slow link. I J K L and C sit at the same place on AZERTY and QWERTY.
+const GCODES = { KeyI:'u', KeyK:'d', KeyJ:'l', KeyL:'r' };
+const gheld = new Set();
+let gmoving = false, gSlid = -1e9, gSent = -1e9;
+function gcommand() {
+  return { pan_rate: (gheld.has('r') ? 1 : 0) - (gheld.has('l') ? 1 : 0),
+           tilt_rate: (gheld.has('u') ? 1 : 0) - (gheld.has('d') ? 1 : 0) };
+}
+function gpaint() { document.querySelectorAll('.gkey').forEach(b => b.classList.toggle('held', gheld.has(b.dataset.g))); }
+function gpress(k) {
+  if (gheld.has(k)) return;
+  gheld.add(k); gpaint(); post('/api/gimbal', gcommand()); gmoving = true;
+}
+function grelease(k) {  // one key, or all of them
+  if (k === undefined) gheld.clear(); else gheld.delete(k);
+  gpaint();
+  if (gmoving) { post('/api/gimbal', gcommand()); gmoving = gheld.size > 0; }
+}
+function gcenter() {
+  gheld.clear(); gpaint();
+  if (gmoving) { post('/api/gimbal', { pan_rate: 0, tilt_rate: 0 }); gmoving = false; }
+  post('/api/gimbal', { center: true });
+  gSlid = performance.now();
+  for (const a of ['pan', 'tilt']) { $(a).value = 0; $(a + 'lab').textContent = '0°'; }
+}
+setInterval(() => { if (gheld.size) post('/api/gimbal', gcommand()); }, 250);
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const g = GCODES[e.code];
+  if (g) { e.preventDefault(); if (!e.repeat) gpress(g); }
+  else if (e.code === 'KeyC' && !e.repeat) { e.preventDefault(); gcenter(); }
+});
+document.addEventListener('keyup', (e) => { const g = GCODES[e.code]; if (g) grelease(g); });
+document.querySelectorAll('.gkey').forEach(b => {
+  b.addEventListener('pointerdown', (e) => { e.preventDefault(); b.setPointerCapture(e.pointerId); gpress(b.dataset.g); });
+  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture'])
+    b.addEventListener(ev, () => grelease(b.dataset.g));
+});
+$('gCenter').addEventListener('click', gcenter);
+function gslide(axis, last) {
+  const v = +$(axis).value;
+  $(axis + 'lab').textContent = v + '°';
+  gSlid = performance.now();
+  if (!last && gSlid - gSent < 150) return;  // about 7 angles a second at most while dragging
+  gSent = gSlid;
+  post('/api/gimbal', { [axis]: v });
+}
+for (const axis of ['pan', 'tilt']) {
+  $(axis).addEventListener('input', () => gslide(axis, false));
+  $(axis).addEventListener('change', () => gslide(axis, true));
+}
+// The angles the robot was told (its servos do not report theirs).
+function showGimbal(g, err) {
+  const ok = g && Number.isFinite(g.pan) && Number.isFinite(g.tilt);
+  $('glab').textContent = (ok ? `pan ${g.pan.toFixed(0)}° · tilt ${g.tilt.toFixed(0)}°` : '–')
+    + (err ? ' · error: ' + err : '');
+  $('glab').className = err ? 'bad' : 'hint';
+  if (ok && performance.now() - gSlid > 1500) {  // not while the sliders are being used
+    $('pan').value = g.pan; $('tilt').value = g.tilt;
+    $('panlab').textContent = g.pan.toFixed(0) + '°'; $('tiltlab').textContent = g.tilt.toFixed(0) + '°';
+  }
+}
+$('panlab').textContent = $('tiltlab').textContent = '0°';
 
 function sliders() {
   $('vlab').textContent = (+$('speed').value).toFixed(2) + ' m/s';
@@ -662,6 +787,7 @@ async function poll() {
     $('dfps').textContent = !droneOn ? 'not configured (--drone)'
       : `${droneInfo.fps} / ${droneShown() ? dShownFps : '–'} fps` + (droneInfo.error ? ' · error' : '');
     cls($('dfps'), !droneOn ? '' : droneInfo.error ? 'bad' : droneInfo.fps > 0 ? 'ok' : 'warn');
+    showGimbal(r.gimbal, s.gimbal_err);
     $('ping').textContent = pingMs == null ? '–' : pingMs.toFixed(0) + ' ms';
     cls($('ping'), pingMs == null ? '' : pingMs > 400 ? 'bad' : pingMs > 200 ? 'warn' : 'ok');
   } catch (e) { $('link').textContent = 'server unreachable'; $('link').classList.remove('on'); }
@@ -677,6 +803,58 @@ setInterval(() => {
   el.className = a === null || a > 1 ? 'old' : '';
 }, 250);
 setInterval(poll, 500); poll();
+
+// ---- the rover's depth camera (D405), relayed by this server from the robot's /d405/*: one
+// picture at a time per image, about 4 a second, and only while its tab is shown. Each picture
+// is loaded off screen, then drawn: the canvas keeps the last one meanwhile (no black flashes).
+function loadPicture(canvas, src) {
+  return new Promise((ok, ko) => {
+    const img = new Image();
+    img.onload = () => {
+      if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
+        canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+      }
+      canvas.getContext('2d').drawImage(img, 0, 0);
+      ok();
+    };
+    img.onerror = ko;
+    img.src = src;
+  });
+}
+async function d405Loop(img, path, ageId) {
+  let shown = 0, t1 = performance.now(), fails = 0;
+  for (;;) {
+    if (pane !== 'd405') { await sleep(500); continue; }
+    const t0 = performance.now();
+    const q = path === '/d405/depth.jpg' ? '?max=' + $('d405Max').value + '&' : '?';
+    try {
+      await loadPicture(img, frameHost + path + q + 't=' + Date.now());
+      shown++; fails = 0;
+    } catch (e) {
+      fails++;
+    }
+    if (t0 - t1 > 2000) {
+      $(ageId).textContent = fails ? 'no picture' : (shown / ((t0 - t1) / 1000)).toFixed(1) + ' fps';
+      shown = 0; t1 = t0;
+    }
+    await sleep(fails ? 1500 : Math.max(0, 250 - (performance.now() - t0)));
+  }
+}
+d405Loop($('d405Color'), '/d405/color.jpg', 'd405ColorAge');
+d405Loop($('d405Depth'), '/d405/depth.jpg', 'd405DepthAge');
+setInterval(async () => {
+  if (pane !== 'd405') return;
+  try {
+    const s = await (await fetch('/d405/status', { cache: 'no-store' })).json();
+    const c = s.camera || {}, d = s.depth || {};
+    const m = (x) => (x == null ? '–' : x.toFixed(2) + ' m');
+    $('d405Info').textContent = s.ok
+      ? `${c.name || 'D405'} · ${c.mode || ''} · centre ${m(d.centre_m)} · nearest ${m(d.nearest_m)}`
+        + ` · ${Math.round(100 * (d.valid || 0))} % of pixels measured`
+      : 'D405: ' + (s.error || (s.health && s.health.last_error) || 'not ready');
+    $('d405Info').className = s.ok ? '' : 'bad';
+  } catch (e) { $('d405Info').textContent = 'D405: robot unreachable'; $('d405Info').className = 'bad'; }
+}, 1000);
 </script>
 </body>
 </html>

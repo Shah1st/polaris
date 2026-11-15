@@ -2,7 +2,7 @@
 
     python -m pytest teleop/test_server.py -q -p no:cacheprovider
 
-Needs requests, OpenCV and numpy (the dashboard's own environment). Ports 8151-8160 on
+Needs requests, OpenCV and numpy (the dashboard's own environment). Ports 8151-8161 on
 127.0.0.1. The JavaScript of the pages is parsed with esprima when it is importable.
 """
 
@@ -242,6 +242,130 @@ def test_frame_carries_the_process_id(http):
     assert r.headers['X-Boot'] == server.BOOT
     assert 'X-Boot' in r.headers['Access-Control-Expose-Headers']
     assert int(r.headers['X-Seq']) >= 1 and int(r.headers['X-Age-Ms']) >= 0
+
+
+# --- camera pan-tilt -----------------------------------------------------------------------
+
+
+def gimbal_posts(rover, after: float) -> list:
+    with rover.lock:
+        return [e[2] for e in rover.log if e[0] >= after and e[1] == '/gimbal']
+
+
+def test_gimbal_held_key_is_repeated_then_stopped(rover):
+    r = server.Robot(rover.url)
+    t0 = time.monotonic()
+    r.gimbal({'pan_rate': 1, 'tilt_rate': 0})
+    time.sleep(server.GIMBAL_HOLD + 0.4)  # the page stopped repeating it
+    posts = gimbal_posts(rover, t0)
+    assert posts[0] == {'pan_rate': 1.0, 'tilt_rate': 0.0}
+    assert posts.count(posts[0]) >= 2, 'a held key is repeated before the robot forgets it'
+    assert posts[-1] == {'pan_rate': 0.0, 'tilt_rate': 0.0}
+    assert rover.moving(t0) == []  # never a wheel command
+
+
+def test_gimbal_angles_and_center_are_sent_once(rover):
+    r = server.Robot(rover.url)
+    t0 = time.monotonic()
+    for order in ({'pan': 45, 'tilt': '-10.04'}, {'tilt': 30}, {'center': True}):
+        r.gimbal(order)
+        time.sleep(0.2)
+    time.sleep(0.3)
+    sent = [{'pan': 45.0, 'tilt': -10.0}, {'tilt': 30.0}, {'center': True}]
+    assert gimbal_posts(rover, t0) == sent
+
+
+def test_gimbal_angle_or_stop_ends_a_held_key(rover):
+    r = server.Robot(rover.url)
+    t0 = time.monotonic()
+    r.gimbal({'pan_rate': -1})
+    time.sleep(0.15)
+    r.gimbal({'pan': 0})
+    time.sleep(0.5)
+    zero = {'pan_rate': 0.0, 'tilt_rate': 0.0}
+    assert gimbal_posts(rover, t0) == [{'pan_rate': -1.0, 'tilt_rate': 0.0}, zero, {'pan': 0.0}]
+    t1 = time.monotonic()
+    r.gimbal({'tilt_rate': 1})
+    time.sleep(0.1)
+    r.stop()
+    time.sleep(0.3)
+    assert gimbal_posts(rover, t1)[-1] == zero
+
+
+def test_gimbal_error_is_reported():
+    r = server.Robot(f'http://127.0.0.1:{DEAD_PORT}')  # nothing listens
+    r.gimbal({'center': True})
+    deadline = time.time() + 6  # a refused connection takes about 2 s on Windows
+    while time.time() < deadline and not r.g_err:
+        time.sleep(0.1)
+    assert r.g_err and 'ConnectionError' in r.g_err
+
+
+@pytest.mark.parametrize(
+    'body',
+    [
+        b'{"pan": NaN}',
+        b'{"tilt": "x"}',
+        b'{"pan": 500}',
+        b'{"tilt": -91}',
+        b'{"pan_rate": Infinity}',
+        b'{"tilt_rate": true}',
+        b'[1]',
+        b'not json',
+    ],
+)
+def test_bad_gimbal_orders_are_400_and_never_sent(http, rover, body):
+    t0 = time.monotonic()
+    assert raw_post(SERVER_PORT, '/api/gimbal', body) == 400
+    time.sleep(0.15)
+    assert gimbal_posts(rover, t0) == []
+
+
+def test_http_gimbal_and_its_state(http, rover):
+    t0 = time.monotonic()
+    assert requests.post(http['url'] + '/api/gimbal', json={'pan': -30}).status_code == 200
+    time.sleep(0.6)  # also a new read of the robot's state
+    assert gimbal_posts(rover, t0) == [{'pan': -30.0}]
+    s = requests.get(http['url'] + '/api/state').json()
+    assert s['robot']['gimbal'] == {'pan': 0.0, 'tilt': 0.0, 'moving': False}  # the mock's
+    assert s['gimbal_err'] is None
+
+
+# --- depth camera (D405) -------------------------------------------------------------------
+
+
+def test_d405_pictures_and_status_are_relayed(http, rover):
+    url = http['url']
+    r = requests.get(url + '/d405/color.jpg', timeout=5)
+    assert r.status_code == 200 and r.content[:2] == b'\xff\xd8'
+    r = requests.get(url + '/d405/depth.jpg?max=2&t=123', timeout=5)
+    assert r.status_code == 200 and r.headers['Content-Type'] == 'image/jpeg'
+    with rover.lock:
+        assert rover.gets[-1] == '/d405/depth.jpg?max=2'  # only the range reaches the robot
+    s = requests.get(url + '/d405/status', timeout=5).json()
+    assert s['ok'] is True and s['camera']['name'] == 'RealSense D405'
+
+
+@pytest.mark.parametrize('q', ['max=abc', 'max=50', 'max=0.01', 'max=nan', 'max=inf'])
+def test_d405_bad_range_is_400_and_never_sent(http, rover, q):
+    with rover.lock:
+        n = len(rover.gets)
+    assert requests.get(http['url'] + '/d405/depth.jpg?' + q, timeout=5).status_code == 400
+    with rover.lock:
+        assert not any(p.startswith('/d405/') for p in rover.gets[n:])
+
+
+def test_d405_without_robot_is_503():
+    handler = server.make_handler(
+        server.Robot(f'http://127.0.0.1:{DEAD_PORT}'), None, 8081, '', {}
+    )
+    srv = serve(handler, 8161)
+    try:
+        r = requests.get('http://127.0.0.1:8161/d405/color.jpg', timeout=10)
+        assert r.status_code == 503 and 'robot unreachable' in r.json()['error']
+    finally:
+        srv.shutdown()
+        srv.server_close()
 
 
 # --- mission page --------------------------------------------------------------------------
