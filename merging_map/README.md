@@ -8,6 +8,7 @@ and decides what to do when the rover is blocked.
 | `fusion_carte.py` | The map: tile storage, fusion, A*, blocking decisions |
 | `cerveau.py` | The brain: the mission loop (decide, drive, look, handle link losses) |
 | `robot.py` | The interface between the brain and a rover, plus shared odometry bookkeeping |
+| `mission_settings.py` | The mission's distances in two sets: `FIELD` (default) and `ARENA` (2.4 m demo) |
 | `demo_fusion.py` | Simulated world and `Simu`, the simulated robot (needs `numpy` and `matplotlib`) |
 | `rover_reel.py` | `RaspRoverReel`, the real RaspRover through its on-board server (**not yet tested on the robot**) |
 | `demo_fusion.png` | Output of the demo |
@@ -69,10 +70,10 @@ gets a 404).
   (400, 404) raises `ServeurRoverError` instead of starting the recovery. When the link is
   really lost, the server finishes its current step and stops: there is no on-board return
   program, the brain waits for the link to come back.
-* **Known problem, small arena:** after a real cut (2 s or more), the brain marks a 1.5 m
-  no-go zone (`RAYON_ZONE` in `cerveau.py`, sized for the 25 m forest). In a 2.4 m arena that
-  blocks almost everything: with the fake server, a 2 s cut ended the mission 1.05 m from the
-  victim. The brain's distances need scaling for the arena.
+* **Small arena:** on the field, a real cut (2 s or more) makes the brain mark a 1.5 m no-go
+  zone. In the 2.4 m arena that blocks almost everything (with the fake server, a 3 s cut
+  ended the mission far from the victim), so the arena uses its own settings, without any
+  no-go zone (see "Field and arena settings" below).
 * **Measured against the real server** in simulation (`rover_server.py --sim`, slope drift
   0.1 rad/s): the camera in a frame rotated by 30 degrees and shifted, taking an image every
   second on its own clock (so up to 1 s late), 1 cm noise, no heading. Arrived around a box,
@@ -86,6 +87,27 @@ gets a 404).
   `odom.heading_deg`, `odom.gyro_ready`, `link.connected`. Changing them breaks the brain.
 * Not yet run on the real robot. Its first move, when the camera gives no heading, is a
   15 cm straight line in an unknown direction.
+
+## Field and arena settings
+
+The distances of a mission come from `mission_settings.py`, in two sets.
+`mission(..., settings=FIELD)` is the default (the simulation, the dashboard, a real mission
+outdoors); `lancer_overhead.py` uses `ARENA` for the 2.4 m arena of the demo. Only what
+depends on the size of the place changes; the rover and its sensors are the same:
+
+| Setting | `FIELD` | `ARENA` | Why |
+|---|---|---|---|
+| `step`, `careful_step` | 0.3, 0.15 m | same | the rover |
+| `drone_wait_max` | 300 s | same | time, not distance |
+| `uncertainty_budget` | 0.6 m | 0.15 m | position error allowed without the drone, vs the passages (30 to 40 cm in the arena) |
+| `link_backoff` | 0.5 m | 0 | rover link lost: how far back before the last connected point |
+| `no_go_radius` | 1.5 m | 0 | outdoors a link loss comes from a place (behind a ridge); in a room it is a Wi-Fi glitch: no zone, just plan again |
+| `check_horizon` | 3 m | 1 m | path ahead checked against new obstacles after each step |
+| `inspect_reserve`, `inspect_max_distance` | 0.35, 1.2 m | 0.15, 0.6 m | where the rover stops to look at an obstacle itself (no drone) |
+
+The `FIELD` values are the ones used so far: the simulation behaves exactly as before. The
+`ARENA` values are orders of magnitude, to check on the first test drive with the real robot.
+The rover radius and the planning cell size stay with the map (`REGLAGES_PETITE_ZONE`).
 
 ## With the overhead camera (branch `overhead-camera`)
 
@@ -272,7 +294,7 @@ still knows where it is.
 2. It drives back along its own trace to 50 cm before that point; the link comes back.
 3. It sends what it saw during the cut. The computer marks the area where the link was lost
    as a **no-go zone** (`carte.interdire_zone(x, y, r)`: a circle of 1.5 m just past that
-   point). The A\* treats it like an obstacle, but it stays out of the obstacle tiles, so the
+   point; none with the `ARENA` settings, where a lost link is a Wi-Fi glitch). The A\* treats it like an obstacle, but it stays out of the obstacle tiles, so the
    drone does not try to zoom on it and it can be removed later (radio relay).
 4. The module plans again with the global map and the drone. If the new path enters the dead
    zone somewhere else, the same thing happens and the zone is mapped bit by bit.

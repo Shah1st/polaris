@@ -21,6 +21,7 @@ import sys
 
 from cerveau import mission
 from fusion_carte import CarteFusion
+from mission_settings import ARENA
 from rover_reel import RaspRoverReel, client_http
 
 # Reglages pour une petite zone (point 3) : planification en cases de 5 cm, objectif atteint a
@@ -75,9 +76,11 @@ def lancer(
     tolerance=TOLERANCE_PETITE_ZONE,
     journal=print,
     options_rover=None,
+    settings=ARENA,
     **reglages_carte,
 ):
-    """Lance la mission. `depart` par defaut : la ou la camera voit le rover."""
+    """Lance la mission. `depart` par defaut : la ou la camera voit le rover.
+    `settings`: the mission's distances, ARENA by default (mission_settings)."""
     zone = camera.zone()
     if zone is None:
         raise RuntimeError("La camera ne donne pas d'image : impossible de connaitre la zone.")
@@ -94,7 +97,16 @@ def lancer(
                 'haut, en metres.'
             )
     carte, rover = preparer(camera, requete, percevoir, options_rover, **reglages_carte)
-    return mission(rover, carte, depart, victime, zone=zone, tolerance=tolerance, journal=journal)
+    return mission(
+        rover,
+        carte,
+        depart,
+        victime,
+        zone=zone,
+        tolerance=tolerance,
+        journal=journal,
+        settings=settings,
+    )
 
 
 def main(argv=None):
