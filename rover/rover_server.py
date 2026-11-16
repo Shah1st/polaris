@@ -44,6 +44,11 @@ HTTP API (JSON bodies). The first two match the shared simulation in sim/run_wor
   POST /gimbal         camera pan-tilt: {"pan_rate": -1|0|1, "tilt_rate": -1|0|1} while a key
                        is held (repeat it like /cmd), {"pan": deg, "tilt": deg} (pan + = right,
                        tilt + = up), or {"center": true}. A raw {"T":133,...} on /cmd works too.
+  GET  /commands       what the rover received (POST requests) and how fast it acted on it,
+                       measured on the robot: out_ms (sent to the ESP32), wheels_ms (wheels
+                       moving, or stopped for a stop), done_ms (step finished); and per client
+                       (address + program, or its X-Rover-Client header) its request rate and
+                       largest gap between requests over the last 10 s
   GET  /config         settings;  POST /config {"name": value, ...} changes and saves them
   GET  /d405/color.jpg, /d405/depth.jpg?max=1.0, /d405/status
                        the D405 depth camera, through its capture server on the robot
@@ -79,6 +84,7 @@ from d405_view import DEFAULT_URL as D405_URL
 from d405_view import D405UnavailableError, D405View
 from rover_core import (
     MAX_MANUAL_V,
+    CommandLog,
     Config,
     NotReadyError,
     Rover,
@@ -468,6 +474,17 @@ def make_handler(app: App):
 
         # -- helpers ----------------------------------------------------------------
 
+        def _client(self) -> str:
+            return CommandLog.client_name(
+                self.client_address[0],
+                self.headers.get('User-Agent'),
+                self.headers.get('X-Rover-Client'),
+            )
+
+        def send_response(self, code, message=None):
+            self._code = code  # for the command log
+            super().send_response(code, message)
+
         def _send(self, code: int, body: bytes, ctype: str) -> None:
             self.send_response(code)
             self.send_header('Content-Type', ctype)
@@ -497,7 +514,11 @@ def make_handler(app: App):
                 with open(INDEX_HTML, 'rb') as f:
                     self._send(200, f.read(), 'text/html; charset=utf-8')
             elif path == '/state':
+                if app.rover is not None:
+                    app.rover.cmdlog.note_request(time.monotonic(), self._client())
                 self._json(app.state())
+            elif path == '/commands':
+                self._json(app.rover.cmdlog.snapshot(time.monotonic()))
             elif path == '/config':
                 self._json(json.loads(json.dumps(app.rover.cfg.__dict__)))
             elif path == '/video_feed':
@@ -523,10 +544,24 @@ def make_handler(app: App):
                 self._json({'error': 'not found'}, 404)
 
         def do_POST(self) -> None:  # noqa: N802 - http.server API
+            t_recv = time.monotonic()
+            rover = app.rover
+            self._code, self._logged_body = 500, {}
+            try:
+                self._post()
+            finally:
+                if rover is not None:
+                    client = self._client()
+                    rover.cmdlog.note_request(t_recv, client)
+                    path = self.path.split('?')[0]
+                    rover.cmdlog.add(t_recv, client, path, self._logged_body, self._code)
+
+        def _post(self) -> None:
             path = self.path.split('?')[0]
             rover = app.rover
             try:
                 body = self._body()
+                self._logged_body = body
                 if path == '/cmd':
                     self._cmd(body)
                 elif path == '/move':
