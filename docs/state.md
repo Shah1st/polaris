@@ -43,6 +43,7 @@ the demo chain does not go through ROS.
 | Rover's own map (perception service, D405) | Off by default; not checked by this file's author |
 | Local navigation, first version (16 Nov): D405 grid on the rover, guard, driving without stops, rover grid fused | **Driven on the robot by the team with the guard and the rover's grid on: overprotective** (rover standing still, phantom obstacles, both maps worse than one). Floor calibrated, grid cost measured |
 | Local navigation, rework of 17 Nov: obstacles confirmed over pictures and forgotten by the clock, guard the width of the body with a back-off, the two maps as layers (`--fusion`), one map used alone when the other is missing | Tests only: real rover server with a simulated ESP32 and a stand-in depth camera, with phantom noise and a depth outage. Not on the robot. Dashboard changes not opened in a browser |
+| The rover clears the drone's false obstacles (`--clear-drone`, `sim/drone_clears.py`), off by default | Tests only (stand-in rover grid and drone pictures). Not on the robot, not opened in a browser |
 | ROS nodes (`/map`, `/rover/pose_overhead`, `merging_map_node`) | Run in the container on one photo; not part of the demo chain |
 | iPhone app: 0.5x lens | Builds on GitHub; used by the team |
 | iPhone app: LiDAR depth, video stabilisation | Compiled only, never run on a phone (their author's note) |
@@ -60,6 +61,7 @@ Defaults of `sim/fusion_reelle.py` on `main`:
 | `--continu` | off | Drive without stopping: plan twice a second, send a new path when it is better; the rover takes it over at speed. See local-navigation.md. |
 | `--source-locale` | `service` | What feeds the local map: the perception service at each stop, or `rover`, the grid the rover computes from its D405, also while driving. |
 | `--fusion` | `superposition` | With the local map on: the drone map plus the rover's obstacles near the rover (the rover erases nothing of the drone's), or `global` / `local`, one map alone. When the map asked for is missing the other is used; `status.json` `fusion` says which. |
+| `--clear-drone` | off | With `--fusion superposition`: a drone obstacle cell the rover's depth camera looks at from 0.25 to 0.5 m (`--clear-range`) and sees free, with everything within 10 cm (`--clear-margin`), 3 grids in a row (`--clear-views`), is cleared for good, until the rover sees an obstacle there or something new appears there in the drone's picture. For the floor's tape lines. Also a dashboard switch. See local-navigation.md. |
 | `--pas` | 0.15 m | Length of a mission step. Unused when `--segment` is set (the Mac script sets 2.0). |
 | `--drone-ombres` | on | Shadows on the floor are not obstacles. |
 | `--drone-hauteur` | 1.8 m | Only a starting point for the scale; the tag or the rover's move corrects it. |

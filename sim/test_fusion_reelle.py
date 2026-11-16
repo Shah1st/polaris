@@ -652,7 +652,13 @@ def test_driving_and_the_local_map_source_can_be_switched_while_running() -> Non
     f, _ = fusion()
     assert f.regler_conduite({'continu': True}) == (
         200,
-        {'ok': True, 'continu': True, 'source_locale': 'service', 'fusion': 'superposition'},
+        {
+            'ok': True,
+            'continu': True,
+            'source_locale': 'service',
+            'fusion': 'superposition',
+            'clear_drone': False,
+        },
     )
     assert f.args.continu is True
     code, answer = f.regler_conduite({'source_locale': 'rover', 'continu': False})
@@ -1098,3 +1104,200 @@ def test_what_the_guard_stopped_for_is_one_cell_for_a_short_time(monkeypatch) ->
     clock[0] += 11.0
     f.tour()
     assert cell(f, 20.625, 20.025) == 0
+
+
+# ---- the rover clears the drone's false obstacles (--clear-drone, sim/drone_clears.py) ------
+
+# a tape line the drone takes for an obstacle: 85 cm along y, 37.5 cm ahead of the rover (cells
+# x = 20.375, y = 19.625 to 20.425). Seen from the rover at (20, 20) facing +x, its cells from
+# y = 19.775 to 20.225 are in the camera's good range (0.25 to 0.5 m, 35 deg off its axis).
+TAPE = [(20.37, 19.62 + 0.05 * k) for k in range(17)]
+IN_VIEW = [19.775 + 0.05 * k for k in range(10)]
+
+
+def drone_picture(boxes, dx=0.0):
+    """A drone picture already placed on the maps, as the strip of with_both_maps: (matrix,
+    x0, y0), `boxes` (x, y) as obstacle cells, all moved by `dx` (the placement's jitter)."""
+    m = np.zeros((40, 60), np.int8)
+    for x, y in boxes:
+        m[int((y - 19.0) / 0.05), int((x + dx - 19.5) / 0.05)] = 1
+    return m, 19.5, 19.0
+
+
+def put_picture(f, boxes, dx=0.0):
+    with f.verrou:
+        f.put_drone_picture(drone_picture(boxes, dx))
+
+
+def test_the_rover_clears_a_tape_line_it_sees_free_from_close_three_times() -> None:
+    f, local, _ = with_both_maps(['--clear-drone'], drone_boxes=TAPE)
+    f.tour()
+    f.tour()
+    assert cell(f, 20.375, 20.025) == 1  # two looks are not enough
+    f.tour()
+    assert all(cell(f, 20.375, y) == 0 for y in IN_VIEW)
+    assert cell(f, 20.375, 20.275) == 1 and cell(f, 20.375, 19.725) == 1  # out of its view
+    assert f.status['fusion']['clear_drone'] is True
+    assert f.status['fusion']['drone_cleared'] == 10
+    f.reinitialiser()
+    assert len(f.clears) == 0
+
+
+def test_at_a_stop_of_a_mission_the_rover_takes_the_looks_it_needs_at_once(monkeypatch) -> None:
+    """A mission reads the rover's grid once per stop: three stops in a row facing the tape
+    would almost never happen."""
+    naps = []
+    monkeypatch.setattr(fr.time, 'sleep', naps.append)
+    f, local, _ = with_both_maps(['--clear-drone'], drone_boxes=TAPE)
+    f.tour()  # sets the frame of the maps
+    f.clears.reset()
+    assert f.regard((20.0, 20.0), 0.0) is fr.GRILLE
+    assert cell(f, 20.375, 20.025) == 0 and naps == [0.3, 0.3]
+    naps.clear()
+    assert f.regard((20.0, 20.0), 0.0) is fr.GRILLE  # nothing more to clear: no wait
+    assert naps == []
+
+
+def test_clearing_the_drone_is_off_by_default() -> None:
+    assert fr.options([]).clear_drone is False
+    f, local, _ = with_both_maps(drone_boxes=TAPE)
+    for _ in range(4):
+        f.tour()
+    assert cell(f, 20.375, 20.025) == 1
+    assert f.status['fusion']['clear_drone'] is False
+
+
+def test_the_rover_clears_nothing_it_does_not_look_at_from_close() -> None:
+    far = [(20.67, 19.92 + 0.05 * k) for k in range(5)]  # 67.5 cm ahead: beyond 0.5 m
+    behind = [(19.67, 19.92 + 0.05 * k) for k in range(5)]
+    f, local, _ = with_both_maps(['--clear-drone'], drone_boxes=far + behind)
+    for _ in range(5):
+        f.tour()
+    assert cell(f, 20.675, 20.025) == 1 and cell(f, 19.675, 20.025) == 1
+    assert f.status['fusion']['drone_cleared'] == 0
+
+
+def test_the_rover_looks_where_its_grid_says_it_was() -> None:
+    f, local, _ = with_both_maps(['--clear-drone'], drone_boxes=TAPE)
+    local['pose'] = [0.0, 0.0, math.pi]  # facing back when the grid was made
+    for _ in range(3):
+        f.tour()
+    assert cell(f, 20.375, 20.025) == 1
+    local['pose'] = [0.0, 0.0, 0.0]
+    for _ in range(3):
+        f.tour()
+    assert cell(f, 20.375, 20.025) == 0
+
+
+def test_the_same_grid_read_again_is_not_a_new_look() -> None:
+    f, local, _ = with_both_maps(['--clear-drone'], drone_boxes=TAPE)
+    local['frames'] = 7  # the rover integrated no new depth picture between the reads
+    for _ in range(4):
+        f.tour()
+    assert cell(f, 20.375, 20.025) == 1
+    for _ in range(2):
+        local['frames'] += 1
+        f.tour()
+    assert cell(f, 20.375, 20.025) == 0
+
+
+def test_a_cell_is_not_cleared_while_the_rover_has_not_seen_around_it() -> None:
+    f, local, _ = with_both_maps(['--clear-drone'], drone_boxes=TAPE)
+    put(local, 20.47, 20.02, -1)  # not seen, 10 cm from the line
+    for _ in range(3):
+        f.tour()
+    assert cell(f, 20.375, 20.025) == 1
+    assert cell(f, 20.375, 20.225) == 0  # further along the line
+
+
+def test_near_a_real_obstacle_on_the_line_only_10_cm_of_tape_stay() -> None:
+    f, local, _ = with_both_maps(['--clear-drone'], drone_boxes=TAPE)
+    put(local, 20.37, 20.02, 1)  # the rover sees a real box on the line
+    for _ in range(3):
+        f.tour()
+    assert cell(f, 20.375, 20.025) == 1  # the box
+    assert cell(f, 20.375, 20.125) == 1 and cell(f, 20.375, 19.925) == 1  # 10 cm of tape
+    assert cell(f, 20.375, 20.175) == 0 and cell(f, 20.375, 19.875) == 0  # the rest goes
+
+
+def test_a_rover_obstacle_beside_cleared_tape_is_no_longer_taken_for_the_drones() -> None:
+    f, local, _ = with_both_maps(['--clear-drone'], drone_boxes=TAPE)
+    put(local, 20.52, 20.02, 1)  # 15 cm beside the line: taken for the tape seen twice
+    f.tour()
+    assert f.status['fusion']['doublons'] == 1 and cell(f, 20.525, 20.025) != 1
+    f.tour()
+    f.tour()
+    assert cell(f, 20.375, 20.025) == 0  # the tape there is cleared: the obstacle is its own
+    assert f.status['fusion']['doublons'] == 0 and cell(f, 20.525, 20.025) == 1
+
+
+@pytest.mark.parametrize('cumul', [False, True])
+def test_what_the_rover_cleared_stays_cleared_on_the_drones_next_pictures(cumul) -> None:
+    f, local, _ = with_both_maps(
+        ['--clear-drone'] + (['--drone-cumul'] if cumul else []), drone_boxes=TAPE
+    )
+    for _ in range(3):
+        f.tour()
+    put_picture(f, TAPE)  # the drone draws the tape again
+    f.tour()
+    assert all(cell(f, 20.375, y) == 0 for y in IN_VIEW)
+    put_picture(f, TAPE, dx=0.05)  # placed one cell off: the marker's jitter
+    f.tour()
+    assert all(cell(f, 20.425, y) == 0 for y in IN_VIEW)
+    assert all(cell(f, 20.375, y) == 0 for y in IN_VIEW)
+    assert f.status['fusion']['drone_cleared'] == 10  # nothing given back
+
+
+def test_a_cleared_cell_is_given_back_when_the_rover_sees_an_obstacle_there() -> None:
+    f, local, _ = with_both_maps(['--clear-drone'], drone_boxes=TAPE)
+    for _ in range(3):
+        f.tour()
+    put(local, 20.37, 20.02, 1)  # something was put on the line
+    f.tour()
+    assert cell(f, 20.375, 20.025) == 1  # the rover's
+    assert f.status['fusion']['drone_cleared'] == 5  # the cells within 10 cm of it went back
+    assert cell(f, 20.375, 20.225) == 0
+    put(local, 20.37, 20.02, -1)  # the rover forgets it (it looked away)
+    f.tour()
+    put_picture(f, TAPE)
+    f.tour()
+    assert cell(f, 20.375, 20.025) == 1  # the drone's again
+
+
+def test_a_cleared_cell_is_given_back_when_something_new_appears_there_for_the_drone() -> None:
+    f, local, _ = with_both_maps(['--clear-drone'], drone_boxes=TAPE)
+    for _ in range(3):
+        f.tour()
+    box = [(20.47 + 0.05 * a, 19.97 + 0.05 * b) for a in range(2) for b in range(3)]
+    put_picture(f, TAPE + [(20.47, 20.22)])  # a speck: noise
+    put_picture(f, TAPE + [(20.47, 20.22)])
+    assert len(f.clears) == 10
+    put_picture(f, TAPE + box)  # a 10 x 15 cm box 5 cm beside the line
+    assert len(f.clears) == 10  # one picture is not enough
+    put_picture(f, TAPE + box)
+    assert 0 < len(f.clears) < 10
+    f.tour()
+    assert cell(f, 20.375, 20.025) == 1  # the tape next to the box is the drone's again
+    assert cell(f, 20.475, 20.025) == 1  # and the box is there
+    assert cell(f, 20.375, 19.775) == 0  # far from the box: still cleared
+
+
+def test_clearing_the_drone_is_switched_also_during_a_mission_and_off_gives_all_back(
+    monkeypatch,
+) -> None:
+    f, local, _ = with_both_maps(drone_boxes=TAPE)
+    monkeypatch.setattr(f, 'en_mission', lambda: True)
+    assert f.regler_conduite({'clear_drone': 'yes'})[0] == 400
+    code, answer = f.regler_conduite({'clear_drone': True})
+    assert code == 200 and answer['clear_drone'] is True
+    assert f.regler_conduite({'continu': True})[0] == 409  # the others wait for the end
+    monkeypatch.setattr(f, 'en_mission', lambda: False)
+    for _ in range(3):
+        f.tour()
+    assert cell(f, 20.375, 20.025) == 0
+    assert f.regler_conduite({'clear_drone': False})[0] == 200
+    assert len(f.clears) == 0
+    put_picture(f, TAPE)
+    for _ in range(3):
+        f.tour()
+    assert cell(f, 20.375, 20.025) == 1 and f.status['fusion']['drone_cleared'] == 0

@@ -26,7 +26,8 @@ curl -X POST http://127.0.0.1:8080/config -d '{"guard_half_width": 0.10,
 
 - The drone map is the map. The rover's grid is a layer on top of it, near the rover only,
   rebuilt from what the rover knows at every plan and never stored.
-- The rover's grid adds obstacles; it never erases the drone's.
+- The rover's grid adds obstacles; it never erases the drone's. Exception, off by default:
+  `--clear-drone` (below), for the drone's false obstacles such as tape lines.
 - An obstacle counts once two pictures out of three have shown it.
 - The guard's corridor is the rover's body, 5 cm inside the planner's keep-out.
 - Everything local is forgotten by the clock, whether or not pictures still arrive.
@@ -91,7 +92,49 @@ paths. If the link is slow, the rover reaches the end of its path and waits ther
 - With the local map off nothing changed: the drone map, and the old rule.
 - `status.json` `fusion`: `demandee`, `utilisee`, `raison`, `cellules_rover` (rover obstacle
   cells in the plan), `doublons` (left out as the drone's), `arrets_garde` (guard stops since
-  the maps were reset). The dashboard shows them under the switches.
+  the maps were reset), `clear_drone` and `drone_cleared` (below). The dashboard shows them
+  under the switches.
+
+## The rover clears the drone's false obstacles (`--clear-drone`, off by default)
+
+The drone takes anything that differs from the floor's colour for an obstacle: the blue tape
+lines of the floor, a stain, a reflection. In superposition a rover "free" never erases a
+drone obstacle, and the drone draws the same false obstacle again in every picture, so the
+planner kept going round the tape, or found no way across it.
+
+With `--clear-drone` (or the dashboard's **Rover clears the drone** box), in superposition
+only (`sim/drone_clears.py`, called from `superposer` and from each placed drone picture):
+
+- **When a cell is cleared**: it is a drone obstacle; the rover's depth camera looks at it now
+  (0.25 to 0.5 m ahead of the lens, `--clear-range`: the D405's good range, and the floor is
+  not seen nearer than about 0.25 m; within 35 degrees of its axis); the rover's grid has it
+  free and every cell within 10 cm too (`--clear-margin`; a cell not seen blocks it like an
+  obstacle); in 3 grids in a row (`--clear-views`) that hold new depth pictures (`frames` of
+  `/local_grid`: the same memory read twice is not a second look). The rover's pose is the
+  one `/local_grid` gives with the grid. Outside a mission the grid is read every second; a
+  mission in segments reads it once per stop, so a stop where a drone obstacle is seen free
+  takes the other looks at once (0.3 s each).
+- **A box on a tape line**: the rover sees the box, so the tape within 10 cm of it stays
+  (and the box); the rest of the line is cleared.
+- **Where it is kept**: cells of the maps, cleared on the drone's layer at once and on every
+  later picture of the drone, also with `--drone-cumul`. On those pictures with one cell of
+  slack around (the placement by the marker jitters), so near a real obstacle the margin is
+  one cell less there.
+- **How long**: for good, until the rover sees an obstacle within 10 cm of it; or the drone's
+  picture shows something new near it (a piece of 3 obstacle cells at least that was not
+  there when it was cleared, in 2 pictures in a row: something was put there); or the maps
+  are reset, the "Calibrate direction" button is used, or the switch is turned off (the
+  drone's next pictures draw those cells again).
+- **Duplicates**: the rover's obstacles are compared with the drone's layer once cleared, so
+  a box the rover sees 15 cm beside cleared tape is no longer left out as the drone's.
+- **Seen on the maps**: purple dots on the drone map and the fused map. `status.json`
+  `fusion.drone_cleared` counts them; the maps server's log says each change.
+- **Limit**: the rover's position is its odometry only. If the drone map and the rover's
+  grid drift more than 10 cm apart, the rover can clear the drone's copy of a real obstacle
+  it sees a little further off. It still avoids it while it sees it (its own obstacle is
+  kept), but once it has driven away the obstacle is gone from the map. The rover must also
+  face a false obstacle from less than 0.5 m: one that closes the only way is never
+  approached. Tests only so far (`sim/test_fusion_reelle.py`).
 
 ## The parts
 
@@ -132,6 +175,8 @@ Maps server (`sim/fusion_reelle.py`):
 | `--source-locale` | `service` | What feeds the local map: `service`, the perception service at each stop, as before; `rover`, the rover's own grid, also while driving |
 | `--carte-locale` | off | As before |
 | `--fusion` | `superposition` | With the local map on: `superposition`, `global`, `local` (table above). Also `POST /conduite {"fusion": ...}` |
+| `--clear-drone` | off | The rover clears the drone's false obstacles (section above). Also `POST /conduite {"clear_drone": ...}`, taken during a mission too |
+| `--clear-range`, `--clear-margin`, `--clear-views` | 0.5 m, 0.10 m, 3 | How close the camera must look, the margin seen free around a cell, the grids in a row |
 | `--segment-vu` | off | Drive only through cells seen free. Also applied by itself when the rover's grid is the only map |
 | `--segment` | 0 | With `--continu`: longest path sent, m (2 m when 0) |
 | `--periode-plan` | 0.5 s | Time between two plans |
@@ -204,8 +249,9 @@ where things were.
 - `status.json` of the maps server: `local` (`source`, `age_s`, `erreur`, `garde`,
   `obstacle_dist`) and `conduite` (`pas`, `segments`, `continu`). `POST /conduite`
   `{"continu": bool, "source_locale": "rover"|"service", "fusion":
-  "superposition"|"global"|"local"}` (any key) changes `--continu`, `--source-locale` and
-  `--fusion` while it runs; 409 during a mission. `status.json` has `fusion` (above).
+  "superposition"|"global"|"local", "clear_drone": bool}` (any key) changes `--continu`,
+  `--source-locale`, `--fusion` and `--clear-drone` while it runs; 409 during a mission,
+  except for `clear_drone` alone. `status.json` has `fusion` (above).
 - Dashboard (`teleop/server.py`): `POST /fusion/conduite` relays that; `POST /api/guard`
   `{"local_guard": bool}`; `/api/state` has `guard` (0, 1, `"absent"` on an older rover
   server), `robot.local` and `ctrl.local` from the rover's `/state`.
@@ -248,6 +294,8 @@ Then the dashboard as usual: click a goal, "Go".
   `POST /vitesse` (0.05 to 0.30 m/s; the slider stops at 0.20), from the next path sent to the
   rover, also during a mission.
 
+- **Rover clears the drone**: `--clear-drone` (section above), also during a mission; the
+  line under the switches counts the cleared cells. Not tried in a browser.
 - **Maps**: which maps the planner uses (`--fusion`); the line under the switches says
   which are in use and why, how many rover obstacle cells are in the plan, how many were
   left out as the drone's, and the guard's stops. The guard shows "NO DEPTH PICTURE: driving
