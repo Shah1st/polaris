@@ -215,6 +215,9 @@ class CarteFusion:
         # patinage) ne ferme un passage que ce temps-la : expirer_chocs(t) les efface.
         self.duree_choc = None
         self.chocs_temporaires = []  # (x, y, rayon, t_fin, source)
+        # Comment les deux roles se combinent dans grille() : voir sa documentation.
+        self.rover_efface_drone = True
+        self.roles_ignores = set()  # roles laisses de cote ('drone' ou 'rover') : une seule carte
 
     # ---- geometrie --------------------------------------------------------
     @property
@@ -336,6 +339,20 @@ class CarteFusion:
         self.chocs_temporaires = restants
         return effaces
 
+    def reposer_chocs(self, t):
+        """Remet en obstacle les cases des chocs temporaires encore en vie a l'instant t ;
+        renvoie leur nombre. A appeler apres avoir recu une vue du rover : une vue plus recente
+        qui dit « libre » a cet endroit l'effacerait (recevoir : le plus recent gagne), alors
+        que la camera ne voit pas toujours ce que le rover a senti ou ce que son garde-fou a
+        vu. Le choc garde sa duree de vie : expirer_chocs l'efface a la meme heure."""
+        vivants = [c for c in self.chocs_temporaires if t < c[3]]
+        for x, y, rayon, _, source in vivants:
+            for (z, tx, ty), masque in self._disque(x, y, rayon).items():
+                data = np.where(masque, OBSTACLE, INCONNU).astype(np.int8)
+                tk = max(t, self.maj.get(source, {}).get((z, tx, ty), t))
+                self.recevoir({'source': source, 't': tk, 'z': z, 'x': tx, 'y': ty, 'data': data})
+        return len(vivants)
+
     def oublier_rover(self, zone=None, source=None):
         """Oublie ce que les rovers ont vu ou ressenti (vues et chocs) dans `zone`
         (x0, y0, x1, y1 en m ; None = partout), pour toutes les sources du role rover ou
@@ -365,47 +382,70 @@ class CarteFusion:
         return oubliees
 
     # ---- vue fusionnee ----------------------------------------------------
-    def grille(self, x0, y0, x1, y1):
-        """Carte fusionnee dense, au niveau le plus fin, sur [x0, x1] x [y0, y1]."""
+    def _fenetre(self, x0, y0, x1, y1):
         r = self.res_fine
         eps = 1e-6  # evite 0.6/0.1 = 6.0000001 -> 7
         i0, j0 = math.floor(y0 / r + eps), math.floor(x0 / r + eps)
         i1, j1 = math.ceil(y1 / r - eps), math.ceil(x1 / r - eps)
+        return i0, j0, i1, j1
+
+    def _couche(self, role, i0, j0, i1, j1):
+        """(valeurs, niveau de la tuile utilisee) d'un role sur la fenetre de cases fines."""
         nh, nw = i1 - i0, j1 - j0
-        couches = {}
-        for role in SOURCES:
-            val = np.full((nh, nw), INCONNU, np.int8)
-            zc = np.full((nh, nw), -1, np.int8)
-            # Du plus grossier au plus fin, puis du plus ancien au plus recent : chaque tuile
-            # ecrase ce qui precede la ou elle sait. Pour une seule source, les tuiles d'un
-            # meme niveau ne se recouvrent pas : seul l'ordre des niveaux compte.
-            tuiles = [
-                (z, self.maj[s].get((z, tx, ty), 0.0), tx, ty, data)
-                for s in self.sources(role)
-                for (z, tx, ty), data in self.tuiles[s].items()
-            ]
-            tuiles.sort(key=lambda u: (u[0], u[1]))
-            for z, _, tx, ty, data in tuiles:
-                f = 2 ** (self.zmax - z)  # 1 case de la tuile = f x f cases fines
-                cote = self.n * f
-                ti0, tj0 = ty * cote, tx * cote
-                a0, a1 = max(ti0, i0), min(ti0 + cote, i1)
-                b0, b1 = max(tj0, j0), min(tj0 + cote, j1)
-                if a0 >= a1 or b0 >= b1:
-                    continue
-                lignes = (np.arange(a0, a1) - ti0) // f
-                cols = (np.arange(b0, b1) - tj0) // f
-                patch = data[np.ix_(lignes, cols)]
-                connu = patch != INCONNU
-                v = val[a0 - i0 : a1 - i0, b0 - j0 : b1 - j0]
-                v[connu] = patch[connu]
-                zc[a0 - i0 : a1 - i0, b0 - j0 : b1 - j0][connu] = z
-            couches[role] = (val, zc)
-        vd, zd = couches['drone']
-        vr, _ = couches['rover']
-        rover_connu = vr != INCONNU
-        val = np.where(rover_connu, vr, vd).astype(np.int8)
-        src = np.where(rover_connu, SRC_ROVER, np.where(vd != INCONNU, SRC_DRONE, SRC_AUCUNE))
+        val = np.full((nh, nw), INCONNU, np.int8)
+        zc = np.full((nh, nw), -1, np.int8)
+        if role in self.roles_ignores:
+            return val, zc
+        # Du plus grossier au plus fin, puis du plus ancien au plus recent : chaque tuile
+        # ecrase ce qui precede la ou elle sait. Pour une seule source, les tuiles d'un
+        # meme niveau ne se recouvrent pas : seul l'ordre des niveaux compte.
+        tuiles = [
+            (z, self.maj[s].get((z, tx, ty), 0.0), tx, ty, data)
+            for s in self.sources(role)
+            for (z, tx, ty), data in self.tuiles[s].items()
+        ]
+        tuiles.sort(key=lambda u: (u[0], u[1]))
+        for z, _, tx, ty, data in tuiles:
+            f = 2 ** (self.zmax - z)  # 1 case de la tuile = f x f cases fines
+            cote = self.n * f
+            ti0, tj0 = ty * cote, tx * cote
+            a0, a1 = max(ti0, i0), min(ti0 + cote, i1)
+            b0, b1 = max(tj0, j0), min(tj0 + cote, j1)
+            if a0 >= a1 or b0 >= b1:
+                continue
+            lignes = (np.arange(a0, a1) - ti0) // f
+            cols = (np.arange(b0, b1) - tj0) // f
+            patch = data[np.ix_(lignes, cols)]
+            connu = patch != INCONNU
+            v = val[a0 - i0 : a1 - i0, b0 - j0 : b1 - j0]
+            v[connu] = patch[connu]
+            zc[a0 - i0 : a1 - i0, b0 - j0 : b1 - j0][connu] = z
+        return val, zc
+
+    def couche(self, role, x0, y0, x1, y1):
+        """Ce qu'un seul role ('drone' ou 'rover') sait sur [x0, x1] x [y0, y1], au niveau le
+        plus fin : matrice -1/0/1, ligne 0 au sud, memes cases que grille()."""
+        return self._couche(role, *self._fenetre(x0, y0, x1, y1))[0]
+
+    def grille(self, x0, y0, x1, y1):
+        """Carte fusionnee dense, au niveau le plus fin, sur [x0, x1] x [y0, y1].
+
+        rover_efface_drone (defaut True, regle historique) : une case connue du rover
+        remplace celle du drone, libre comprise. A False, les deux se SUPERPOSENT : la carte
+        du drone reste la carte, le rover y ajoute ses obstacles et ne renseigne en libre que
+        ce que le drone n'a pas vu. Un « libre » du rover n'efface alors jamais un obstacle
+        du drone : les deux ne sont pas dans le meme repere (odometrie contre camera), et un
+        obstacle vu quelques centimetres a cote serait efface a tort."""
+        r = self.res_fine
+        i0, j0, i1, j1 = self._fenetre(x0, y0, x1, y1)
+        vd, zd = self._couche('drone', i0, j0, i1, j1)
+        vr, _ = self._couche('rover', i0, j0, i1, j1)
+        if self.rover_efface_drone:
+            du_rover = vr != INCONNU
+        else:
+            du_rover = (vr == OBSTACLE) | ((vr == LIBRE) & (vd == INCONNU))
+        val = np.where(du_rover, vr, vd).astype(np.int8)
+        src = np.where(du_rover, SRC_ROVER, np.where(vd != INCONNU, SRC_DRONE, SRC_AUCUNE))
         return Grille(val, src.astype(np.int8), zd, i0, j0, r)
 
     def _reduire_aligne(self, g, arr):

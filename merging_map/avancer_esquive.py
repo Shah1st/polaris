@@ -65,6 +65,7 @@ Limites :
 
 import argparse
 import math
+import secrets
 import signal
 import time
 
@@ -80,6 +81,7 @@ from rover_reel import (
     angle_normalise,
     client_http,
     garde_declenche,
+    garde_recule,
     nouvelles_entrees,
     odometre,
     panne_serveur,
@@ -321,11 +323,21 @@ class RoverSegments(RaspRoverReel):
                     f'Segment refuse : {reelle:.2f} m depuis la pose odometrique du rover pour '
                     f'{longueur:.2f} m demandes (marge {self.marge_pas:.2f} m) : repere faux.'
                 )
+        # Un nom par segment : le serveur le rend dans l'entree de ctrl.history. Sans lui, deux
+        # segments finis de la meme facon (refuses sur place par le garde-fou local : 'blocked',
+        # 0 m, 0 s, meme obstacle) laissent deux entrees identiques, et _controler_segment
+        # prenait la seconde pour un segment « disparu sans trace ». Un serveur plus ancien
+        # ignore ce champ.
+        self._n_segments = getattr(self, '_n_segments', 0) + 1
+        if not hasattr(self, '_nom'):
+            self._nom = secrets.token_hex(3)
         corps = {
             'points': [[round(x, 4), round(y, 4)] for x, y in odom],
             'frame': 'odom',
             'speed': self.vitesse,
+            'id': f'seg-{self._nom}-{self._n_segments}',
         }
+        self.fin = None  # l'entree de ctrl.history du segment fini (obstacle_vu la lit)
         self._prevu = duree  # attente_pas : le premier GET /state ne part qu'apres `duree`
         try:
             statut, etat = self._faire_un_pas('/path', corps, longueur, etat)
@@ -334,6 +346,8 @@ class RoverSegments(RaspRoverReel):
         finally:
             accepte = self.accepte = self._poste is not None
             self._prevu, self._poste = 0.0, None
+        if etat is not None and statut not in (None, 'redemarrage'):
+            self.fin = ((etat.get('ctrl') or {}).get('history') or [None])[0]
         if statut is None:
             return 'liaison', None
         if statut == 'redemarrage':
@@ -350,6 +364,122 @@ class RoverSegments(RaspRoverReel):
             return statut, None
         patine = self._arret(statut, etat)
         return statut, self.point_de_choc(statut, patine)
+
+    # ---- conduite continue (sim/fusion_reelle.py --continu, suivi_continu.py) -------------
+    # Le chemin en cours est remplace SANS arreter le rover : chaque POST /path porte un "id",
+    # que le serveur rend dans ctrl.current et ctrl.history. Tout ce qui n'a pas un id de la
+    # mission vient d'un autre client. Demande rover/rover_server.py avec les id de chemin.
+
+    def lancer(self, points, ident):
+        """Envoie le chemin `points` (repere de la mission) sous le nom `ident`, sans attendre
+        sa fin ; il remplace celui qui roule. True si le serveur a repondu ; False sinon
+        (reponse perdue : suivi() dira s'il l'a recu, le renvoyer est sans danger). Leve
+        ServeurRoverError si le chemin part trop loin de la pose odometrique (repere faux)."""
+        etat = self.odo.etat
+        if not hasattr(self, '_ids'):
+            self._ids, self._dernier_hist = set(), None
+        if not self._ids:  # premier chemin de la mission : l'historique d'avant n'est pas a nous
+            self._controler_stops(etat)
+            self._dernier_hist = ((etat.get('ctrl') or {}).get('history') or [None])[0]
+            self._vies = self.odo.redemarrages
+        longueur = longueur_chemin([self.est, *points])
+        odom = [self.repere.vers_odom(*p) for p in points]
+        reelle = longueur_chemin([pose_odom(etat)[:2], *odom])
+        if reelle > longueur + self.marge_pas:
+            raise ServeurRoverError(
+                f'Chemin refuse : {reelle:.2f} m depuis la pose odometrique du rover pour '
+                f'{longueur:.2f} m demandes (marge {self.marge_pas:.2f} m) : repere faux.'
+            )
+        self._ids.add(ident)
+        corps = {
+            'points': [[round(x, 4), round(y, 4)] for x, y in odom],
+            'frame': 'odom',
+            'speed': self.vitesse,
+            'id': ident,
+        }
+        return self._brute('POST', '/path', corps) is not None
+
+    def suivi(self):
+        """Un GET /state pendant la conduite continue. Renvoie (phase, info) :
+        ('liaison', None)   pas de reponse ;
+        ('en_cours', ctrl)  un chemin de la mission roule (ctrl : le bloc ctrl de /state) ;
+        ('fini', entree)    le dernier chemin est fini, rover arrete (entree de ctrl.history :
+                            'status' 'done', 'blocked' avec 'obstacle', 'stalled'...) ;
+        ('repos', None)     rien ne roule et rien de nouveau.
+        Leve ArretOperateur (STOP, conduite a la main, commande d'un autre client) et
+        ServeurRoverError (panne ou redemarrage du serveur, serveur sans id de chemin)."""
+        etat = self._brute('GET', '/state')
+        if etat is None:
+            return 'liaison', None
+        if not hasattr(self, '_ids'):
+            self._ids, self._dernier_hist = set(), None
+        vies = self.odo.redemarrages
+        self.odo.nouvel_etat(etat)
+        self._dernier_etat = etat
+        if self.odo.redemarrages != vies:
+            self.arreter()
+            raise ServeurRoverError(
+                'serveur du rover redemarre pendant la conduite : position du rover '
+                'incertaine, mission arretee'
+            )
+        self._suivre(etat)
+        ctrl = etat.get('ctrl') or {}
+        if ctrl.get('mode') == 'manual':
+            raise ArretOperateur('rover repris en main (commande manuelle /cmd)')
+        historique = ctrl.get('history') or []
+        nouvelles = nouvelles_entrees(historique, self._dernier_hist) if self._ids else []
+        for h in reversed(nouvelles):
+            statut = h.get('status')
+            if h.get('id') not in self._ids:
+                raise ArretOperateur(
+                    f"commande d'un autre client pendant la mission (statut '{statut}')"
+                )
+            if statut == 'replaced by a new command':
+                if h.get('replaced_by') not in self._ids:
+                    raise ArretOperateur('chemin remplace par un autre client : fin de mission')
+            elif statut in ARRETS_OPERATEUR:
+                raise ArretOperateur(f"chemin interrompu par un operateur (statut '{statut}')")
+            elif panne_serveur(statut):
+                self._panne(statut, ctrl)
+        if self._ids:
+            self._dernier_hist = historique[0] if historique else None
+        courant = ctrl.get('current')
+        if courant is not None and self._ids:
+            if 'id' not in courant:
+                raise ServeurRoverError(
+                    "Le serveur du rover ne rend pas l'id des chemins : rover_server.py trop "
+                    'ancien sur le robot pour la conduite continue, deployer celui de main.'
+                )
+            if courant.get('id') not in self._ids:
+                raise ArretOperateur("le rover suit la commande d'un autre client")
+        roule = ctrl.get('mode') in ('move', 'turn', 'path', 'settle') or garde_recule(ctrl)
+        if roule or ctrl.get('queued') or courant is not None:
+            return 'en_cours', ctrl
+        finies = [h for h in nouvelles if h.get('status') != 'replaced by a new command']
+        if finies:
+            if finies[0].get('status') == 'done' and ctrl.get('fault'):
+                self._panne('done', ctrl)
+            self._odo_fin = odometre(etat)
+            return 'fini', finies[0]
+        if panne_serveur(ctrl.get('fault')):
+            self._panne(ctrl.get('fault'), ctrl)
+        return 'repos', None
+
+    def obstacle_vu(self, entree):
+        """Le point (repere de la mission) ou le garde-fou local du rover a vu l'obstacle qui a
+        fini le chemin ('blocked'), ou None."""
+        o = entree.get('obstacle')
+        if entree.get('status') != 'blocked' or not o:
+            return None
+        return self.repere.vers_carte(float(o[0]), float(o[1]))
+
+    def pivoter(self, angle_deg):
+        """Tourne sur place de `angle_deg` (+ = a gauche) et attend l'arret ; le statut du
+        serveur. Pour regarder autour avec une camera fixe au chassis."""
+        statut, etat = self._faire_un_pas('/turn', {'angle': angle_deg}, 0.2)
+        if etat is not None and hasattr(self, '_ids'):
+            self._dernier_hist = ((etat.get('ctrl') or {}).get('history') or [None])[0]
+        return statut
 
     def signaler_choc(self, impact):
         """Aussi une zone interdite : un obstacle de la carte serait efface par la prochaine

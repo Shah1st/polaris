@@ -596,3 +596,505 @@ def test_defaults_for_a_small_arena() -> None:
     assert (a.rayon, a.pas, a.drone_ombres) == (0.15, 0.15, True)
     f, _ = fusion()
     assert f.carte.rayon_robot == 0.15 and f.carte.rayon_effectif == 0.15
+
+
+# ---- the rover's own obstacle grid (--source-locale rover) and continuous driving ------------
+
+
+def test_the_rover_grid_is_fused_at_its_place_also_while_the_rover_moves() -> None:
+    """The rover is at odometry (1, 2) heading 90 degrees when the maps start: that is
+    (20, 20) heading 0 on the maps. Its grid has one obstacle 0.5 m ahead of that pose."""
+    cells = [[-1] * 50 for _ in range(50)]
+    for i in range(50):
+        for j in range(50):
+            cells[i][j] = 0
+    # odometry point (1, 2.5): 0.5 m ahead of the start pose; grid origin (-0.25, 0.75)
+    cells[int((2.52 - 0.75) / 0.05)][int((1.02 + 0.25) / 0.05)] = 1
+    local = {'res': 0.05, 'x0': -0.25, 'y0': 0.75, 'cells': cells, 'age_s': 0.3, 'error': None}
+
+    def requete(methode, chemin, corps=None):
+        if chemin == '/local_grid':
+            return local
+        return {'odom': {'x': 1.0, 'y': 2.0, 'heading_deg': 90.0, 'v': 0.2}}  # driving
+
+    f = fr.FusionReelle(
+        fr.options(['--carte-locale', '--source-locale', 'rover']),
+        requete=requete,
+        percevoir=lambda *a: pytest.fail('the perception service is not asked'),
+        percevoir_frais=lambda *a: pytest.fail('the perception service is not asked'),
+    )
+    f.tour()
+    g = f.carte.grille(20.4, 19.9, 20.6, 20.1)
+    assert (g.val == 1).sum() == 1
+    i, j = np.argwhere(g.val == 1)[0]
+    x, y = g.xy(i, j)
+    assert abs(x - 20.52) < 0.04 and abs(y - 19.98) < 0.04  # ahead of the rover, on its axis
+    assert f.status['local']['source'] == 'rover' and f.status['local']['age_s'] == 0.3
+    assert (
+        'depth camera' in f.status['source_rover']
+        and f.status['info'] == "rover's grid on the maps"
+    )
+
+    local['age_s'] = 60.0  # the feed died: nothing more is fused
+    vues = f.vues
+    f.tour()
+    assert f.vues == vues and 'no recent grid' in f.status['info']
+
+
+def test_continuous_driving_and_the_rover_grid_are_off_by_default() -> None:
+    a = fr.options([])
+    assert (a.continu, a.source_locale, a.carte_locale) == (False, 'service', False)
+    f, _ = fusion()
+    assert f.status.get('conduite') in (None, 'pas')
+
+
+def test_driving_and_the_local_map_source_can_be_switched_while_running() -> None:
+    f, _ = fusion()
+    assert f.regler_conduite({'continu': True}) == (
+        200,
+        {'ok': True, 'continu': True, 'source_locale': 'service', 'fusion': 'superposition'},
+    )
+    assert f.args.continu is True
+    code, answer = f.regler_conduite({'source_locale': 'rover', 'continu': False})
+    assert code == 200 and (answer['continu'], answer['source_locale']) == (False, 'rover')
+    assert f.local['source'] == 'rover' and f.args.source_locale == 'rover'
+    for bad in ({}, {'continu': 'yes'}, {'source_locale': 'drone'}, {'continu': 1}):
+        assert f.regler_conduite(bad)[0] == 400
+    assert (f.args.continu, f.args.source_locale) == (False, 'rover')  # unchanged by those
+
+    class Running:
+        def is_alive(self):
+            return True
+
+    f.fil_mission = Running()  # a mission reads both: refused while it runs
+    assert f.regler_conduite({'continu': True})[0] == 409
+    assert f.args.continu is False
+
+
+def test_an_older_rover_server_without_a_grid_is_said_not_fatal() -> None:
+    def requete(methode, chemin, corps=None):
+        if chemin == '/local_grid':
+            raise fr.ServeurRoverError('GET /local_grid -> HTTP 404 {"error": "not found"}')
+        return {'odom': {'x': 0.0, 'y': 0.0, 'heading_deg': 0.0, 'v': 0.0}}
+
+    f = fr.FusionReelle(
+        fr.options(['--carte-locale', '--source-locale', 'rover']),
+        requete=requete,
+        percevoir=lambda *a: None,
+        percevoir_frais=lambda *a: None,
+    )
+    f.tour()  # no exception: the maps keep working
+    assert f.local['source'] == 'rover' and 'HTTP 404' in f.local['erreur']
+    assert 'no recent grid' in f.status['info'] and f.status['etat'] == 'ok'
+
+
+def test_the_mission_speed_follows_the_dashboard_slider() -> None:
+    f = fr.FusionReelle(
+        fr.options(['--vitesse', '0.3']),
+        requete=lambda methode, chemin, corps=None: {
+            'odom': {'x': 0.0, 'y': 0.0, 'heading_deg': 0.0, 'v': 0.0}
+        },
+        percevoir=lambda *a: None,
+        percevoir_frais=lambda *a: None,
+    )
+    f.tour()
+    assert f.status['vitesse'] == 0.3
+    assert f.regler_vitesse({'vitesse': 0.15}) == (200, {'ok': True, 'vitesse': 0.15})
+    f.tour()
+    assert f.args.vitesse == 0.15 and f.status['vitesse'] == 0.15
+
+    class Driver:  # a mission's rover driver: it reads .vitesse at each POST /path
+        vitesse = 0.15
+
+    f.rover_mission = Driver()
+    assert f.regler_vitesse({'vitesse': 0.1})[0] == 200
+    assert f.rover_mission.vitesse == 0.1  # the running mission gets it too
+    for bad in ({}, {'vitesse': 'fast'}, {'vitesse': True}, {'vitesse': float('nan')},
+                {'vitesse': 0.01}, {'vitesse': 0.5}):  # fmt: skip
+        assert f.regler_vitesse(bad)[0] == 400
+    assert f.args.vitesse == 0.1 and f.rover_mission.vitesse == 0.1  # unchanged by those
+
+
+# ---- a place marked as an obstacle that turns out to be free --------------------------------
+
+
+def cell(f, x, y):
+    """The fused value (1 obstacle, 0 free, -1 unknown) of the 5 cm cell holding map (x, y)."""
+    g = f.carte.grille(x - 0.2, y - 0.2, x + 0.2, y + 0.2)
+    for i in range(g.val.shape[0]):
+        for j in range(g.val.shape[1]):
+            cx, cy = g.xy(i, j)
+            if abs(cx - x) < 0.025 and abs(cy - y) < 0.025:
+                return int(g.val[i, j])
+    raise AssertionError('cell not in the window')
+
+
+def test_an_obstacle_the_rover_sees_free_again_leaves_the_map_with_the_service() -> None:
+    """Perception service (--source-locale service): the views of the rover's camera."""
+    vues = []
+    f = fr.FusionReelle(
+        fr.options(['--carte-locale']),
+        requete=lambda methode, chemin, corps=None: {
+            'odom': {'x': 0.0, 'y': 0.0, 'heading_deg': 0.0, 'v': 0.0}
+        },
+        percevoir=lambda *a: vues[-1],
+        percevoir_frais=lambda *a: vues[-1],
+    )
+    m = np.zeros((8, 8), np.int8)
+    m[4, 4] = 1  # map point (20.225, 20.225)
+    vues.append((m, 20.0, 20.0))
+    f.tour()
+    f.tour()  # fused once the rover stood still
+    assert cell(f, 20.225, 20.225) == 1
+    vues.append((np.zeros((8, 8), np.int8), 20.0, 20.0))  # the same place, seen free
+    f.tour()
+    assert cell(f, 20.225, 20.225) == 0  # the obstacle is gone from the map
+    m = np.full((8, 8), -1, np.int8)
+    m[4, 4] = 1
+    vues.append((m, 20.0, 20.0))
+    f.tour()
+    vues.append((np.full((8, 8), -1, np.int8), 20.0, 20.0))  # not seen any more: no news
+    f.tour()
+    assert cell(f, 20.225, 20.225) == 1  # kept: only seeing it free removes it
+
+
+def test_an_obstacle_the_rover_sees_free_again_leaves_the_map_with_its_own_grid() -> None:
+    """The rover's own depth grid (--source-locale rover, its GET /local_grid)."""
+    cells = [[0] * 20 for _ in range(20)]
+    cells[10][10] = 1  # odometry (0.525, 0.525) = map (20.525, 20.525)
+    local = {'res': 0.05, 'x0': 0.0, 'y0': 0.0, 'cells': cells, 'age_s': 0.1, 'error': None}
+
+    def requete(methode, chemin, corps=None):
+        if chemin == '/local_grid':
+            return local
+        return {'odom': {'x': 0.0, 'y': 0.0, 'heading_deg': 0.0, 'v': 0.0}}
+
+    f = fr.FusionReelle(
+        fr.options(['--carte-locale', '--source-locale', 'rover']),
+        requete=requete,
+        percevoir=lambda *a: None,
+        percevoir_frais=lambda *a: None,
+    )
+    f.tour()
+    assert cell(f, 20.525, 20.525) == 1
+    cells[10][10] = 0  # the rover's camera now sees the floor there
+    f.tour()
+    assert cell(f, 20.525, 20.525) == 0
+    cells[10][10] = 1
+    f.tour()
+    cells[10][10] = -1  # the rover forgot it (not seen for local_hold s)
+    f.tour()
+    # ... and so do the maps: the rover's layer is rebuilt from what the rover knows now.
+    # (Before, the fused map kept it until that very cell was seen free again.)
+    assert cell(f, 20.525, 20.525) == -1
+
+
+def test_an_obstacle_reported_by_the_guard_expires_and_is_not_erased_before(monkeypatch) -> None:
+    libre = (np.zeros((8, 8), np.int8), 20.0, 20.0)
+    f = fr.FusionReelle(
+        fr.options(['--carte-locale', '--duree-obstacle', '30']),
+        requete=lambda methode, chemin, corps=None: {
+            'odom': {'x': 0.0, 'y': 0.0, 'heading_deg': 0.0, 'v': 0.0}
+        },
+        percevoir=lambda *a: libre,
+        percevoir_frais=lambda *a: libre,
+    )
+    t = [1000.0]
+    monkeypatch.setattr(fr.time, 'monotonic', lambda: t[0])
+    f.carte.signaler_obstacle(20.225, 20.225, rayon=0.1, t=t[0], duree=30.0)  # as a mission does
+    assert cell(f, 20.225, 20.225) == 1
+    t[0] += 5.0
+    f.publier(libre)  # a view that says free there (it does not see what the guard saw)...
+    assert cell(f, 20.225, 20.225) == 0
+    f.carte.reposer_chocs(t[0])  # ...is undone before the next plan, as the mission loops do
+    assert cell(f, 20.225, 20.225) == 1
+    t[0] += 30.0  # its time is over: gone at the next turn, mission or not
+    f.tour()
+    f.tour()
+    assert cell(f, 20.225, 20.225) == 0 and not f.carte.chocs_temporaires
+
+
+class GuardedRover(SegmentRover):
+    """A rover whose local guard ends segments as 'blocked': it drives up to the obstacle it
+    alone sees (a wall at x = `wall`), or does not move when it is already there."""
+
+    def __init__(self, x, y, wall):
+        super().__init__(x, y)
+        self.wall, self.fin = wall, None
+
+    def suivre(self, points, duree):
+        self.segments.append([tuple(p) for p in points])
+        x, y = points[-1]
+        if x < self.wall - 0.15:  # the segment ends before the wall: driven to its end
+            self.est, self.fin = (x, y), {'status': 'done', 'distance': 1.0}
+            return 'done', None
+        stop = self.wall - 0.15
+        moved = max(0.0, stop - self.est[0])
+        self.est = (max(self.est[0], stop), self.est[1])
+        self.fin = {'status': 'blocked', 'obstacle': [self.wall, self.est[1]], 'distance': moved}
+        return 'blocked', None
+
+    def obstacle_vu(self, entree):
+        o = entree.get('obstacle')
+        return None if entree.get('status') != 'blocked' or not o else (o[0], o[1])
+
+
+def test_in_segments_what_the_guard_stops_for_goes_on_the_map_and_changes_the_route() -> None:
+    """The first real runs: the guard ended the segment ('blocked'), the loop did not read it
+    and sent the same segment again and again while the rover stood still."""
+    import avancer_esquive as ae
+
+    f = with_a_drone_map(['--max-pas', '8'])
+    f.objectif = (21.8, 20.0)
+    rover = GuardedRover(20.0, 20.0, wall=21.0)
+    issue = f._boucle_segments(rover, ae)
+    assert 'OBSTACLE seen by the rover' in f.mission['texte'] or issue == 'bloque'
+    assert cell(f, 21.025, 20.025) == 1  # what the guard saw is on the fused map
+    assert rover.segments[1] != rover.segments[0]  # a new route, not the same segment again
+    assert len(rover.segments) < 8  # and no endless resend
+
+
+def test_in_segments_three_refusals_before_moving_end_the_mission_blocked() -> None:
+    import avancer_esquive as ae
+
+    f = with_a_drone_map(['--max-pas', '20'])
+    f.objectif = (21.8, 20.0)
+
+    class Stuck(GuardedRover):  # its guard reports an obstacle the planner cannot plan round:
+        def obstacle_vu(self, entree):  # always behind the rover, never on the way
+            return None if entree.get('status') != 'blocked' else (19.6, 20.0)
+
+    rover = Stuck(20.85, 20.0, wall=21.0)  # already standing at the wall: 0 m at each try
+    assert f._boucle_segments(rover, ae) == 'bloque'
+    assert len(rover.segments) == 3  # three tries, then it stops asking
+    assert "rover's guard refuses every way" in f.mission['texte']
+    assert 'move the rover back by hand' in f.mission['texte']
+
+
+class LookAheadRover(SegmentRover):
+    """The real rover's path follower: a path shorter than its look-ahead whose end is behind
+    its nose counts as "just passed" and ends 'done' after 0 m (0.2 m on the rover; 0.6 m
+    here, so that the planner's shortest segments are inside it). `turns`: False, it cannot
+    pivot either (nothing ever moves)."""
+
+    def __init__(self, x, y, cap, turns=True):
+        super().__init__(x, y)
+        self.cap, self.turns, self.pivots, self.fin = cap, turns, [], None
+
+    def suivre(self, points, duree):
+        self.segments.append([tuple(p) for p in points])
+        x, y = points[-1]
+        length = math.dist(self.est, (x, y))
+        ahead = (x - self.est[0]) * math.cos(self.cap) + (y - self.est[1]) * math.sin(self.cap)
+        if length < 0.6 and ahead < 0:
+            self.fin = {'status': 'done', 'distance': 0.0}
+            return 'done', None
+        self.cap = math.atan2(y - self.est[1], x - self.est[0])
+        self.est, self.fin = (x, y), {'status': 'done', 'distance': length}
+        return 'done', None
+
+    def pivoter(self, angle_deg):
+        self.pivots.append(angle_deg)
+        if self.turns:
+            self.cap += math.radians(angle_deg)
+        return 'done'
+
+
+def test_in_segments_a_short_segment_behind_the_rover_is_faced_then_driven() -> None:
+    """Seen on the real rover: 15 cm segments ended 'done' after 0 m and were sent again and
+    again (17 times) while the rover stood still."""
+    import avancer_esquive as ae
+
+    f = with_a_drone_map(['--max-pas', '20'])
+    f.objectif = (20.5, 20.0)
+    rover = LookAheadRover(20.95, 20.0, cap=0.0)  # the goal is 45 cm behind its nose
+    assert f._boucle_segments(rover, ae) == 'arrive'
+    assert len(rover.pivots) == 1 and abs(abs(rover.pivots[0]) - 180) < 15  # turned round once
+    assert len(rover.segments) == 2  # taken as done once, driven once: no endless resend
+    assert 'ARRIVED' in f.mission['texte']
+
+
+def test_in_segments_a_rover_that_never_moves_ends_the_mission() -> None:
+    import avancer_esquive as ae
+
+    f = with_a_drone_map(['--max-pas', '20'])
+    f.objectif = (20.5, 20.0)
+    rover = LookAheadRover(20.95, 20.0, cap=0.0, turns=False)
+    assert f._boucle_segments(rover, ae) == 'bloque'
+    assert len(rover.segments) == 3 and 'does not move' in f.mission['texte']
+
+
+# ---- the two maps together: layers with roles (--fusion) -------------------------------------
+
+
+def with_both_maps(extra=(), drone_boxes=(), strip=True):
+    """A FusionReelle fed by the rover's own grid (`local`, changed by the test) over a drone
+    map: a free strip 3 m by 2 m from (19.5, 19) with `drone_boxes` (x, y) as obstacle cells.
+    The rover stands at odometry (0, 0) = map (20, 20), heading 0."""
+    local = {'res': 0.05, 'x0': -1.25, 'y0': -1.25, 'age_s': 0.1, 'error': None}
+    local['cells'] = [[0] * 50 for _ in range(50)]
+    link = {'grid': True}
+
+    def requete(methode, chemin, corps=None):
+        if chemin == '/local_grid':
+            return local if link['grid'] else None
+        return {'odom': {'x': 0.0, 'y': 0.0, 'heading_deg': 0.0, 'v': 0.0}}
+
+    f = fr.FusionReelle(
+        fr.options(['--carte-locale', '--source-locale', 'rover', *extra]),
+        requete=requete,
+        percevoir=lambda *a: None,
+        percevoir_frais=lambda *a: None,
+    )
+    if strip:
+        m = np.zeros((40, 60), np.int8)
+        for x, y in drone_boxes:
+            m[int((y - 19.0) / 0.05), int((x - 19.5) / 0.05)] = 1
+        for msg in fr.decouper(m, 19.5, 19.0, 4, f.carte, 'drone', t=1.0):
+            f.carte.recevoir(msg)
+    return f, local, link
+
+
+def put(local, x, y, value):
+    """A cell of the rover's grid, given by its place on the maps."""
+    local['cells'][int((y - 20.0 + 1.25) / 0.05)][int((x - 20.0 + 1.25) / 0.05)] = value
+
+
+def test_superposition_the_rover_adds_obstacles_and_erases_nothing_of_the_drone() -> None:
+    f, local, _ = with_both_maps(drone_boxes=[(20.52, 20.52)])
+    put(local, 20.52, 20.52, 0)  # the rover sees the floor where the drone has a box
+    put(local, 20.82, 19.72, 1)  # and something the drone does not have
+    f.tour()
+    assert f.status['fusion']['utilisee'] == 'superposition'
+    assert cell(f, 20.525, 20.525) == 1  # the drone's box stays
+    assert cell(f, 20.825, 19.725) == 1  # the rover's is added
+    assert cell(f, 20.225, 20.225) == 0
+    assert f.status['fusion']['cellules_rover'] == 1
+
+
+def test_superposition_the_same_box_seen_twice_does_not_become_two() -> None:
+    """The rover's frame is its odometry, the drone's is the camera's: the same box lands a
+    few centimetres apart. Twice on the map, each grown by the rover's radius, it closed the
+    passage next to it."""
+    f, local, _ = with_both_maps(drone_boxes=[(20.52, 20.02), (20.57, 20.02)])
+    put(local, 20.62, 20.12, 1)  # the same box, 8 cm off in the rover's frame
+    put(local, 20.67, 20.12, 1)
+    f.tour()
+    assert f.status['fusion']['doublons'] == 2 and f.status['fusion']['cellules_rover'] == 0
+    assert cell(f, 20.625, 20.125) != 1
+    # a passage 35 cm wide beside the box (its drone cells end at y = 20.05) stays open:
+    # the rover's centre can pass at y = 20.225, 17.5 cm from the box
+    plan = f.carte.grille_plan(f.carte.grille(20.3, 19.8, 20.9, 20.5))
+    i, j = plan.ij(20.55, 20.225)
+    assert not plan.bloque[i, j]
+    # something really apart from the drone's obstacles is kept
+    put(local, 20.52, 20.42, 1)
+    f.tour()
+    assert cell(f, 20.525, 20.425) == 1 and f.status['fusion']['cellules_rover'] == 1
+
+
+def test_superposition_only_what_is_near_the_rover_counts() -> None:
+    f, local, _ = with_both_maps()
+    local['x0'], local['y0'] = 0.0, -1.25  # a grid that reaches 2.5 m ahead
+    local['cells'][25][10] = 1  # 0.5 m ahead
+    local['cells'][25][40] = 1  # 2 m ahead: beyond what the depth camera is trusted for
+    f.tour()
+    assert cell(f, 20.525, 20.025) == 1
+    assert cell(f, 22.025, 20.025) == 0  # the drone's free floor, untouched
+
+
+def test_what_the_rover_forgot_or_stopped_sending_leaves_the_maps() -> None:
+    f, local, link = with_both_maps()
+    put(local, 20.62, 20.02, 1)
+    f.tour()
+    assert cell(f, 20.625, 20.025) == 1
+    put(local, 20.62, 20.02, -1)  # forgotten on the rover (local_hold): gone at the next plan
+    f.tour()
+    assert cell(f, 20.625, 20.025) == 0  # the drone's free floor again
+    put(local, 20.62, 20.02, 1)
+    f.tour()
+    assert cell(f, 20.625, 20.025) == 1
+    link['grid'] = False  # the depth camera's feed stops: nothing stale stays behind
+    f.tour()
+    assert cell(f, 20.625, 20.025) == 0
+    assert not f.carte.tuiles.get(fr.SOURCE_GRILLE)
+
+
+def test_one_late_grid_is_not_an_outage_three_seconds_are(monkeypatch) -> None:
+    f, local, link = with_both_maps()
+    clock = [100.0]
+    monkeypatch.setattr(fr.time, 'monotonic', lambda: clock[0])
+    f.tour()
+    assert f.status['fusion']['utilisee'] == 'superposition'
+    link['grid'] = False
+    clock[0] += 1.0
+    f.tour()
+    assert f.status['fusion']['utilisee'] == 'superposition'  # one miss
+    clock[0] += 3.5
+    f.tour()
+    assert f.status['fusion']['utilisee'] == 'global'
+    assert 'depth camera' in f.status['fusion']['raison']
+    link['grid'] = True  # back: after two good grids
+    clock[0] += 1.0
+    f.tour()
+    assert f.status['fusion']['utilisee'] == 'global'
+    clock[0] += 1.0
+    f.tour()
+    assert f.status['fusion']['utilisee'] == 'superposition'
+    assert f.status['fusion']['raison'] is None
+
+
+def test_without_a_drone_map_the_rover_grid_is_the_map_and_without_both_there_is_none() -> None:
+    f, local, link = with_both_maps(strip=False)
+    put(local, 20.62, 20.02, 1)
+    f.tour()
+    assert f.status['fusion']['utilisee'] == 'local'
+    assert 'drone map' in f.status['fusion']['raison']
+    assert cell(f, 20.625, 20.025) == 1 and cell(f, 20.325, 20.025) == 0
+    link['grid'] = False
+    f.grille_ok = None  # as at start: no grid ever came
+    f.tour()
+    assert f.status['fusion']['utilisee'] == 'aucune'
+    f.objectif = (21.0, 20.0)
+    code, answer = f.aller()
+    assert code == 409 and 'no map' in answer['error'] and not f.en_mission()
+
+
+def test_the_mode_can_be_asked_for_and_switched_while_running() -> None:
+    f, local, _ = with_both_maps(['--fusion', 'local'], drone_boxes=[(20.52, 20.52)])
+    put(local, 20.82, 19.72, 1)
+    f.tour()
+    assert f.status['fusion'] == {**f.status['fusion'], 'demandee': 'local', 'utilisee': 'local'}
+    assert cell(f, 20.525, 20.525) == 0  # the drone's box is not on the map: the rover sees floor
+    assert cell(f, 20.825, 19.725) == 1
+    code, answer = f.regler_conduite({'fusion': 'global'})
+    assert code == 200 and answer['fusion'] == 'global'
+    f.tour()
+    assert f.status['fusion']['utilisee'] == 'global'
+    assert cell(f, 20.525, 20.525) == 1 and cell(f, 20.825, 19.725) == 0  # the drone alone
+    assert f.regler_conduite({'fusion': 'superposition'})[0] == 200
+    f.tour()
+    assert cell(f, 20.525, 20.525) == 1 and cell(f, 20.825, 19.725) == 1
+    assert f.regler_conduite({'fusion': 'both'})[0] == 400
+    assert fr.options([]).fusion == 'superposition'
+
+
+def test_with_the_local_map_off_nothing_changes_from_before() -> None:
+    f, _ = fusion()
+    f.regler_fusion()
+    assert f.carte.rover_efface_drone is True and f.carte.roles_ignores == set()
+    assert f.fusion['utilisee'] == 'global'
+
+
+def test_what_the_guard_stopped_for_is_one_cell_for_a_short_time(monkeypatch) -> None:
+    f, _, _ = with_both_maps()
+    clock = [100.0]
+    monkeypatch.setattr(fr.time, 'monotonic', lambda: clock[0])
+    assert fr.options([]).duree_obstacle == 10.0
+    f.obstacle_du_garde((20.625, 20.025))
+    g = f.carte.grille(20.3, 19.7, 20.95, 20.35)
+    assert (g.val == 1).sum() <= 4  # one cell or so, not a 20 cm disc
+    assert f.fusion['arrets_garde'] == 1
+    clock[0] += 11.0
+    f.tour()
+    assert cell(f, 20.625, 20.025) == 0

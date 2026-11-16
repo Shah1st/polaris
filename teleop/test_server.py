@@ -2,7 +2,7 @@
 
     python -m pytest teleop/test_server.py -q -p no:cacheprovider
 
-Needs requests, OpenCV and numpy (the dashboard's own environment). Ports 8151-8161 on
+Needs requests, OpenCV and numpy (the dashboard's own environment). Ports 8151-8167 on
 127.0.0.1. The JavaScript of the pages is parsed with esprima when it is importable.
 """
 
@@ -14,7 +14,7 @@ import socket
 import sys
 import threading
 import time
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 import requests
@@ -340,8 +340,9 @@ def test_d405_pictures_and_status_are_relayed(http, rover):
     assert r.status_code == 200 and r.content[:2] == b'\xff\xd8'
     r = requests.get(url + '/d405/depth.jpg?max=2&t=123', timeout=5)
     assert r.status_code == 200 and r.headers['Content-Type'] == 'image/jpeg'
-    with rover.lock:
-        assert rover.gets[-1] == '/d405/depth.jpg?max=2'  # only the range reaches the robot
+    with rover.lock:  # not gets[-1]: the dashboard polls /state and /config in between
+        depth = [p for p in rover.gets if p.startswith('/d405/depth.jpg')]
+    assert depth[-1] == '/d405/depth.jpg?max=2'  # only the range reaches the robot
     s = requests.get(url + '/d405/status', timeout=5).json()
     assert s['ok'] is True and s['camera']['name'] == 'RealSense D405'
 
@@ -566,3 +567,141 @@ def test_snapshot_wait_leaves_the_link_to_the_rover() -> None:
     assert server.snapshot_wait(0.05, 0.25) == pytest.approx(0.15)  # fast link: about 5 a second
     assert server.snapshot_wait(0.4, 0.25) == pytest.approx(1.2)  # slow link: 3 times the transfer
     assert server.snapshot_wait(3.0, 0.25) == server.SNAPSHOT_WAIT_MAX  # never longer than that
+
+
+# --- local navigation (docs/local-navigation.md) ---------------------------------------------
+
+
+def wait_for(pred, timeout: float = 6.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        v = pred()
+        if v:
+            return v
+        time.sleep(0.1)
+    return pred()
+
+
+def test_guard_is_read_and_switched_with_only_its_setting(http, rover):
+    url = http['url']
+    assert wait_for(lambda: requests.get(url + '/api/state').json()['guard'] in (0, 1)) is True
+    t0 = time.monotonic()
+    r = requests.post(url + '/api/guard', json={'local_guard': True})
+    assert r.status_code == 200 and r.json() == {'ok': True, 'local_guard': True}
+    with rover.lock:
+        sent = [e[2] for e in rover.log if e[0] >= t0 and e[1] == '/config']
+        assert sent == [{'local_guard': 1}] and rover.config['local_guard'] == 1
+    assert requests.get(url + '/api/state').json()['guard'] == 1
+    for bad in ({'local_guard': 'yes'}, {'local_guard': 1}, {}):
+        assert requests.post(url + '/api/guard', json=bad).status_code == 400
+    assert requests.post(url + '/api/guard', json={'local_guard': False}).status_code == 200
+    assert rover.config['local_guard'] == 0
+    assert rover.moving(t0) == []  # never a wheel command
+
+
+def test_guard_on_a_rover_server_without_it_is_refused():
+    old = mock_rover.MockRover(8162)
+    old.config = None  # its settings have no local_guard
+    try:
+        robot = server.Robot(old.url)
+        assert wait_for(lambda: robot.guard == 'absent')
+        assert robot.set_guard(True)[0] == 409
+        with old.lock:
+            assert not [e for e in old.log if e[1] == '/config']
+    finally:
+        old.close()
+
+
+def test_driving_switches_are_relayed_to_the_maps_server(rover):
+    received = []
+
+    class Fusion(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            received.append(
+                (self.path, json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+            )
+            body = b'{"ok": true}'
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    fusion = serve(Fusion, 8163)
+    handler = server.make_handler(
+        server.Robot(rover.url), None, 8081, '', {}, 'http://127.0.0.1:8163'
+    )
+    srv = serve(handler, 8164)
+    try:
+        body = {'continu': True, 'source_locale': 'rover', 'extra': 'dropped'}
+        r = requests.post('http://127.0.0.1:8164/fusion/conduite', json=body, timeout=5)
+        assert r.status_code == 200
+        assert received == [('/conduite', {'continu': True, 'source_locale': 'rover'})]
+        body = {'vitesse': 0.15, 'v': 9}  # the speed slider: only "vitesse" goes on
+        r = requests.post('http://127.0.0.1:8164/fusion/vitesse', json=body, timeout=5)
+        assert r.status_code == 200 and received[-1] == ('/vitesse', {'vitesse': 0.15})
+    finally:
+        for s in (srv, fusion):
+            s.shutdown()
+            s.server_close()
+
+
+def test_the_last_step_tells_a_path_the_guard_ended():
+    state = {
+        'ctrl': {
+            'local': {'state': 'off'},
+            'history': [
+                {'kind': 'path', 'status': 'blocked', 'id': 'm1-3', 'obstacle': [1.2, 0.1],
+                 'distance': 0.8},
+                {'kind': 'path', 'status': 'done', 'id': 'm1-2'},
+            ],
+        }
+    }  # fmt: skip
+    assert server.last_step(state) == {
+        'kind': 'path',
+        'status': 'blocked',
+        'id': 'm1-3',
+        'obstacle': [1.2, 0.1],
+    }
+    assert server.last_step({}) is None and server.last_step({'ctrl': {'history': []}}) is None
+
+
+def test_driving_switches_turn_on_only_with_a_rover_server_that_has_them():
+    received = []
+
+    class Fusion(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            n = int(self.headers['Content-Length'])
+            received.append((self.path, json.loads(self.rfile.read(n))))
+            body = b'{"ok": true}'
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    old = mock_rover.MockRover(8165)
+    old.config = None  # an older rover server: no local_guard, no /local_grid
+    fusion = serve(Fusion, 8166)
+    robot = server.Robot(old.url)
+    srv = serve(server.make_handler(robot, None, 8081, '', {}, 'http://127.0.0.1:8166'), 8167)
+    url = 'http://127.0.0.1:8167/fusion/conduite'
+    try:
+        assert wait_for(lambda: robot.guard == 'absent')
+        for on in ({'continu': True}, {'source_locale': 'rover'}):
+            assert requests.post(url, json=on, timeout=5).status_code == 409
+        assert received == []
+        off = {'continu': False, 'source_locale': 'service'}
+        assert requests.post(url, json=off, timeout=5).status_code == 200
+        assert received == [('/conduite', off)]
+    finally:
+        for s in (srv, fusion):
+            s.shutdown()
+            s.server_close()
+        old.close()

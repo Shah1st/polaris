@@ -35,11 +35,18 @@
   POST /fusion/carte_locale {"carte_locale": true|false}  build the rover's local map from
                      its own camera, or not (the "Local map" box of the maps)
   POST /fusion/marqueur {"sans_marqueur": true|false}  ignore or trust the rover's marker
+                     in the drone's picture (the "No marker" box of the maps)
   POST /fusion/calibrer  the rover drives 30 cm forward then back, seen by the drone: direction
                      and scale of the drone map (the rover MOVES)
-                     in the drone's picture (the "No marker" box of the maps)
-                     (sim/fusion_reelle.py)
-                     (simulation only: never reaches the robot)
+  POST /fusion/conduite {"continu": bool, "source_locale": "rover"|"service",
+                     "fusion": "superposition"|"global"|"local"} (any of them)  drive without
+                     stopping, and what feeds the rover map (docs/local-navigation.md); 409
+                     for turning either on with a rover server older than the local navigation
+  POST /fusion/vitesse {"vitesse": m/s}  the missions' speed (the page's speed slider), from
+                     the next path sent to the rover
+                     (these five: sim/fusion_reelle.py; the others: the simulation only)
+  POST /api/guard    {"local_guard": true|false}  the rover's local guard (its POST /config
+                     {"local_guard": 1|0}, nothing else); 409 on a rover server without it
   POST /api/client   what the browser measures (frames shown, delays), logged
   GET  /mission      the live page of the mission for the jury: map, rover, victim, path,
                      decision and its reason, journal, rover camera, perception picture
@@ -129,7 +136,10 @@ FUSION_POSTS = {
     '/fusion/marqueur': ('sans_marqueur',),
     '/fusion/carte_locale': ('carte_locale',),
     '/fusion/calibrer': (),
+    '/fusion/conduite': ('continu', 'source_locale', 'fusion'),
+    '/fusion/vitesse': ('vitesse',),
 }
+GUARD_EVERY = 10  # the rover's settings (local_guard) are read every 10th state poll (5 s)
 SNAPSHOT_PERIOD = 0.1  # s: a camera that answers one picture per request is asked this often
 SNAPSHOT_MAX = 10_000_000  # bytes: a larger "picture" is refused
 SNAPSHOT_WAIT_MAX = 2.0  # s: with a share of the link, never wait longer before asking again
@@ -146,6 +156,15 @@ def snapshot_wait(took: float, share: float | None) -> float:
         return max(0.0, SNAPSHOT_PERIOD - took)
     share = min(max(share, 0.02), 1.0)
     return min(SNAPSHOT_WAIT_MAX, max(SNAPSHOT_PERIOD - took, took * (1.0 - share) / share))
+
+
+def last_step(state: dict) -> dict | None:
+    """The rover's last finished step from its /state (ctrl.history, newest first): kind,
+    status ('done', 'blocked', ...), path id and the obstacle the guard saw; None without."""
+    hist = (state.get('ctrl') or {}).get('history') or []
+    if not hist or not isinstance(hist[0], dict):
+        return None
+    return {k: hist[0].get(k) for k in ('kind', 'status', 'id', 'obstacle')}
 
 
 def camera_label(url: str | None) -> str | None:
@@ -367,6 +386,8 @@ class Robot:
         # Camera pan-tilt: held turn rate, one pending angle order, what was sent, last error.
         self.g_rate, self.g_rate_t, self.g_order = (0.0, 0.0), 0.0, None
         self.g_sent, self.g_sent_t, self.g_err = (0.0, 0.0), 0.0, None
+        # The rover's local guard setting: None not read yet, 0/1, 'absent' (old server).
+        self.guard: int | str | None = None
         threading.Thread(target=self._sender, daemon=True).start()
         threading.Thread(target=self._gimbal_sender, daemon=True).start()
         threading.Thread(target=self._poller, daemon=True).start()
@@ -550,6 +571,7 @@ class Robot:
 
     def _poller(self) -> None:
         sess = requests.Session()
+        n = 0
         while True:
             t = time.monotonic()
             try:
@@ -558,7 +580,38 @@ class Robot:
                 self.state_ms = 1000 * (time.monotonic() - t)
             except Exception:
                 self.state_ms = None
+            if n % GUARD_EVERY == 0:
+                self._read_guard(sess)
+            n += 1
             time.sleep(0.5)
+
+    def _read_guard(self, sess) -> None:
+        """The rover's local_guard setting (GET /config): 0/1, or 'absent' on a rover server
+        older than the local navigation (docs/local-navigation.md); unchanged when the robot
+        does not answer."""
+        try:
+            r = sess.get(self.base + '/config', timeout=4)
+            cfg = r.json() if r.status_code == 200 else None
+        except Exception:
+            return
+        if isinstance(cfg, dict):
+            self.guard = int(cfg['local_guard']) if 'local_guard' in cfg else 'absent'
+
+    def set_guard(self, on) -> tuple[int, dict]:
+        """Turns the rover's local guard on or off (POST /config {"local_guard": 1|0}, nothing
+        else). (HTTP code, answer)"""
+        if not isinstance(on, bool):
+            raise ValueError('{"local_guard": true or false} is expected')
+        if self.guard == 'absent':
+            return 409, {'error': 'this rover server has no local guard: deploy rover/ of main'}
+        try:
+            r = requests.post(self.base + '/config', json={'local_guard': int(on)}, timeout=4)
+        except requests.RequestException as e:
+            return 503, {'error': f'robot unreachable: {error_text(e)}'}
+        if r.status_code != 200:
+            return r.status_code, {'error': r.text[:200]}
+        self.guard = int(on)
+        return 200, {'ok': True, 'local_guard': on}
 
 
 def _finite_only(x):
@@ -662,12 +715,20 @@ def make_handler(
                                 'sim',
                                 'cpu_temp',
                                 'gimbal',
+                                'local',  # the depth camera's grid feed (local navigation)
                             )
                         },
                         'gimbal_err': robot.g_err,
                         'ctrl': {
-                            k: (s.get('ctrl') or {}).get(k) for k in ('mode', 'v_cmd', 'w_cmd')
+                            k: (s.get('ctrl') or {}).get(k)
+                            for k in ('mode', 'v_cmd', 'w_cmd', 'local')
                         },
+                        # the local guard setting: 0/1, 'absent' (old rover server), None
+                        'guard': robot.guard,
+                        # the rover's last finished step: a path the guard ended is
+                        # 'blocked' there (with the obstacle, odometry frame), while
+                        # ctrl.local is already 'off' again
+                        'last_step': last_step(s),
                         'state_age': age,
                         'state_ms': robot.state_ms,
                         'cmd_ms': robot.cmd_ms,
@@ -895,11 +956,25 @@ def make_handler(
                     return self._json({'ok': True, 'accepted': ok})
                 elif self.path == '/api/gimbal':
                     robot.gimbal(body)
+                elif self.path == '/api/guard':
+                    code, answer = robot.set_guard(body.get('local_guard'))
+                    return self._json(answer, code)
                 elif self.path in FUSION_POSTS:  # relayed to the fusion
                     name = self.path[len('/fusion/') :]
                     data = {k: body[k] for k in FUSION_POSTS[self.path] if k in body}
                     if name == 'source':
                         data = {'source': str(body.get('source'))}
+                    if name == 'conduite' and robot.guard == 'absent':
+                        # an older rover server has no /local_grid and no path ids: these two
+                        # may be turned off, not on
+                        if data.get('continu') is True or data.get('source_locale') == 'rover':
+                            return self._json(
+                                {
+                                    'error': 'this rover server is older than the local '
+                                    'navigation: deploy rover/ of main first'
+                                },
+                                409,
+                            )
                     try:
                         r = requests.post(f'{fusion}/{name}', json=data, timeout=4)
                     except requests.RequestException as e:

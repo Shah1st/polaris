@@ -18,6 +18,9 @@ class MockRover:
     def __init__(self, port: int, snapshots: bool = True):
         self.log: list[tuple[float, str, dict]] = []
         self.gets: list[str] = []  # every GET path, with its query
+        # GET /config; POST /config changes it. None: a rover server without the local
+        # guard (older than docs/local-navigation.md), whose settings lack local_guard.
+        self.config: dict | None = {'local_guard': 0}
         self.snapshots = snapshots
         self.lock = threading.Lock()
         mock = self
@@ -42,6 +45,9 @@ class MockRover:
                     return self._reply(200, b'{"ok": true, "camera": {"name": "RealSense D405"}}')
                 if self.path.startswith(('/d405/color.jpg', '/d405/depth.jpg')):
                     return self._reply(200, picture('D405 (simulee)'), 'image/jpeg')
+                if self.path.startswith('/config'):
+                    cfg = {'v_max': 0.3, **(mock.config or {})}
+                    return self._reply(200, json.dumps(cfg).encode())
                 if self.path.startswith('/state'):
                     return self._reply(
                         200,
@@ -61,6 +67,10 @@ class MockRover:
                     body = {'_raw': raw.decode(errors='replace')}
                 with mock.lock:
                     mock.log.append((time.monotonic(), self.path, body))
+                    if self.path == '/config' and isinstance(body, dict):
+                        if mock.config is None or not set(body) <= set(mock.config):
+                            return self._reply(400, b'{"error": "unknown setting"}')
+                        mock.config.update(body)
                 self._reply(200)
 
         self.srv = ThreadingHTTPServer(('127.0.0.1', port), H)

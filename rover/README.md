@@ -127,6 +127,36 @@ corners, a square and a circle, 3 cm on an S curve; the end point is reached wit
 Not yet: obstacles (a planner or the depth camera will have to replace or stop the path), and
 the odometry drifts over long runs (no absolute position until the overhead camera).
 
+## Local guard (depth camera) and paths that take over
+
+Off by default (`local_guard` 0). Reworked on 17 Nov after the first drives; the rework has
+only run on the bench: see [docs/local-navigation.md](../docs/local-navigation.md) before
+turning it on, and its first lines for the settings to send to a robot that has the old ones.
+
+With `local_guard` 1, while a path is followed the controller looks at the obstacle grid of
+the depth camera (`local_map.py`, fed from the capture server's `GET /grid`) along the path
+ahead, in a corridor the width of the rover's body (`guard_half_width`, 10 cm each side):
+
+- it slows down when an obstacle is within `guard_slow_dist`, and ends the path with status
+  `blocked` and `"obstacle": [x, y]` when one stays within `guard_stop_dist` for two control
+  ticks; it then moves `guard_backoff` (10 cm) back, so that a new path can start;
+- a cell is an obstacle once two of its last three pictures say so (`local_confirm`), and is
+  forgotten `local_hold` (10 s) after its last look, whether or not pictures still arrive;
+- nothing is checked while the rover pivots on the spot;
+- without a picture younger than `guard_max_age` (1 s) it drives at `guard_blind_speed`;
+  after `guard_blind_time` (3 s) more it gives the depth camera up and drives at its speed,
+  **unprotected**, with `ctrl.local.state` `no_camera` (`guard_blind_stop` 1: it ends the
+  path with status `no depth camera` instead).
+
+`GET /local_grid` gives the grid; `/state` shows `local` and `ctrl.local`. Manual driving
+and `/move` are not guarded.
+
+A `POST /path` with an `"id"` that replaces a running path takes over at the current speed,
+from the closest point of the new path, instead of stopping and pivoting. The id comes back in
+`ctrl.current` and in the history.
+
+Deploy `local_map.py` with `rover_core.py` and `rover_server.py`.
+
 ## Tilt safety (anti-tipping)
 
 Roll (sideways, + = left side up) and pitch (nose, + = nose up) come from a complementary

@@ -16,6 +16,12 @@ same format as sim/fusion_live.py, and a mission to a point picked on the map.
     POST /marqueur           {"sans_marqueur": true|false}: ignore (true) or trust (false)
                              the rover's marker in the drone's picture, while running;
                              same as --drone-sans-marqueur / --no-drone-sans-marqueur
+    POST /conduite           {"continu": true|false, "source_locale": "rover"|"service"}
+                             (either key): drive without stopping or not, and what feeds the
+                             rover's local map; same as --continu and --source-locale. 409
+                             while a mission runs
+    POST /vitesse            {"vitesse": m/s, 0.05 to 0.30}: the missions' speed (--vitesse),
+                             also during a mission, from the next path sent to the rover
 
 Outside a mission: read only (GET /state of the rover, GET /obstacles of the perception service).
 Frame: the odometry frame at start (or at the last /reset), origin at the start point, x towards
@@ -62,6 +68,12 @@ from rover_reel import ArretOperateur, RaspRoverReel, ServeurRoverError, client_
 import fusion_feed as ff  # noqa: E402
 
 DECALAGE = 20.0  # m: positive coordinates for the tile grid
+SOURCE_GRILLE = 'rover:d405'  # the rover's own depth grid: a layer of its own, rebuilt
+GRILLE = 'grille'  # what regard() returns when the rover's grid was handled (nothing to fuse)
+PORTEE_GRILLE = 1.5  # m around the rover: its grid counts no further
+MEME_OBJET = 0.15  # m: a rover obstacle this close to a drone obstacle is the same object
+PANNE_GRILLE = 3.0  # s without a fresh grid before the rover's grid counts as missing
+VITESSE_MIN, VITESSE_MAX = 0.05, 0.30  # m/s, POST /vitesse (0.30: the rover's own maximum)
 DEMI = 2.5  # m: window of the rover map around it
 TAILLE = 480  # px: side of the pictures
 
@@ -241,13 +253,22 @@ class FusionReelle:
         self.resets = 0
         self.mission = {'etat': 'aucune', 'texte': '', 'pas': 0}
         self.fil_mission = None
+        self.rover_mission = None  # the running mission's rover driver: POST /vitesse reaches it
         self.arret_demande = threading.Event()
         self.requete = requete or client_http(args.rover, delai=args.delai_http)
         self.percevoir = percevoir or percevoir_http(
-            args.perception, delai=6.0, age_max=args.age_max, fraiche=False
+            args.perception,
+            delai=6.0,
+            age_max=args.age_max,
+            fraiche=False,
+            avance_camera=args.avance_camera,
         )
         self.percevoir_frais = percevoir_frais or percevoir_http(
-            args.perception, delai=8.0, age_max=args.age_max, fraiche=True
+            args.perception,
+            delai=8.0,
+            age_max=args.age_max,
+            fraiche=True,
+            avance_camera=args.avance_camera,
         )
         self.camera = None  # the overhead camera (OverheadDrone), with --drone-source
         self.ia = None  # the vision model that finds the rover, with --drone-detecteur ia
@@ -431,6 +452,76 @@ class FusionReelle:
                 self.n_scan = {'points': 0, 'free': 0, 'obstacle': 0}
         print(time.strftime('%H:%M:%S'), 'local map', 'on' if valeur else 'off', flush=True)
         return 200, {'ok': True, 'carte_locale': valeur}
+
+    def regler_conduite(self, corps):
+        """POST /conduite: how missions drive and what feeds the rover's local map, while
+        running. (code, answer)
+
+        {"continu": true|false}: drive without stopping (--continu) or as before;
+        {"source_locale": "rover"|"service"}: the rover's own depth grid (its GET /local_grid)
+        or the perception service (--source-locale). Either key or both. Refused while a
+        mission runs: its loop reads both. What is already on the maps is kept."""
+        if self.en_mission():
+            return 409, {'error': 'a mission is running: stop it first'}
+        continu, source = corps.get('continu'), corps.get('source_locale')
+        fusion = corps.get('fusion')
+        if continu is None and source is None and fusion is None:
+            return 400, {
+                'error': '{"continu": true|false}, {"source_locale": ...} or {"fusion": ...} '
+                'expected'
+            }
+        if fusion is not None and fusion not in ('superposition', 'global', 'local'):
+            return 400, {'error': '"fusion" must be "superposition", "global" or "local"'}
+        if continu is not None and not isinstance(continu, bool):
+            return 400, {'error': '"continu" must be true or false'}
+        if source is not None and source not in ('service', 'rover'):
+            return 400, {'error': '"source_locale" must be "service" or "rover"'}
+        with self.verrou:
+            if continu is not None:
+                self.args.continu = continu
+            if source is not None and source != self.args.source_locale:
+                self.args.source_locale = source
+                self.local = {'source': source, 'age_s': None, 'erreur': None}
+                # the other source's layer goes: it would stay on the maps for ever
+                self.carte.tuiles[SOURCE_GRILLE] = {}
+                self.carte.maj[SOURCE_GRILLE] = {}
+                self.grille_ok, self.grille_muette, self.grille_bonnes = None, None, 0
+            if fusion is not None:
+                self.args.fusion = fusion
+            continu, source = self.args.continu, self.args.source_locale
+        self.regler_fusion()
+        print(
+            time.strftime('%H:%M:%S'),
+            'driving',
+            'without stops' if continu else 'as before',
+            '| local map from',
+            source,
+            flush=True,
+        )
+        return 200, {
+            'ok': True,
+            'continu': continu,
+            'source_locale': source,
+            'fusion': self.args.fusion,
+        }
+
+    def regler_vitesse(self, corps):
+        """POST /vitesse {"vitesse": m/s}: the cruise speed of missions, while running (the
+        dashboard's speed slider). During a mission it applies from the next path sent to the
+        rover (the one it follows keeps its speed). (code, answer)"""
+        v = corps.get('vitesse')
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            return 400, {'error': '{"vitesse": m/s} is expected'}
+        if not VITESSE_MIN <= v <= VITESSE_MAX:
+            return 400, {'error': f'"vitesse" must be between {VITESSE_MIN} and {VITESSE_MAX} m/s'}
+        v = float(v)
+        with self.verrou:
+            self.args.vitesse = v
+            rover = self.rover_mission
+        if rover is not None:
+            rover.vitesse = v  # read at each POST /path of the drivers (vitesse=, then .vitesse)
+        print(time.strftime('%H:%M:%S'), f'mission speed {v:.2f} m/s', flush=True)
+        return 200, {'ok': True, 'vitesse': v}
 
     def regler_marqueur(self, corps):
         """POST /marqueur: turn --drone-sans-marqueur on or off while running. (code, answer)
@@ -686,6 +777,19 @@ class FusionReelle:
             self.info_mouvement = None
             self.correction_echelle = 1.0  # what the rover's move said of the camera's scale
             self.vue_drone = None
+            self.local = {'source': self.args.source_locale, 'age_s': None, 'erreur': None}
+            self.grille_ok = None  # the rover's grid is usable (None: not asked yet)
+            self.grille_muette = None  # since when (monotonic) no fresh grid came
+            self.grille_bonnes = 0  # fresh grids in a row
+            self.fusion = {
+                'demandee': self.args.fusion,
+                'utilisee': 'global',
+                'raison': None,
+                'cellules_rover': 0,
+                'doublons': 0,
+                'arrets_garde': 0,
+            }
+            self.regler_fusion()
 
     def en_mission(self):
         return self.fil_mission is not None and self.fil_mission.is_alive()
@@ -708,6 +812,8 @@ class FusionReelle:
         return float((((etat or {}).get('gimbal') or {}).get('pan')) or 0.0)
 
     def publier(self, vue):
+        if vue is GRILLE:  # the rover's grid: already on the maps, as a layer (superposer)
+            return
         m, x0, y0 = vue
         with self.verrou:
             for msg in decouper(m, x0, y0, 4, self.carte, 'rover', t=time.monotonic()):
@@ -719,6 +825,139 @@ class FusionReelle:
                 'free': int((m == 0).sum()),
                 'obstacle': int((m == 1).sum()),
             }
+
+    def vue_locale(self):
+        """What the rover's own obstacle grid shows (its GET /local_grid: the depth camera on
+        the rover, rover/local_map.py), on the maps; None when it has none or it is too old."""
+        import suivi_continu as sc
+
+        try:
+            rep = self.requete('GET', '/local_grid')
+        except ServeurRoverError as e:  # e.g. 404: a rover server older than this feature
+            self.local = {'source': 'rover', 'age_s': None, 'erreur': str(e)[:200]}
+            return None
+        with self.verrou:
+            origine = self.origine
+        self.local = {
+            'source': 'rover',
+            'age_s': (rep or {}).get('age_s'),
+            'erreur': 'no answer to GET /local_grid' if rep is None else rep.get('error'),
+        }
+        if rep is None or origine is None:
+            return None
+        x0, y0, h0 = origine  # the odometry pose that is (DECALAGE, DECALAGE, 0) on the maps
+        c, s = math.cos(-h0), math.sin(-h0)
+        zero = (DECALAGE - (c * x0 - s * y0), DECALAGE - (s * x0 + c * y0))
+        return sc.grille_locale(rep, zero, -h0, self.args.age_max)
+
+    def regard(self, position, cap):
+        """One look of the rover at a stop: its own grid (--source-locale rover), which goes on
+        the maps here (GRILLE is returned: nothing more to fuse), or the perception service's
+        picture taken after the stop. None: no view, and no map to drive on."""
+        if self.args.source_locale == 'rover':
+            return GRILLE if self.superposer(position) != 'aucune' else None
+        self.regler_fusion()
+        return self.percevoir_frais(position, cap)
+
+    # ---- the two maps together --------------------------------------------------------------
+    def regler_fusion(self, grille=None):
+        """Decides which maps the planner uses now and sets the map accordingly; the mode used.
+
+        Asked (--fusion, POST /conduite): superposition, global (the drone's map alone) or
+        local (the rover's alone). Used: what is possible with the maps that work.
+        - superposition: the drone's map is the map; the rover adds obstacles near itself and
+          never erases the drone's (CarteFusion.rover_efface_drone False);
+        - global: no rover grid (not asked, or missing for a while);
+        - local: no drone map (not asked, or never placed);
+        - aucune: neither.
+        With the local map off nothing changes from before: the drone's map, and what the
+        rover bumped into."""
+        a = self.args
+        with self.verrou:
+            drone = bool(self.carte.tuiles.get('drone'))
+            if not a.carte_locale:
+                utilisee, raison = 'global', 'local map off'
+            else:
+                local = self.grille_ok is True if a.source_locale == 'rover' else True
+                if a.fusion == 'global':
+                    utilisee, raison = 'global', None
+                elif a.fusion == 'local' and local:
+                    utilisee, raison = 'local', None
+                elif local and drone:
+                    utilisee, raison = 'superposition', None
+                elif drone:
+                    utilisee, raison = 'global', "no recent grid from the rover's depth camera"
+                elif local:
+                    utilisee, raison = 'local', 'the drone map is not placed'
+                else:
+                    utilisee, raison = 'aucune', 'no drone map and no grid from the rover'
+                if a.fusion == 'local' and utilisee == 'global':
+                    raison = "no recent grid from the rover's depth camera: the drone map instead"
+            self.carte.roles_ignores = {'drone'} if utilisee == 'local' else set()
+            # the old rule (a rover cell replaces the drone's) only where it always applied
+            self.carte.rover_efface_drone = not a.carte_locale
+            avant = self.fusion['utilisee']
+            self.fusion.update(demandee=a.fusion, utilisee=utilisee, raison=raison)
+        if utilisee != avant and self.en_mission():
+            self.journal_mission(
+                texte=f'maps: {avant} -> {utilisee}' + (f' ({raison})' if raison else '')
+            )
+        return utilisee
+
+    def superposer(self, position):
+        """The rover's own grid (GET /local_grid) as a layer of the maps, REBUILT from what the
+        rover knows now: a cell the rover forgot is gone from the maps at once, and nothing
+        stays when its depth camera stops. Only what is within PORTEE_GRILLE of the rover, and,
+        over a drone map, without the obstacles the drone already has within MEME_OBJET (the
+        same thing seen twice, a few centimetres apart). Returns the mode used."""
+        vue = self.vue_locale()
+        now = time.monotonic()
+        if vue is not None:
+            self.grille_bonnes += 1
+            self.grille_muette = None
+            if self.grille_ok is None or self.grille_bonnes >= 2:
+                self.grille_ok = True
+        else:
+            self.grille_bonnes = 0
+            self.grille_muette = self.grille_muette or now
+            if self.grille_ok is None or now - self.grille_muette > PANNE_GRILLE:
+                self.grille_ok = False  # one late picture is not an outage
+        utilisee = self.regler_fusion()
+        with self.verrou:
+            self.carte.tuiles[SOURCE_GRILLE] = {}
+            self.carte.maj[SOURCE_GRILLE] = {}
+            cellules = doublons = 0
+            if vue is not None and utilisee in ('superposition', 'local'):
+                m, x0, y0 = vue
+                m = m.copy()
+                res = self.carte.res_fine
+                h, w = m.shape
+                ys, xs = np.mgrid[0:h, 0:w]
+                loin = np.hypot(
+                    x0 + (xs + 0.5) * res - position[0], y0 + (ys + 0.5) * res - position[1]
+                )
+                m[loin > PORTEE_GRILLE] = -1
+                if utilisee == 'superposition':
+                    drone = self.carte.couche('drone', x0, y0, x0 + w * res, y0 + h * res)
+                    if drone.shape == m.shape:
+                        k = 2 * int(round(MEME_OBJET / res)) + 1
+                        disque = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+                        pres = cv2.dilate((drone == 1).astype(np.uint8), disque) == 1
+                        meme = (m == 1) & pres
+                        doublons = int(meme.sum())
+                        m[meme] = -1
+                cellules = int((m == 1).sum())
+                for msg in decouper(m, x0, y0, 4, self.carte, SOURCE_GRILLE, t=now):
+                    self.carte.recevoir(msg)
+                self.vues += 1
+                self.derniere_vue = time.time()
+                self.n_scan = {
+                    'points': int((m != -1).sum()),
+                    'free': int((m == 0).sum()),
+                    'obstacle': cellules,
+                }
+            self.fusion.update(cellules_rover=cellules, doublons=doublons)
+        return utilisee
 
     # ---- outside a mission: observe --------------------------------------------------------
     def tour(self):
@@ -742,8 +981,15 @@ class FusionReelle:
         self.immobile = immobile
         if not self.args.carte_locale:
             info = "local map off: the rover's camera is not used"
+            self.regler_fusion()
         elif self.en_mission():
             info = 'mission running: the rover looks at each stop'
+        elif self.args.source_locale == 'rover':  # its own grid: valid while it moves too
+            self.superposer(pose[:2])
+            if self.grille_muette is not None:
+                info = "local map: no recent grid from the rover's depth camera"
+            else:
+                info = "rover's grid on the maps"
         elif not immobile:
             info = 'rover moving: view not fused'
         else:
@@ -753,6 +999,11 @@ class FusionReelle:
             else:
                 self.publier(vue)
                 info = 'view fused'
+        if not self.en_mission():
+            # an obstacle the rover's guard reported during a mission that has ended leaves the
+            # map at its time too (a running mission does it itself, between two plans)
+            with self.verrou:
+                self.carte.expirer_chocs(time.monotonic())
         self.dessiner(pose, info, etat)
 
     # ---- mission ---------------------------------------------------------------------
@@ -781,6 +1032,14 @@ class FusionReelle:
             return 409, {'error': 'no goal: click on a map first'}
         if self.en_mission():
             return 409, {'error': 'a mission is already running'}
+        if self.args.carte_locale and self.args.source_locale == 'rover':
+            with self.verrou:
+                pose = self.pose
+            if pose is not None and self.superposer(pose[:2]) == 'aucune':
+                return 409, {
+                    'error': "no map to drive on: the drone map is not placed and the rover's "
+                    'depth camera gives no grid'
+                }
         self.arret_demande.clear()
         self.journal_mission('en_cours', 'start', 0)
         self.fil_mission = threading.Thread(target=self._mission, daemon=True)
@@ -799,6 +1058,9 @@ class FusionReelle:
         a = self.args
         issue = 'erreur'
         try:
+            if a.continu:
+                issue = self._mission_continue()
+                return
             if a.segment > 0:
                 issue = self._mission_segments()
                 return
@@ -809,7 +1071,7 @@ class FusionReelle:
                 position_drone=odo.pose,
                 # no local map: the rover's camera is not asked, at any stop
                 percevoir=lambda position, cap: (
-                    self.percevoir_frais(position, cap) if self.args.carte_locale else None
+                    self.regard(position, cap) if self.args.carte_locale else None
                 ),
                 drone=odo,
                 vitesse=a.vitesse,
@@ -823,6 +1085,7 @@ class FusionReelle:
                 raise RuntimeError('the rover does not answer GET /state')
             rover.placer(depart[:2])
             rover.recaler()
+            self.rover_mission = rover
             issue = self._boucle_mission(rover)
         except ArretOperateur as e:
             issue = 'arret_operateur'
@@ -834,6 +1097,7 @@ class FusionReelle:
             issue = 'erreur'
             self.journal_mission(texte=f'ERROR: {type(e).__name__}: {e}')
         finally:
+            self.rover_mission = None
             if issue != 'arrive':
                 arreter_le_rover(self.requete, journal=lambda t: print(t, flush=True))
             self.journal_mission(etat=issue)
@@ -955,6 +1219,24 @@ class FusionReelle:
         """The mission in long segments (--segment): one POST /path carries several points of
         the planned path and the rover follows them without stopping (the driver of
         merging_map/avancer_esquive.py), instead of one stop every --pas m."""
+        rover, ae = self._preparer_segments()
+        return self._boucle_segments(rover, ae)
+
+    def _mission_continue(self):
+        """The mission without stops (--continu): the path is planned again about twice a
+        second while the rover drives, and sent again when it changed; the rover takes it
+        over at speed. The rover's own guard (its depth camera) slows it down and stops it."""
+        rover, ae = self._preparer_segments()
+        config = self.requete('GET', '/config') or {}
+        if not config.get('local_guard'):
+            self.journal_mission(
+                texte="WARNING: the rover's local guard is off (POST /config "
+                '{"local_guard": 1} on the rover): it will not stop by itself for an obstacle'
+            )
+        return self._boucle_continue(rover, ae)
+
+    def _preparer_segments(self):
+        """The rover driver of merging_map/avancer_esquive.py, placed on the maps and ready."""
         import avancer_esquive as ae
 
         a = self.args
@@ -965,15 +1247,14 @@ class FusionReelle:
             self.carte,
             self.requete,
             odo,
-            lambda position, cap: (
-                self.percevoir_frais(position, cap) if self.args.carte_locale else None
-            ),
+            lambda position, cap: (self.regard(position, cap) if self.args.carte_locale else None),
             vitesse=a.vitesse,
             delai_liaison=a.delai_liaison,
             periode=a.periode_pas,
             delai_pret=30.0,
             signaler=lambda t: self.journal_mission(texte=t),
         )
+        self.rover_mission = rover
         rover.placer(odo.pose()[:2])
         debut = time.monotonic()
         while not ae.pret(odo.etat):  # ESP32, gyroscope, nothing running
@@ -984,11 +1265,202 @@ class FusionReelle:
             time.sleep(1.0)
             rover.requete('GET', '/state')
         rover.recaler_apres()
-        return self._boucle_segments(rover, ae)
+        return rover, ae
+
+    def obstacle_du_garde(self, vu):
+        """What the rover's guard stopped for, on the map: ONE cell, for --duree-obstacle s.
+        Just enough for the next plan to leave it aside: grown by the rover's radius it is a
+        30 cm circle, where the 20 cm disc kept for 30 s before closed 50 cm for a mission's
+        worth of time on what could be one bad picture."""
+        with self.verrou:
+            self.carte.signaler_obstacle(
+                *vu, rayon=0.05, t=time.monotonic(), duree=self.args.duree_obstacle
+            )
+            self.fusion['arrets_garde'] += 1
+
+    def _regarder_autour(self, rover):
+        """The rover's depth camera is fixed to its body: to look around, the rover turns on
+        the spot (left, right, back) and each view goes on the maps."""
+        for angle_deg in (40.0, -80.0, 40.0):
+            if self.arret_demande.is_set():
+                return
+            rover.pivoter(angle_deg)
+            self.superposer(rover.est)
+
+    def _boucle_continue(self, rover, ae):
+        import suivi_continu as sc
+
+        a = self.args
+        portee = a.segment if a.segment > 0 else 2.0
+        nom = f'c{int(time.time()) % 100000}'
+        sans_camera = False  # the rover's guard gave up on its depth camera (said once)
+        courant = None  # the path the rover is driving (frame of the maps), None when stopped
+        envois, regards, muet = 0, 0, None
+        fin = time.monotonic() + a.duree_max
+        while time.monotonic() < fin:
+            t0 = time.monotonic()
+            objectif = self.objectif
+            if self.arret_demande.is_set() or objectif is None:
+                self.journal_mission(texte='mission stopped')
+                return 'arret'
+            phase, info = rover.suivi()
+            if phase == 'liaison':
+                muet = muet or t0
+                if t0 - muet > a.delai_liaison:
+                    self.journal_mission(texte=f'ERROR: no answer for {a.delai_liaison:.0f} s')
+                    return 'erreur'
+                time.sleep(a.periode_plan)
+                continue
+            muet = None
+            pos = rover.position()
+            if phase in ('fini', 'repos'):
+                courant = None
+            if phase == 'fini':
+                statut = info.get('status')
+                vu = rover.obstacle_vu(info)
+                if statut == 'no depth camera':
+                    self.journal_mission(
+                        texte="ERROR: the rover's guard has no depth picture and is set to stop "
+                        '(guard_blind_stop): depth camera or its server down'
+                    )
+                    return 'erreur'
+                if vu is not None:
+                    self.obstacle_du_garde(vu)
+                    self.journal_mission(
+                        texte=f'OBSTACLE seen by the rover at ({vu[0] - DECALAGE:.2f}, '
+                        f'{vu[1] - DECALAGE:.2f}): stopped before it, new route'
+                    )
+                elif statut != 'done':
+                    impact = rover.point_de_choc(statut)
+                    if impact is not None:
+                        with self.verrou:
+                            rover.signaler_choc(impact)
+                        self.journal_mission(texte=f'BUMP ({statut}): obstacle marked on the map')
+                    else:
+                        self.journal_mission(texte=f'path ended on "{statut}"')
+            reste = math.dist(pos, objectif)
+            if reste <= a.tolerance:
+                if courant is None:
+                    self.journal_mission(
+                        texte=f'ARRIVED {reste:.2f} m from the goal, {envois} paths sent'
+                    )
+                    return 'arrive'
+                time.sleep(a.periode_plan)  # the rover finishes its path by itself
+                continue
+            if a.carte_locale and (a.source_locale == 'rover' or courant is None):
+                pan = math.radians(self.pan(rover.odo.etat))
+                vue = self.regard(rover.est, None if rover.cap is None else angle(rover.cap - pan))
+                if vue is None and a.source_locale == 'rover':
+                    self.journal_mission(
+                        texte='ERROR: no map to drive on (the drone map is not placed and the '
+                        "rover's depth camera gives no grid)"
+                    )
+                    return 'erreur'
+                if vue is not None:
+                    self.publier(vue)
+            else:
+                self.regler_fusion()
+            garde = ((info or {}).get('local') or {}).get('state') if phase == 'en_cours' else None
+            if garde == 'no_camera' and not sans_camera:
+                self.journal_mission(
+                    texte="WARNING: the rover's guard has no depth picture: it drives on "
+                    'UNPROTECTED (depth camera or its server down)'
+                )
+            sans_camera = garde == 'no_camera' or (sans_camera and garde is None)
+            # only where it has seen: asked for, or the rover's grid is the only map
+            strict = a.segment_vu or self.fusion['utilisee'] == 'local'
+            with self.verrou:
+                self.carte.expirer_chocs(time.monotonic())
+                if courant is None:
+                    avant, depart = [pos], pos
+                else:
+                    avant, depart = sc.prolonger(courant, pos, a.vitesse * a.latence + 0.05)
+                dec = self.carte.decider(
+                    depart,
+                    objectif,
+                    zone=self.zone_mission(pos),
+                    tolerance=a.tolerance,
+                    drone_disponible=False,
+                )
+                self.decision = dec
+                chemin = [tuple(p) for p in dec.get('chemin') or []]
+                grille = dec['grille']
+                if strict:
+                    points, _ = ae.troncon_vu(chemin or [depart], grille, self.carte, portee, pos)
+                else:
+                    points = troncon(chemin or [depart], grille, self.carte, portee, pos)
+                libre = sc.corde_libre(
+                    self.carte.grille_plan(grille), grille, strict, pos, self.carte.rayon_effectif
+                )
+                trajet = avant[:-1] + sc.lisser(points, libre)
+                barre = courant is not None and (
+                    self.carte.premier_point_bloque(sc.reste(courant, pos), horizon=1.0)
+                    is not None
+                )
+            a_rouler = ae.longueur_chemin(points)
+            if courant is None:  # stopped: the checks of the segment loop
+                bloque = dec['action'] == 'OBJECTIF_DEGRADE' and math.dist(
+                    dec.get('point', pos), pos
+                )
+                if bloque is not False and bloque < 0.05:
+                    self.journal_mission(texte='BLOCKED: no way to the goal')
+                    return 'bloque'
+                if a_rouler < ae.SEGMENT_MIN:
+                    if ae.longueur_chemin(chemin) < ae.SEGMENT_MIN and reste <= a.tolerance + 0.1:
+                        self.journal_mission(
+                            texte=f'ARRIVED {reste:.2f} m from the goal, {envois} paths sent'
+                        )
+                        return 'arrive'
+                    # the goal is near and the way to it is clear: that short rest is
+                    # driven (it was called "blocked" when it was a little under SEGMENT_MIN)
+                    proche = (
+                        dec['action'] == 'SUIVRE'
+                        and a_rouler >= 0.03
+                        and a_rouler >= ae.longueur_chemin(chemin) - 0.02
+                    )
+                    if proche:
+                        pass
+                    elif a.carte_locale and a.source_locale == 'rover' and regards < 1:
+                        regards += 1
+                        self.journal_mission(texte='nothing seen free ahead: looking around')
+                        self._regarder_autour(rover)
+                        continue
+                    else:
+                        self.journal_mission(
+                            texte=f'BLOCKED: nothing to drive ahead ({a_rouler:.2f} m)'
+                            + (': only where the map has seen' if strict else '')
+                        )
+                        return 'bloque'
+                envoyer = True
+            elif a_rouler < ae.SEGMENT_MIN:
+                # nothing better to drive; if the map now bars the path being driven, a short
+                # path makes the rover stop a little ahead instead of driving on
+                envoyer, trajet = barre, avant
+            else:
+                envoyer = barre or sc.a_remplacer(
+                    courant, trajet, pos, objectif, tolerance=a.tolerance
+                )
+            if envoyer and len(trajet) >= 1:
+                envois += 1
+                if rover.lancer(trajet, f'{nom}-{envois}'):
+                    if courant is None:
+                        regards = 0
+                    courant = trajet
+                    self.journal_mission(
+                        texte=f'path {envois}: {dec["action"]}, '
+                        f'{ae.longueur_chemin(trajet):.2f} m in {len(trajet)} points, '
+                        f'{reste:.2f} m to go' + (' (route barred: new route)' if barre else ''),
+                        pas=envois,
+                    )
+            time.sleep(max(0.05, a.periode_plan - (time.monotonic() - t0)))
+        self.journal_mission(texte=f'{a.duree_max:.0f} s without arriving')
+        return 'max_pas'
 
     def _boucle_segments(self, rover, ae):
         a = self.args
         sans_vue = 0
+        refus = 0  # segments in a row the rover's guard ended before the rover moved
+        sur_place = 0  # segments in a row the rover ended 'done' without moving
         for k in range(a.max_pas):
             objectif = self.objectif
             if self.arret_demande.is_set() or objectif is None:
@@ -1002,17 +1474,29 @@ class FusionReelle:
             if a.carte_locale:  # a look of the rover's camera at each stop
                 pan = math.radians(self.pan(self.dernier_etat))
                 cap = None if rover.cap is None else angle(rover.cap - pan)
-                vue = self.percevoir_frais(rover.est, cap)
+                vue = self.regard(rover.est, cap)
                 if vue is None:
                     sans_vue += 1
-                    self.journal_mission(texte=f'perception unavailable ({sans_vue}/3): waiting')
                     if sans_vue >= 3:
+                        self.journal_mission(
+                            texte="ENDED: no view from the rover's camera, 3 tries (perception "
+                            'service or its link to the depth camera down, or no floor in '
+                            'view): the rover did not move'
+                        )
                         return 'perception_indisponible'
+                    self.journal_mission(texte=f'perception unavailable ({sans_vue}/3): waiting')
                     time.sleep(1.0)
                     continue
                 sans_vue = 0
                 self.publier(vue)
             with self.verrou:
+                # What the rover's guard stopped for stays on the map for its time, even when
+                # the perception service's view just fused says "free" there: the two do not
+                # see the same things. The rover's own grid is what the guard saw: its view
+                # decides (a cell it sees free again is free at once).
+                self.carte.expirer_chocs(time.monotonic())
+                if a.source_locale != 'rover':
+                    self.carte.reposer_chocs(time.monotonic())
                 dec = self.carte.decider(
                     pos,
                     objectif,
@@ -1066,6 +1550,55 @@ class FusionReelle:
             if statut in ('liaison', 'redemarrage'):
                 self.journal_mission(texte=f'ERROR: segment ended on "{statut}" (link or server)')
                 return 'erreur'
+            fin = getattr(rover, 'fin', None) or {}
+            # (a driver without the guard's report, e.g. a test's stand-in, has none)
+            vu = rover.obstacle_vu(fin) if hasattr(rover, 'obstacle_vu') else None
+            if vu is not None:
+                # The rover's local guard (its depth camera) ended the segment before an
+                # obstacle the map did not have: on the map for --duree-obstacle s, new route.
+                # Without this the same segment was sent again while the rover stood still.
+                self.obstacle_du_garde(vu)
+                ou = f'({vu[0] - DECALAGE:.2f}, {vu[1] - DECALAGE:.2f})'
+                refus = refus + 1 if float(fin.get('distance') or 0.0) < 0.05 else 0
+                if refus >= 3:
+                    self.journal_mission(
+                        texte=f"BLOCKED: the rover's guard refuses every way from here (obstacle "
+                        f'at {ou}, {refus} segments ended before moving): move the rover back '
+                        'by hand, or remove what is in front of it'
+                    )
+                    return 'bloque'
+                self.journal_mission(
+                    texte=f'OBSTACLE seen by the rover at {ou}: stopped before it, new route'
+                )
+                continue
+            refus = 0
+            if statut == 'done' and 'distance' in fin and float(fin['distance'] or 0.0) < 0.02:
+                # The rover took the segment as already done: a path shorter than its
+                # look-ahead (0.2 m) whose end is behind its nose counts as "just passed"
+                # (rover_core, PathFollower.update) and ends 'done' after 0 m. Sent again as
+                # it is, it ended the same way for ever while the rover stood still (seen on
+                # the real rover: 15 cm segments to a degraded goal). Face it, then give up.
+                sur_place += 1
+                if sur_place >= 3:
+                    self.journal_mission(
+                        texte=f'BLOCKED: the rover does not move ({sur_place} segments in a '
+                        'row ended "done" after 0 m)'
+                    )
+                    return 'bloque'
+                cible = points[1]
+                ecart = 0.0
+                if rover.cap is not None:
+                    ecart = angle(math.atan2(cible[1] - pos[1], cible[0] - pos[0]) - rover.cap)
+                if abs(ecart) > math.radians(10) and hasattr(rover, 'pivoter'):
+                    self.journal_mission(
+                        texte=f'the rover took a {a_rouler:.2f} m segment as already done (its '
+                        f'end is behind it): turning {math.degrees(ecart):+.0f} deg to face it'
+                    )
+                    rover.pivoter(math.degrees(ecart))
+                else:
+                    self.journal_mission(texte='segment ended "done" after 0 m: planning again')
+                continue
+            sur_place = 0
             if impact is not None:
                 with self.verrou:
                     rover.signaler_choc(impact)
@@ -1089,7 +1622,7 @@ class FusionReelle:
             if a.carte_locale:  # a look of the rover's camera at each stop
                 pan = math.radians(self.pan(self.dernier_etat))
                 cap = None if rover.cap is None else angle(rover.cap - pan)
-                vue = self.percevoir_frais(rover.est, cap)
+                vue = self.regard(rover.est, cap)
                 if vue is None:
                     sans_vue += 1
                     self.journal_mission(texte=f'perception unavailable ({sans_vue}/3): waiting')
@@ -1271,10 +1804,29 @@ class FusionReelle:
             'rover': {'x': pose[0] - DECALAGE, 'y': pose[1] - DECALAGE, 'cap': pose[2]},
             'objectif': [c - DECALAGE for c in objectif] if objectif else [],
             'carte_locale': bool(self.args.carte_locale),
-            'source_rover': 'REAL rover: rover camera (DA3 perception on the VM) and odometry, '
-            'views fused while standing still'
+            'vitesse': self.args.vitesse,  # m/s, missions (POST /vitesse)
+            'source_rover': (
+                'REAL rover: the obstacle grid of its depth camera (D405, computed on the '
+                'rover) and odometry, fused while it drives'
+                if self.args.source_locale == 'rover'
+                else 'REAL rover: rover camera (DA3 perception on the VM) and odometry, '
+                'views fused while standing still'
+            )
             if self.args.carte_locale
             else "local map OFF: the rover's camera is not used, odometry only",
+            'local': {
+                **self.local,
+                'garde': ((etat.get('ctrl') or {}).get('local') or {}).get('state'),
+                'obstacle_dist': ((etat.get('ctrl') or {}).get('local') or {}).get(
+                    'obstacle_dist'
+                ),
+            },
+            'fusion': dict(self.fusion),
+            'conduite': 'continu'
+            if self.args.continu
+            else 'segments'
+            if self.args.segment > 0
+            else 'pas',
             'drone': {
                 'source': (
                     f'{self.args.drone_nom or "overhead camera"} (REAL drone): '
@@ -1432,6 +1984,10 @@ def handler(fr):
                     return self._json(*fr.regler_carte_locale(corps))
                 if nom == '/marqueur':
                     return self._json(*fr.regler_marqueur(corps))
+                if nom == '/conduite':
+                    return self._json(*fr.regler_conduite(corps))
+                if nom == '/vitesse':
+                    return self._json(*fr.regler_vitesse(corps))
                 if nom == '/calibrer':
                     return self._json(*fr.calibrer())
             except (KeyError, TypeError, ValueError) as e:
@@ -1453,6 +2009,14 @@ def options(argv=None):
         help="build the rover's local map from its own camera (the perception service), "
         'outside a mission and at each stop of a mission. Off for now: the maps come from '
         'the drone camera only. Also the "Local map" box of the dashboard',
+    )
+    p.add_argument(
+        '--avance-camera',
+        type=float,
+        default=0.0,
+        help="m: the lens of the rover's camera ahead of its centre of rotation, for the views "
+        "of the perception service (the rover's own grid already has it: its d405_x setting). "
+        'With 0 the obstacles are drawn that much too near the rover',
     )
     p.add_argument('--periode', type=float, default=2.0, help='s between two reads')
     p.add_argument('--delai-http', type=float, default=8.0, help='s per request to the rover')
@@ -1497,6 +2061,54 @@ def options(argv=None):
         help='with --segment: drive only through cells seen free (by the drone, or by the '
         'rover with the local map); a goal in what nobody has seen is then refused. Default: '
         'unseen cells may be crossed, as step by step',
+    )
+    p.add_argument(
+        '--continu',
+        action='store_true',
+        help='drive without stopping: the path is planned again every --periode-plan s while '
+        'the rover drives and sent again when it changed (the rover takes it over at speed, '
+        'POST /path "id"); corners are rounded. Needs the rover server of main; turn the '
+        'rover\'s local guard on (POST /config {"local_guard": 1}) so that it stops by '
+        'itself before what its depth camera sees. --segment gives the longest path sent '
+        '(2 m when 0). With the local map on, only cells seen free are driven',
+    )
+    p.add_argument(
+        '--source-locale',
+        choices=('service', 'rover'),
+        default='service',
+        help="what builds the rover's local map (--carte-locale). service: the perception "
+        'service (--perception), one picture at each stop. rover: the obstacle grid the rover '
+        'computes from its depth camera (its GET /local_grid), also while it drives',
+    )
+    p.add_argument(
+        '--periode-plan', type=float, default=0.5, help='--continu: s between two plans'
+    )
+    p.add_argument(
+        '--latence',
+        type=float,
+        default=0.4,
+        help='--continu: s between reading the rover pose and the rover receiving the new '
+        'path; the plan starts that far ahead of the rover',
+    )
+    p.add_argument(
+        '--fusion',
+        choices=('superposition', 'global', 'local'),
+        default='superposition',
+        help='with the local map on, how the two maps are used. superposition: the drone map '
+        "is the map, the rover's adds obstacles near the rover and erases nothing of the "
+        "drone's. global: the drone map alone. local: the rover's alone. When the map asked "
+        'for is missing (drone map never placed, no grid from the rover for 3 s) the other '
+        'one is used alone; the mode in use is in status.json (fusion). Also POST /conduite',
+    )
+    p.add_argument(
+        '--duree-obstacle',
+        type=float,
+        default=10.0,
+        help="--continu: s an obstacle reported by the rover's guard stays on the map when "
+        'nothing sees it again',
+    )
+    p.add_argument(
+        '--duree-max', type=float, default=600.0, help='--continu: s at most per mission'
     )
     p.add_argument('--vitesse', type=float, default=0.12, help='m/s')
     p.add_argument(

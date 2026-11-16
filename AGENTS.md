@@ -49,12 +49,12 @@ Habits that have paid off here:
 | `merging_map/` | Map fusion in tiles, A*, mission loop, real-rover controller, `lancer_overhead.py` | `merging_map/README.md` |
 | `sim/` | Simulation; `fusion_reelle.py`, the maps and missions of the real rover for the dashboard; `rover_du_dessus.py`, a vision model that finds the rover from above | `sim/README.md`, the files' headers |
 | `teleop/` | Web dashboard: drive the rover, watch the cameras and the maps | `teleop/README.md` |
-| `rover/` | The code on the rover: server, odometry, safety | `rover/README.md` |
+| `rover/` | The code on the rover: server, odometry, safety, local obstacle grid and guard | `rover/README.md`, `docs/local-navigation.md` |
 | `rover_mapper/` | 3D mapping from the rover camera, perception service, D405 capture | `rover_mapper/README.md` |
 | `iphone-camera/` | CamStream, the iPhone app that streams the camera above the area | `iphone-camera/README.md` |
 | `devices/` | One interface to plug drones, rovers and sensors into the fusion | `devices/README.md` |
 | `scripts/` | `test_fast.sh`; `mac/run_local.sh`, the whole chain on a Mac | the scripts' headers |
-| `docs/` | `state.md`, `overhead-camera.md`, `demo-reelle.md` (a real run, step by step) | |
+| `docs/` | `state.md`, `overhead-camera.md`, `demo-reelle.md` (a real run, step by step), `local-navigation.md` (depth camera, guard, driving without stops) | |
 
 Branches with work that is not on `main` (15 Nov, evening): `experiment` (the phone reports its
 own position; `air_ground` module), `rover-teleop` (command log), `drone-map-growth`. The other
@@ -152,9 +152,18 @@ for the cases where neither robot can find the route alone.
   top edge towards the rover's front. Floor markers, if used: ids 0 to 3 of the same family.
 * The maps server (`sim/fusion_reelle.py`, relayed by the dashboard under `/fusion/`):
   `status.json`, `POST /reset`, `/objectif`, `/aller`, `/arreter`, `/calibrer`,
-  `/carte_locale {"carte_locale": bool}`, `/marqueur {"sans_marqueur": bool}`.
+  `/carte_locale {"carte_locale": bool}`, `/marqueur {"sans_marqueur": bool}`,
+  `/conduite {"continu": bool, "source_locale": "rover"|"service", "fusion":
+  "superposition"|"global"|"local"}`. `status.json` also has `local`, `conduite` and
+  `fusion` (which maps the planner uses now, and why).
 * The rover server (`rover/rover_server.py`): `GET /state`, `POST /path`, `/move`, `/turn`,
-  `/stop`, in the frame of its own odometry.
+  `/stop`, in the frame of its own odometry. `POST /path` takes an optional `"id"` (given back
+  in `/state`; a path with an id replaces a running one without stopping). `GET /local_grid`:
+  5 cm cells around the rover from its depth camera, `-1` / `0` / `1`, odometry frame. A path
+  can end with status `blocked` and `obstacle: [x, y]` (setting `local_guard`).
+* The D405 capture server (`rover_mapper/d405_server.py`, on the rover): `GET /frame`,
+  `/info`, `/grid` (5 cm cells in front of the lens), `POST /calibrate_floor`.
+  Details of both: `docs/local-navigation.md`.
 * The phone app (`iphone-camera/`): `/video` (MJPEG), `/status` (lens, resolution,
   stabilisation), `/depth` (LiDAR, Pro models).
 * Frames: `map` = the overhead camera's global frame; `odom` = the rover's own continuous frame

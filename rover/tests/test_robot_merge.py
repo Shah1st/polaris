@@ -240,7 +240,12 @@ def test_robot_config_loads_unchanged(tmp_path, capsys) -> None:
         live = json.load(f)
     cfg = Config.load(path)
     assert 'using the default' not in capsys.readouterr().out
-    assert set(live) == set(dataclasses.asdict(cfg))
+    # every setting of the robot's file is known; the ones added since (local navigation with
+    # the depth camera) are absent from it and keep their defaults
+    added = set(dataclasses.asdict(cfg)) - set(live)
+    assert set(live) <= set(dataclasses.asdict(cfg))
+    assert all(n.startswith(('guard_', 'local_', 'd405_')) for n in added), added
+    assert all(getattr(cfg, n) == getattr(Config(), n) for n in added)
     for name, value in live.items():
         assert getattr(cfg, name) == value and type(getattr(cfg, name)) is type(value), name
     assert os.path.exists(path) and not os.path.exists(path + '.bad')

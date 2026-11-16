@@ -77,6 +77,23 @@ dashboard with `--fusion http://127.0.0.1:8096`; the page writes the source of e
 `status.json`). It reads `GET /state` every 2 s and the perception service: stop it during a
 run over the slow tunnel. The fused map of the real mission is on `/mission` (`--suivi`).
 
+**Local navigation** (`docs/local-navigation.md`). Under the maps: "Drive without stops" and
+"Rover's depth grid" switch the maps server's `--continu` and `--source-locale rover` (not
+during a mission); "Rover guard" turns the rover's own guard on or off (`local_guard`, the
+only setting the dashboard sends). The line below them, and the "Rover guard" row on the left,
+give the guard's state and the distance to the obstacle; "STOPPED before an obstacle" is in
+red. On a rover server older than the local navigation the guard box is hidden and the row
+says so.
+
+**Speed slider.** It sets the speed of the keys and, once moved, the autonomous missions' too
+(the maps server's `POST /vitesse`, `--vitesse` at start): from the next path sent to the
+rover, also during a mission. The missions' speed in use is written beside it. The slider
+stops at 0.20 m/s, the dashboard's limit for the keys, so missions set with it go no faster.
+
+**Depth camera tab.** The rover's D405 colour picture and depth (red near, blue far), relayed
+from the robot's `/d405/*`, with the distance at the centre; nothing is asked of the robot
+while the tab is hidden.
+
 ## The mission page (for the jury)
 
 `http://localhost:8082/mission` shows the real mission live, in large French text readable on a
