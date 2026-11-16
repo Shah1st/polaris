@@ -155,11 +155,11 @@ first:
 | Side | Setup |
 |---|---|
 | Rover | `rover/rover_server.py` running on the rover: [rover/README.md](rover/README.md) |
-| Phone | The CamStream app serving its camera: [iphone-camera/README.md](iphone-camera/README.md) (in French) |
-| Mac | The Python environment of the mapper (PyTorch): [rover_mapper/README.md](rover_mapper/README.md) (in French) |
+| Phone | The CamStream app serving its camera: [iphone-camera/README.md](iphone-camera/README.md) |
+| Mac | The Python environment of the mapper (PyTorch): [rover_mapper/README.md](rover_mapper/README.md) |
 
-The step-by-step guide for a real run is [docs/demo-reelle.md](docs/demo-reelle.md) (in
-French). The settings that decide what the rover does are in [docs/state.md](docs/state.md).
+The step-by-step guide for a real run is [docs/demo-reelle.md](docs/demo-reelle.md). The
+settings that decide what the rover does are in [docs/state.md](docs/state.md).
 
 ## What is proven
 
@@ -187,8 +187,8 @@ first.
 | [merging_map/](merging_map/README.md) | Drone + rover map fusion, A* planner, what to do when the rover is blocked |
 | [teleop/](teleop/README.md) | Web dashboard: driving, cameras, maps, missions |
 | [rover/](rover/README.md) | The server that runs on the rover (motors, odometry, safety, depth grid, guard) and its test bench |
-| [rover_mapper/](rover_mapper/README.md) | Live 3D map from the rover's single camera (Depth Anything 3) and the perception service; README in French |
-| [iphone-camera/](iphone-camera/README.md) | CamStream, the iPhone app that serves the overhead camera; README in French |
+| [rover_mapper/](rover_mapper/README.md) | Live 3D map from the rover's single camera (Depth Anything 3) and the perception service |
+| [iphone-camera/](iphone-camera/README.md) | CamStream, the iPhone app that serves the overhead camera |
 | [devices/](devices/README.md) | Plug any drone, rover or sensor around the one fused map, from a JSON file |
 | `src/` | ROS 2 Jazzy packages: overhead calibration, global map, rover pose, bridges, bringup |
 | [docs/](docs/state.md) | [state.md](docs/state.md) (what runs today), [overhead-camera.md](docs/overhead-camera.md), [local-navigation.md](docs/local-navigation.md), [demo-reelle.md](docs/demo-reelle.md) |

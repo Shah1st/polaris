@@ -1,62 +1,62 @@
 # CamStream
 
-Une app iPhone qui rend la caméra disponible sur votre réseau Wi-Fi local.
-Ouvrez l'app sur l'iPhone, puis tapez l'adresse affichée (ex. `http://192.168.1.23:8080`) dans un navigateur du Mac : vous voyez la caméra en direct.
+An iPhone app that makes the camera available on your local Wi-Fi network.
+Open the app on the iPhone, then type the address shown (e.g. `http://192.168.1.23:8080`) into a browser on the Mac: you see the camera live.
 
-Le flux est en **MJPEG sur HTTP**, un format universel : Safari, Chrome, VLC, OBS, ffmpeg et OpenCV le lisent sans rien installer.
+The stream is **MJPEG over HTTP**, a universal format: Safari, Chrome, VLC, OBS, ffmpeg and OpenCV read it with nothing to install.
 
-## Installer sur l'iPhone
+## Install on the iPhone
 
-1. Ouvrez `CamStream.xcodeproj` dans Xcode.
-2. Cible **CamStream** › onglet **Signing & Capabilities** › choisissez votre **Team** (un compte Apple gratuit suffit).
-   Si Xcode signale que l'identifiant est déjà pris, remplacez `com.example.CamStream` par un identifiant à vous (ex. `com.votrenom.CamStream`).
-3. Branchez l'iPhone (ou sélectionnez-le en Wi-Fi), choisissez-le comme destination, puis lancez avec **⌘R**.
-4. La première fois, sur l'iPhone :
-   - activez le **Mode développeur** (Réglages › Confidentialité et sécurité) si iOS le demande ;
-   - avec un compte gratuit, faites confiance au développeur dans Réglages › Général › VPN et gestion de l'appareil ;
-   - acceptez l'accès à la **caméra** et au **réseau local**. Sans le réseau local, le Mac ne pourra pas se connecter.
+1. Open `CamStream.xcodeproj` in Xcode.
+2. **CamStream** target › **Signing & Capabilities** tab › choose your **Team** (a free Apple account is enough).
+   If Xcode reports that the identifier is already taken, replace `com.example.CamStream` with an identifier of your own (e.g. `com.votrenom.CamStream`).
+3. Plug in the iPhone (or select it over Wi-Fi), choose it as the destination, then run with **⌘R**.
+4. The first time, on the iPhone:
+   - turn on **Developer Mode** (Settings › Privacy & Security) if iOS asks for it;
+   - with a free account, trust the developer in Settings › General › VPN & Device Management;
+   - allow access to the **camera** and to the **local network**. Without the local network, the Mac will not be able to connect.
 
-> Avec un compte Apple gratuit, l'app installée expire au bout de 7 jours : il suffit de la relancer depuis Xcode.
+> With a free Apple account, the installed app expires after 7 days: just run it again from Xcode.
 
-## Utilisation
+## Usage
 
-L'app démarre la diffusion automatiquement et affiche l'adresse à ouvrir. L'iPhone et le Mac doivent être sur le **même réseau Wi-Fi** (ou le Mac connecté au partage de connexion de l'iPhone).
+The app starts streaming automatically and shows the address to open. The iPhone and the Mac must be on the **same Wi-Fi network** (or the Mac connected to the iPhone's Personal Hotspot).
 
-| Adresse | Contenu |
+| Address | Content |
 |---|---|
-| `http://IP:8080/` | Page web : flux, nombre de spectateurs, capture, plein écran |
-| `http://IP:8080/stream` | Flux MJPEG brut (VLC, OBS, ffmpeg, OpenCV…) |
-| `http://IP:8080/view` | Page avec uniquement l'image (idéale pour OBS) |
-| `http://IP:8080/snapshot.jpg` | Dernière image en JPEG |
-| `http://IP:8080/status` | État en JSON (résolution, i/s, caméra, objectif, LiDAR, stabilisation, spectateurs) |
-| `http://IP:8080/depth` | Profondeur LiDAR brute (voir « LiDAR » plus bas) |
-| `http://IP:8080/depth.jpg` | Aperçu de la profondeur : proche = blanc, 5 m et plus = noir |
+| `http://IP:8080/` | Web page: stream, number of viewers, snapshot, full screen |
+| `http://IP:8080/stream` | Raw MJPEG stream (VLC, OBS, ffmpeg, OpenCV…) |
+| `http://IP:8080/view` | Page with the image only (ideal for OBS) |
+| `http://IP:8080/snapshot.jpg` | Latest image as JPEG |
+| `http://IP:8080/status` | State as JSON (resolution, fps, camera, lens, LiDAR, stabilisation, viewers) |
+| `http://IP:8080/depth` | Raw LiDAR depth (see "LiDAR" below) |
+| `http://IP:8080/depth.jpg` | Depth preview: near = white, 5 m and beyond = black |
 
-Le service est aussi annoncé en Bonjour sous le nom « CamStream » (`dns-sd -B _http._tcp` sur le Mac).
+The service is also advertised over Bonjour under the name "CamStream" (`dns-sd -B _http._tcp` on the Mac).
 
-Dans l'app :
-- **🔄** change de caméra (arrière / avant) ;
-- **1× / 0,5×** passe la caméra arrière en **grand angle** (objectif ultra grand-angle, champ environ deux fois plus large) et retour. Le bouton n'apparaît que sur un iPhone qui a cet objectif (iPhone 11 et suivants, pas le SE) ; la caméra avant reste en 1× ;
-- **Réglages** : caméra et objectif, **profondeur LiDAR**, **stabilisation** (Aucune / Standard / Cinéma / Maximum), résolution (480p / 720p / 1080p), images par seconde (15 / 24 / 30), qualité JPEG, liste des adresses à copier ;
-- **🌙** éteint l'affichage (écran noir) pendant que la diffusion continue : moins de batterie et moins de chauffe. Touchez l'écran pour le rallumer.
-- L'interface reste en portrait. **Le flux suit l'orientation réelle de l'iPhone** : tenez-le à l'horizontale pour une image 16:9.
+In the app:
+- **🔄** switches camera (back / front);
+- **1× / 0,5×** switches the back camera to **wide angle** (ultra wide lens, field of view about twice as wide) and back. The button only appears on an iPhone that has this lens (iPhone 11 and later, not the SE); the front camera stays at 1×;
+- **Réglages** (Settings): camera and lens, **LiDAR depth**, **stabilisation** (Aucune (None) / Standard / Cinéma (Cinematic) / Maximum), resolution (480p / 720p / 1080p), frames per second (15 / 24 / 30), JPEG quality, list of addresses to copy;
+- **🌙** turns the display off (black screen) while streaming continues: less battery use and less heat. Touch the screen to turn it back on.
+- The interface stays in portrait. **The stream follows the real orientation of the iPhone**: hold it horizontally for a 16:9 image.
 
-## Utiliser le flux sur le Mac
+## Using the stream on the Mac
 
-**Navigateur** : ouvrez `http://IP:8080`.
+**Browser**: open `http://IP:8080`.
 
-**VLC** : Fichier › Ouvrir un réseau… › `http://IP:8080/stream`.
+**VLC**: File › Open Network… › `http://IP:8080/stream`.
 
-**OBS** : ajoutez une source **Navigateur** avec l'URL `http://IP:8080/view` et la taille du flux (ex. 1280×720).
+**OBS**: add a **Browser** source with the URL `http://IP:8080/view` and the size of the stream (e.g. 1280×720).
 
-**Comme webcam dans Zoom, Meet, Teams ou FaceTime** : dans OBS, cliquez sur **Démarrer la caméra virtuelle**, puis choisissez « OBS Virtual Camera » comme caméra dans l'application de visio.
+**As a webcam in Zoom, Meet, Teams or FaceTime**: in OBS, click **Start Virtual Camera**, then choose "OBS Virtual Camera" as the camera in the video call application.
 
-**ffmpeg** (enregistrer 30 s en MP4) :
+**ffmpeg** (record 30 s as MP4):
 ```bash
 ffmpeg -i http://IP:8080/stream -t 30 -c:v libx264 -pix_fmt yuv420p sortie.mp4
 ```
 
-**Python / OpenCV** :
+**Python / OpenCV**:
 ```python
 import cv2
 cap = cv2.VideoCapture("http://IP:8080/stream")
@@ -67,81 +67,81 @@ while True:
     if cv2.waitKey(1) == 27: break
 ```
 
-## Bon à savoir
+## Good to know
 
-- **L'app doit rester au premier plan.** iOS coupe la caméra dès qu'une app passe en arrière-plan. L'écran ne se verrouille pas tout seul pendant la diffusion. Au retour dans l'app, le flux reprend et la page web se reconnecte seule.
-- **Latence** : si le réseau ralentit, les images en retard sont sautées plutôt que mises en file d'attente. Le décalage ne s'accumule donc pas : on voit toujours l'image la plus récente.
-- **Sans spectateur**, l'app n'encode qu'une image par seconde, pour garder `/snapshot.jpg` à jour sans user la batterie.
-- **Sécurité** : tout appareil du réseau local peut voir le flux, sans mot de passe. À éviter sur un Wi-Fi public.
-- **Alternative native** : pour utiliser l'iPhone uniquement comme webcam du Mac, la fonction *Caméra de continuité* d'Apple le fait sans app. CamStream est utile pour tout le reste : autre ordinateur, navigateur, OBS, scripts, plusieurs spectateurs…
+- **The app must stay in the foreground.** iOS cuts the camera as soon as an app goes to the background. The screen does not lock by itself while streaming. When you return to the app, the stream resumes and the web page reconnects by itself.
+- **Latency**: if the network slows down, late images are skipped rather than queued. So the delay does not build up: you always see the most recent image.
+- **With no viewer**, the app encodes only one image per second, to keep `/snapshot.jpg` up to date without draining the battery.
+- **Security**: any device on the local network can see the stream, with no password. Avoid it on public Wi-Fi.
+- **Native alternative**: to use the iPhone only as the Mac's webcam, Apple's *Continuity Camera* feature does it without an app. CamStream is useful for everything else: another computer, browser, OBS, scripts, several viewers…
 
-## Grand angle et caméra du dessus (Polaris)
+## Wide angle and overhead camera (Polaris)
 
-Le grand angle voit environ deux fois plus large à la même hauteur : utile pour couvrir toute l'arène depuis un point bas. Le choix est mémorisé, et l'objectif utilisé est donné par `/status` (`"lens": "wide"`, `"ultrawide"`, ou `"none"` pour la mire).
+The wide angle sees about twice as wide at the same height: useful to cover the whole arena from a low point. The choice is remembered, and the lens in use is given by `/status` (`"lens": "wide"`, `"ultrawide"`, or `"none"` for the test pattern).
 
-- **Un seul objectif, toujours le même.** L'app choisit la caméra physique (1× ou 0,5×), jamais la caméra « virtuelle » d'iOS qui change d'objectif toute seule selon la distance et la lumière : l'échelle de l'image ne change donc pas en pleine mission.
-- **Distorsion** : iOS corrige par défaut celle du grand angle (`isGeometricDistortionCorrectionEnabled` vaut `true` quand l'appareil le permet, d'après la documentation d'Apple). La chaîne de la caméra du dessus (`docs/overhead-camera.md`, `docs/demo-reelle.md`) ne corrige aucune distorsion et recommandait jusqu'ici l'objectif principal seul : vérifier sur une image du flux que les bords droits de l'arène restent droits jusque dans les coins avant de s'y fier.
-- **Échelle** : remesurer les mètres par pixel (`python -m guidance_global_map.measure_scale`) après chaque changement d'objectif, de résolution ou de hauteur ; l'ancienne valeur est fausse d'un facteur 2 environ.
-- Le changement d'objectif se fait sur l'iPhone seulement, pas par le réseau : le serveur n'a pas de mot de passe, et n'importe qui sur le Wi-Fi pourrait sinon changer l'échelle pendant une mission.
+- **One lens only, always the same.** The app chooses the physical camera (1× or 0.5×), never the "virtual" iOS camera that changes lens by itself depending on distance and light: so the scale of the image does not change in the middle of a mission.
+- **Distortion**: iOS corrects that of the wide angle by default (`isGeometricDistortionCorrectionEnabled` is `true` when the device allows it, according to Apple's documentation). The overhead camera chain (`docs/overhead-camera.md`, `docs/demo-reelle.md`) corrects no distortion and until now recommended the main lens only: check on an image from the stream that the straight edges of the arena stay straight right into the corners before relying on it.
+- **Scale**: measure the metres per pixel again (`python -m guidance_global_map.measure_scale`) after every change of lens, resolution or height; the old value is wrong by a factor of about 2.
+- The lens is changed on the iPhone only, not over the network: the server has no password, and otherwise anyone on the Wi-Fi could change the scale during a mission.
 
 ## LiDAR
 
-Sur un iPhone Pro (depuis l'iPhone 12 Pro), **Réglages › LiDAR › Profondeur LiDAR** capture la distance de chaque point en plus de l'image. L'app utilise alors la caméra LiDAR d'iOS : l'objectif principal 1× et le scanner LiDAR ensemble ; le grand angle n'est pas disponible dans ce mode. Portée d'environ 5 m. Le réglage est mémorisé ; `/status` dit `"depth": "lidar"` quand la profondeur est capturée (`"off"` : coupée, `"unavailable"` : pas de LiDAR).
+On an iPhone Pro (from the iPhone 12 Pro), **Réglages › LiDAR › Profondeur LiDAR** (Settings › LiDAR › LiDAR depth) captures the distance of each point in addition to the image. The app then uses the iOS LiDAR camera: the main 1× lens and the LiDAR scanner together; the wide angle is not available in this mode. Range of about 5 m. The setting is remembered; `/status` says `"depth": "lidar"` when depth is captured (`"off"`: turned off, `"unavailable"`: no LiDAR).
 
-`GET /depth` renvoie la dernière carte de profondeur (au plus 1/5 s d'âge), brute :
+`GET /depth` returns the latest depth map (at most 1/5 s old), raw:
 
-- le corps : des `float32` little-endian, en **mètres** le long de l'axe optique, ligne après ligne depuis le coin haut gauche ; 0 ou NaN = pas de mesure ;
-- les en-têtes : `X-Depth-Width`, `X-Depth-Height`, `X-Depth-Intrinsics` (`fx,fy,cx,cy` en pixels de la carte de profondeur, quand iOS les donne), `X-Video-Rotation` (rotation appliquée à la vidéo, en degrés), `X-Age-Ms`.
+- the body: little-endian `float32` values, in **metres** along the optical axis, row by row from the top left corner; 0 or NaN = no measurement;
+- the headers: `X-Depth-Width`, `X-Depth-Height`, `X-Depth-Intrinsics` (`fx,fy,cx,cy` in pixels of the depth map, when iOS gives them), `X-Video-Rotation` (rotation applied to the video, in degrees), `X-Age-Ms`.
 
-La carte de profondeur est dans l'orientation propre du capteur (paysage) et n'est **pas** tournée comme la vidéo : pour les superposer, la tourner de `X-Video-Rotation`. Elle est plus petite que l'image vidéo et filtrée par iOS (trous bouchés, bords lissés).
+The depth map is in the sensor's own orientation (landscape) and is **not** rotated like the video: to overlay them, rotate it by `X-Video-Rotation`. It is smaller than the video image and filtered by iOS (holes filled, edges smoothed).
 
 ```python
 import numpy as np, requests
 r = requests.get("http://IP:8080/depth", timeout=3)
 w, h = int(r.headers["X-Depth-Width"]), int(r.headers["X-Depth-Height"])
-profondeur = np.frombuffer(r.content, "<f4").reshape(h, w)   # mètres ; 0 / NaN = pas de mesure
+profondeur = np.frombuffer(r.content, "<f4").reshape(h, w)   # metres; 0 / NaN = no measurement
 fx, fy, cx, cy = map(float, r.headers["X-Depth-Intrinsics"].split(","))
 ```
 
-Pour la caméra du dessus (Polaris), iPhone à plat au-dessus de l'arène : le sol est à la distance la plus fréquente, ce qui donne la hauteur de la caméra et donc l'échelle (mètres par pixel) sans mètre ruban ; un obstacle est ce qui dépasse du sol de quelques centimètres, quelle que soit sa couleur (ni les ombres ni les traits au sol ne comptent). Ce traitement n'est pas encore écrit côté Python.
+For the overhead camera (Polaris), iPhone flat above the arena: the floor is at the most frequent distance, which gives the height of the camera and therefore the scale (metres per pixel) without a tape measure; an obstacle is whatever rises above the floor by a few centimetres, whatever its colour (neither shadows nor lines on the floor count). This processing is not yet written on the Python side.
 
-Pas encore essayé sur un vrai iPhone : le code compile (Mac de GitHub, voir `.github/workflows/camstream-ipa.yml`), mais la capture LiDAR n'a jamais tourné.
+Not yet tried on a real iPhone: the code compiles (GitHub's Mac, see `.github/workflows/camstream-ipa.yml`), but the LiDAR capture has never run.
 
 ## Stabilisation
 
-**Réglages › Stabilisation** lisse les tremblements d'un iPhone tenu à la main. Par défaut : **Aucune** (comme avant, l'image n'est pas stabilisée). Le choix est mémorisé, et `/status` donne le mode réellement utilisé (`"stabilization"`).
+**Réglages › Stabilisation** (Settings › Stabilisation) smooths the shaking of a hand-held iPhone. Default: **Aucune** (None; as before, the image is not stabilised). The choice is remembered, and `/status` gives the mode actually used (`"stabilization"`).
 
-| Réglage | Mode iOS demandé |
+| Setting | iOS mode requested |
 |---|---|
-| Aucune | aucun (`off`) |
+| Aucune (None) | none (`off`) |
 | Standard | `standard` |
-| Cinéma | `cinematic`, sinon `standard` |
-| Maximum | le plus fort que l'iPhone accepte : `cinematic-extended-enhanced` (iOS 18), sinon `cinematic-extended`, `cinematic`, `standard` |
+| Cinéma (Cinematic) | `cinematic`, otherwise `standard` |
+| Maximum | the strongest the iPhone accepts: `cinematic-extended-enhanced` (iOS 18), otherwise `cinematic-extended`, `cinematic`, `standard` |
 
-Chaque caméra et chaque résolution n'acceptent pas tous les modes : l'app prend le premier de la liste que le format actif accepte, et `off` si aucun. iOS stabilise en recadrant et en décalant l'image :
+Not every camera and resolution accepts every mode: the app takes the first one in the list that the active format accepts, and `off` if none. iOS stabilises by cropping and shifting the image:
 
-- **le champ de vue rétrécit** : pour la caméra du dessus (Polaris), l'échelle (mètres par pixel) change, à remesurer ;
-- **l'image se déforme d'une image à l'autre** : gênant pour une carte, où la géométrie doit rester fixe ;
-- **Cinéma et Maximum retardent le flux** d'une fraction de seconde (iOS garde des images d'avance pour lisser).
+- **the field of view shrinks**: for the overhead camera (Polaris), the scale (metres per pixel) changes, to be measured again;
+- **the image warps from one image to the next**: awkward for a map, where the geometry must stay fixed;
+- **Cinéma (Cinematic) and Maximum delay the stream** by a fraction of a second (iOS keeps images ahead to smooth).
 
-iPhone fixe au-dessus de la zone : laisser sur **Aucune**. iPhone tenu à la main : **Standard** est un bon compromis. Avec le **LiDAR**, la stabilisation est coupée : la profondeur doit rester alignée sur l'image.
+iPhone fixed above the area: leave on **Aucune** (None). Hand-held iPhone: **Standard** is a good compromise. With the **LiDAR**, stabilisation is turned off: the depth must stay aligned with the image.
 
-Pas encore essayé sur un vrai iPhone : le code compile sur le Mac de GitHub (voir `.github/workflows/camstream-ipa.yml`).
+Not yet tried on a real iPhone: the code compiles on GitHub's Mac (see `.github/workflows/camstream-ipa.yml`).
 
-## Tester sans iPhone
+## Testing without an iPhone
 
-Le simulateur iOS n'a pas de caméra : l'app y diffuse une **mire de test animée** sur le même serveur. Lancez l'app dans le simulateur, puis ouvrez `http://localhost:8080` sur le Mac.
+The iOS simulator has no camera: there the app streams an **animated test pattern** on the same server. Run the app in the simulator, then open `http://localhost:8080` on the Mac.
 
-## Structure du code
+## Code structure
 
-| Fichier | Rôle |
+| File | Role |
 |---|---|
-| `CameraManager.swift` | Capture AVFoundation, orientation, encodage JPEG (Core Image), cadence |
-| `MJPEGServer.swift` | Serveur HTTP (Network.framework), flux MJPEG, Bonjour, comptage des spectateurs |
-| `StreamModel.swift` | État de l'app, réglages mémorisés, liaison caméra ↔ serveur |
-| `ContentView.swift` / `SettingsView.swift` | Interface SwiftUI |
-| `WebPage.swift` | Pages HTML servies au navigateur |
-| `NetworkInfo.swift` | Adresses IP locales de l'iPhone |
-| `TestPattern.swift` | Mire de test pour le simulateur |
+| `CameraManager.swift` | AVFoundation capture, orientation, JPEG encoding (Core Image), frame rate |
+| `MJPEGServer.swift` | HTTP server (Network.framework), MJPEG stream, Bonjour, viewer counting |
+| `StreamModel.swift` | App state, remembered settings, camera ↔ server link |
+| `ContentView.swift` / `SettingsView.swift` | SwiftUI interface |
+| `WebPage.swift` | HTML pages served to the browser |
+| `NetworkInfo.swift` | Local IP addresses of the iPhone |
+| `TestPattern.swift` | Test pattern for the simulator |
 
-Prérequis : Xcode 16 ou plus récent, iOS 17 ou plus récent. Swift 6, aucune dépendance externe.
+Requirements: Xcode 16 or later, iOS 17 or later. Swift 6, no external dependencies.
