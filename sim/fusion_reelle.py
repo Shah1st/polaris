@@ -16,6 +16,10 @@ same format as sim/fusion_live.py, and a mission to a point picked on the map.
     POST /marqueur           {"sans_marqueur": true|false}: ignore (true) or trust (false)
                              the rover's marker in the drone's picture, while running;
                              same as --drone-sans-marqueur / --no-drone-sans-marqueur
+    POST /conduite           {"continu": true|false, "source_locale": "rover"|"service"}
+                             (either key): drive without stopping or not, and what feeds the
+                             rover's local map; same as --continu and --source-locale. 409
+                             while a mission runs
 
 Outside a mission: read only (GET /state of the rover, GET /obstacles of the perception service).
 Frame: the odometry frame at start (or at the last /reset), origin at the start point, x towards
@@ -432,6 +436,40 @@ class FusionReelle:
         print(time.strftime('%H:%M:%S'), 'local map', 'on' if valeur else 'off', flush=True)
         return 200, {'ok': True, 'carte_locale': valeur}
 
+    def regler_conduite(self, corps):
+        """POST /conduite: how missions drive and what feeds the rover's local map, while
+        running. (code, answer)
+
+        {"continu": true|false}: drive without stopping (--continu) or as before;
+        {"source_locale": "rover"|"service"}: the rover's own depth grid (its GET /local_grid)
+        or the perception service (--source-locale). Either key or both. Refused while a
+        mission runs: its loop reads both. What is already on the maps is kept."""
+        if self.en_mission():
+            return 409, {'error': 'a mission is running: stop it first'}
+        continu, source = corps.get('continu'), corps.get('source_locale')
+        if continu is None and source is None:
+            return 400, {'error': '{"continu": true|false} or {"source_locale": ...} expected'}
+        if continu is not None and not isinstance(continu, bool):
+            return 400, {'error': '"continu" must be true or false'}
+        if source is not None and source not in ('service', 'rover'):
+            return 400, {'error': '"source_locale" must be "service" or "rover"'}
+        with self.verrou:
+            if continu is not None:
+                self.args.continu = continu
+            if source is not None and source != self.args.source_locale:
+                self.args.source_locale = source
+                self.local = {'source': source, 'age_s': None, 'erreur': None}
+            continu, source = self.args.continu, self.args.source_locale
+        print(
+            time.strftime('%H:%M:%S'),
+            'driving',
+            'without stops' if continu else 'as before',
+            '| local map from',
+            source,
+            flush=True,
+        )
+        return 200, {'ok': True, 'continu': continu, 'source_locale': source}
+
     def regler_marqueur(self, corps):
         """POST /marqueur: turn --drone-sans-marqueur on or off while running. (code, answer)
 
@@ -726,7 +764,11 @@ class FusionReelle:
         the rover, rover/local_map.py), on the maps; None when it has none or it is too old."""
         import suivi_continu as sc
 
-        rep = self.requete('GET', '/local_grid')
+        try:
+            rep = self.requete('GET', '/local_grid')
+        except ServeurRoverError as e:  # e.g. 404: a rover server older than this feature
+            self.local = {'source': 'rover', 'age_s': None, 'erreur': str(e)[:200]}
+            return None
         with self.verrou:
             origine = self.origine
         self.local = {
@@ -1651,6 +1693,8 @@ def handler(fr):
                     return self._json(*fr.regler_carte_locale(corps))
                 if nom == '/marqueur':
                     return self._json(*fr.regler_marqueur(corps))
+                if nom == '/conduite':
+                    return self._json(*fr.regler_conduite(corps))
                 if nom == '/calibrer':
                     return self._json(*fr.calibrer())
             except (KeyError, TypeError, ValueError) as e:

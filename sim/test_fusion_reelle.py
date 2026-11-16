@@ -643,3 +643,43 @@ def test_continuous_driving_and_the_rover_grid_are_off_by_default() -> None:
     assert (a.continu, a.source_locale, a.carte_locale) == (False, 'service', False)
     f, _ = fusion()
     assert f.status.get('conduite') in (None, 'pas')
+
+
+def test_driving_and_the_local_map_source_can_be_switched_while_running() -> None:
+    f, _ = fusion()
+    assert f.regler_conduite({'continu': True}) == (
+        200,
+        {'ok': True, 'continu': True, 'source_locale': 'service'},
+    )
+    assert f.args.continu is True
+    code, answer = f.regler_conduite({'source_locale': 'rover', 'continu': False})
+    assert code == 200 and (answer['continu'], answer['source_locale']) == (False, 'rover')
+    assert f.local['source'] == 'rover' and f.args.source_locale == 'rover'
+    for bad in ({}, {'continu': 'yes'}, {'source_locale': 'drone'}, {'continu': 1}):
+        assert f.regler_conduite(bad)[0] == 400
+    assert (f.args.continu, f.args.source_locale) == (False, 'rover')  # unchanged by those
+
+    class Running:
+        def is_alive(self):
+            return True
+
+    f.fil_mission = Running()  # a mission reads both: refused while it runs
+    assert f.regler_conduite({'continu': True})[0] == 409
+    assert f.args.continu is False
+
+
+def test_an_older_rover_server_without_a_grid_is_said_not_fatal() -> None:
+    def requete(methode, chemin, corps=None):
+        if chemin == '/local_grid':
+            raise fr.ServeurRoverError('GET /local_grid -> HTTP 404 {"error": "not found"}')
+        return {'odom': {'x': 0.0, 'y': 0.0, 'heading_deg': 0.0, 'v': 0.0}}
+
+    f = fr.FusionReelle(
+        fr.options(['--carte-locale', '--source-locale', 'rover']),
+        requete=requete,
+        percevoir=lambda *a: None,
+        percevoir_frais=lambda *a: None,
+    )
+    f.tour()  # no exception: the maps keep working
+    assert f.local['source'] == 'rover' and 'HTTP 404' in f.local['erreur']
+    assert 'no recent grid' in f.status['info'] and f.status['etat'] == 'ok'

@@ -82,6 +82,10 @@
                      padding:6px 12px; cursor:pointer; }
   .maptools button.go { background:#1f5c36; } .maptools button.halt { background:#7a1f1f; font-weight:bold; }
   #mFused, #mDrone { cursor:crosshair; }
+  .localnav { grid-column:1 / -1; background:var(--panel); border:1px solid var(--line); border-radius:8px;
+              padding:6px 12px; color:#c9d1db; font-size:13px; font-variant-numeric:tabular-nums; }
+  .localnav b { color:var(--fg); }
+  .localnav.blocked { border-color:var(--bad); color:var(--bad); }
   .d405 { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:10px; padding:10px; }
   .d405pics { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px; }
   .d405pics figure { margin:0; min-width:0; background:var(--panel); border:1px solid var(--line);
@@ -156,6 +160,7 @@
       <tr><td>Command delay</td><td id="lat">–</td></tr>
       <tr><td>Camera (robot / VM / screen)</td><td id="fps">–</td></tr>
       <tr><td>Drone camera (iPhone / screen)</td><td id="dfps">–</td></tr>
+      <tr><td>Rover guard (depth camera)</td><td id="guardInfo">–</td></tr>
       <tr><td>Round trip browser ↔ VM</td><td id="ping">–</td></tr>
     </table>
     <div class="hint">ZQSD or arrow keys (physical key positions: ZQSD on AZERTY, WASD on QWERTY). The rover
@@ -184,7 +189,11 @@
         <button id="goalClear" type="button">Clear the point</button>
         <label id="localMapBox" title="On: the rover's own camera builds the local map (rover map), outside a mission and at each stop. Off: it is not used and the rover map is emptied; the planner works from the drone map alone."><input type="checkbox" id="localMap"> Local map (rover camera)</label>
         <label id="noMarkerBox" title="On: the rover's marker is ignored in the drone's picture. Drive the rover at least 12 cm and stop, twice, in view of the drone camera: its move places the drone map. Off: the marker places it from one picture."><input type="checkbox" id="noMarker"> No marker on the rover</label>
+        <label id="continuBox" hidden title="On: during a mission the path is planned again about twice a second while the rover drives, and the rover takes each new path over at speed (maps server --continu). Turn the rover guard on with it. Off: step by step or in segments, as before. Cannot change during a mission."><input type="checkbox" id="continu"> Drive without stops</label>
+        <label id="roverGridBox" hidden title="On: the rover map comes from the grid the rover computes from its depth camera (its GET /local_grid), also while it drives. Off: from the perception service, one picture at each stop. Needs the Local map box. Cannot change during a mission."><input type="checkbox" id="roverGrid"> Rover's depth grid</label>
+        <label id="guardBox" hidden title="The rover's own guard (its local_guard setting): while it follows a path it slows down near what its depth camera sees and stops 10 cm before it, whatever the network does. Manual driving is not guarded."><input type="checkbox" id="guard"> Rover guard</label>
         <span id="mapResetMsg">Click the drone map or the fused map to set the rover's destination</span></div>
+      <div id="localNav" class="localnav" hidden>–</div>
       <figure class="mapfig">
         <figcaption><b>1. Rover map</b><span id="aRover">–</span></figcaption>
         <canvas id="mRover"></canvas>
@@ -403,6 +412,7 @@ function showStatus(s) {
   const sm = s && s.drone ? s.drone.sans_marqueur : undefined;
   $('noMarkerBox').hidden = sm === undefined;
   if (sm !== undefined && performance.now() - noMarkerClick > 3000) $('noMarker').checked = sm;
+  showLocalNav(s);
   if (!s) {
     el.innerHTML = '<b>Maps</b>: no answer from the fusion (/fusion/status.json). '
       + 'Is it running? (sim/fusion_live.py, port 8094 by default, server.py --fusion)';
@@ -493,6 +503,94 @@ $('noMarker').addEventListener('change', async (ev) => {
               : 'Marker trusted: the drone map is placed when the marker is seen');
   } catch (err) { ev.target.checked = !on; mapMsg('fusion unreachable'); }
 });
+// ---- local navigation (docs/local-navigation.md). "Drive without stops" and "Rover's depth
+// grid" are switches of the maps server, hidden when it has none (the simulation); the guard
+// is a setting of the rover itself (/api/guard), hidden on a rover server without it.
+let navStatus = null, roverNav = null;  // the maps server's status; the rover's side
+let continuClick = -1e9, roverGridClick = -1e9, guardClick = -1e9;
+const GUARD_STATE = { off: 'no path running', ok: 'way clear', slow: 'slowing down',
+                      blind: 'no recent depth picture: slow', blocked: 'STOPPED before an obstacle' };
+// The guard ends the path in the tick it stops the rover: ctrl.local is then 'off' again, and
+// only the rover's last finished step says 'blocked'. Shown until a new path starts.
+function guardBlocked(r) {
+  const cl = (r && r.ctrlLocal) || {};
+  if (cl.state === 'blocked') return true;
+  const last = r && r.last;
+  return (!cl.state || cl.state === 'off') && !!last && last.kind === 'path' && last.status === 'blocked';
+}
+function guardText(r) {
+  if (!r || r.guard == null) return '–';
+  if (r.guard === 'absent') return 'not on this rover server (deploy rover/ of main)';
+  const cl = r.ctrlLocal || {};
+  if (guardBlocked(r)) {
+    const ob = (r.last && r.last.obstacle) || null;
+    return (r.guard ? 'on' : 'off') + ' · STOPPED before an obstacle'
+      + (cl.obstacle_dist != null ? ` ${cl.obstacle_dist.toFixed(2)} m ahead` : '')
+      + (ob ? ` (odometry ${(+ob[0]).toFixed(2)}, ${(+ob[1]).toFixed(2)} m)` : '');
+  }
+  if (!r.guard) return 'off';
+  return 'on · ' + (GUARD_STATE[cl.state] || cl.state || '–')
+    + (cl.obstacle_dist != null ? ` · obstacle ${cl.obstacle_dist.toFixed(2)} m ahead` : '');
+}
+function showLocalNav(s) {
+  if (s !== undefined) navStatus = s;
+  s = navStatus;
+  const cd = s ? s.conduite : undefined, lo = s ? s.local : undefined, r = roverNav || {};
+  const now = performance.now();
+  $('continuBox').hidden = cd === undefined;
+  if (cd !== undefined && now - continuClick > 3000) $('continu').checked = cd === 'continu';
+  $('roverGridBox').hidden = !lo;
+  if (lo && now - roverGridClick > 3000) $('roverGrid').checked = lo.source === 'rover';
+  $('guardBox').hidden = r.guard == null || r.guard === 'absent';
+  if (r.guard === 0 || r.guard === 1) { if (now - guardClick > 3000) $('guard').checked = !!r.guard; }
+  // An older rover server has no depth grid and no path ids: those two can be turned off only.
+  for (const id of ['continu', 'roverGrid']) {
+    const cb = $(id);
+    cb.disabled = r.guard === 'absent' && !cb.checked;
+    cb.parentElement.style.opacity = cb.disabled ? 0.5 : '';
+  }
+  const blocked = guardBlocked(r);
+  $('guardInfo').textContent = guardText(r);
+  cls($('guardInfo'), r.guard === 'absent' ? 'warn' : blocked ? 'bad' : '');
+  const parts = [];
+  if (r.guard != null) parts.push('<b>Rover guard</b>: ' + esc(guardText(r)));
+  const f = r.feed;
+  if (f) parts.push('<b>Depth grid on the rover</b>: ' + (f.feed ? 'running' : 'idle')
+    + (f.age_s != null ? ` · ${f.age_s.toFixed(1)} s old` : '') + (f.error ? ' · ' + esc(f.error) : ''));
+  if (lo) parts.push('<b>Rover map from</b>: ' + (lo.source === 'rover' ? "the rover's depth grid" : 'the perception service')
+    + (lo.age_s != null ? ` · ${(+lo.age_s).toFixed(1)} s old` : '') + (lo.erreur ? ' · ' + esc(lo.erreur) : ''));
+  if (cd !== undefined) parts.push('<b>Missions</b>: ' + (cd === 'continu' ? 'without stops' : cd === 'segments' ? 'in segments' : 'step by step'));
+  $('localNav').hidden = !parts.length;
+  $('localNav').innerHTML = parts.join(' &nbsp;|&nbsp; ');
+  $('localNav').className = 'localnav' + (blocked ? ' blocked' : '');
+}
+async function navSwitch(ev, setClick, send, onMsg, offMsg) {
+  const on = ev.target.checked;
+  setClick();
+  try {
+    const { ok, status, d } = await send(on);
+    if (!ok) { ev.target.checked = !on; mapMsg((d && d.error) || 'refused (HTTP ' + status + ')'); return; }
+    mapMsg(on ? onMsg : offMsg);
+  } catch (err) { ev.target.checked = !on; mapMsg('no answer'); }
+}
+$('continu').addEventListener('change', (ev) => navSwitch(ev, () => { continuClick = performance.now(); },
+  (on) => fusionPost('conduite', { continu: on }),
+  'Drive without stops: the next mission plans again while the rover drives. Turn the rover guard on too.',
+  'Missions drive as before: step by step, or in segments'));
+$('roverGrid').addEventListener('change', (ev) => navSwitch(ev, () => { roverGridClick = performance.now(); },
+  (on) => fusionPost('conduite', { source_locale: on ? 'rover' : 'service' }),
+  "Rover map from the rover's own depth grid, also while it drives (with the Local map box on)",
+  'Rover map from the perception service, one picture at each stop'));
+$('guard').addEventListener('change', (ev) => navSwitch(ev, () => { guardClick = performance.now(); },
+  async (on) => {
+    const r = await fetch('/api/guard', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ local_guard: on }) });
+    let d = {}; try { d = await r.json(); } catch (e) {}
+    return { ok: r.status === 200, status: r.status, d };
+  },
+  'Rover guard on: on a path the rover slows down near what its depth camera sees and stops 10 cm before it',
+  'Rover guard off: the rover follows its paths without looking'));
+
 // The rover drives forward and back in view of the drone: direction and scale of its map.
 $('calibrate').addEventListener('click', async () => {
   if (!confirm('The rover will drive 30 cm forward, then 30 cm back. Is the way clear, and is the rover in view of the drone camera?')) return;
@@ -788,6 +886,8 @@ async function poll() {
       : `${droneInfo.fps} / ${droneShown() ? dShownFps : '–'} fps` + (droneInfo.error ? ' · error' : '');
     cls($('dfps'), !droneOn ? '' : droneInfo.error ? 'bad' : droneInfo.fps > 0 ? 'ok' : 'warn');
     showGimbal(r.gimbal, s.gimbal_err);
+    roverNav = { guard: s.guard, ctrlLocal: (s.ctrl || {}).local, feed: r.local, last: s.last_step };
+    showLocalNav();
     $('ping').textContent = pingMs == null ? '–' : pingMs.toFixed(0) + ' ms';
     cls($('ping'), pingMs == null ? '' : pingMs > 400 ? 'bad' : pingMs > 200 ? 'warn' : 'ok');
   } catch (e) { $('link').textContent = 'server unreachable'; $('link').classList.remove('on'); }
