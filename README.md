@@ -44,11 +44,41 @@ What already points that way in this repository:
 - **Any device can be plugged in.** A JSON file lists the drones, rovers and sensors around
   that map; the example runs two drones and two rovers in simulation
   ([devices/](devices/README.md)).
-- **A forest search in simulation**, with two rovers and one drone: the picture above.
+- **A forest search in simulation**, with any number of rovers and drones and any 3D terrain:
+  the picture above, made by [sim/mission/](sim/mission/demo_video.py).
 
 What is not there yet: on real hardware the system has run with one rover and one phone
 standing in for the drone. Several robots at once exist only in simulation, and no thermal
 camera has been used.
+
+### Why drones and rovers, not drones alone
+
+In a forest a drone maps a large area in minutes, but **it cannot see under the trees** and
+**it cannot bring equipment** (a radio, water, a first-aid kit) to someone on the ground. A
+rover can do both, but it only sees a few metres ahead and would search blindly. On one shared
+map each does what the other cannot: the drone gives the big picture and the way around large
+obstacles, the rover fills in what is hidden under the canopy and goes to the person.
+
+![Drone-guided rescue in simulation: the drone flies ahead of the rover and maps the route to a known position](docs/images/forest-mission-drone-guides-rover.jpg)
+
+*The victim's position is known: the drone flies ahead of the rover and maps the route. It sees
+the rock step from above, so the rover is sent around it from the start; the rover adds what is
+hidden under the crowns. When nobody knows where the victim is (picture at the top), drones
+survey the open ground and rovers search under the trees.*
+
+The same code runs from simulation to the real robot: the map fusion and the planner in these
+pictures are the ones that drove the real rover ([What is proven](#what-is-proven) says what
+ran on hardware and what only in tests). In the simulation the terrain is a generated stand-in
+and the sensors, the detection of the victim and the robots' motion are simulated. To make
+these videos (needs `mujoco`, `trimesh`, `opencv-python`, `pillow`, `imageio-ffmpeg`, the rover
+meshes in `ROVER_MESHES` and a drone model in `DRONE_DIR`: the script's header says which):
+
+```bash
+python sim/mission/terrain_gen.py out/forest.glb          # or bring your own 3D model
+python sim/mission/terrain.py out/forest.glb out/forest   # model -> maps, safe start points
+MUJOCO_GL=egl python sim/mission/demo_video.py out/forest out/search.mp4 --rovers 3 --drones 2
+MUJOCO_GL=egl python sim/mission/demo_video.py out/forest out/guided.mp4 --rovers 1 --drones 1 --known
+```
 
 ## How it works
 
