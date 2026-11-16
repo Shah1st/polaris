@@ -141,6 +141,9 @@ Then the dashboard as usual: click a goal, "Go".
   clear, slowing down, no recent depth picture, **STOPPED before an obstacle** in red) with the
   distance to the obstacle, the age and error of the rover's grid feed, where the rover map
   comes from, and how missions drive.
+- The **speed slider** (keys) also sets the missions' speed once moved: the maps server's
+  `POST /vitesse` (0.05 to 0.30 m/s; the slider stops at 0.20), from the next path sent to the
+  rover, also during a mission.
 
 Each switch works alone: the guard with the
 old step-by-step mission (a `blocked` step is not yet read by that loop: use `--continu`),
@@ -167,7 +170,7 @@ old step-by-step mission (a `blocked` step is not yet read by that loop: use `--
 
 ## On the robot, 2026-11-16
 
-Steps 1, 2 and 5 are done, 4 is started; 3, 6 and 7 are not. The rover stood still on a flat
+Steps 1, 2, 3 and 5 are done, 4 is started; 6 and 7 are not. The rover stood still on a flat
 carpet the whole time; the guard stayed off.
 
 - **Step 1, what the robot ran.** Not an older `main`: `rover_core.py` was the one of
@@ -187,6 +190,9 @@ carpet the whole time; the guard stayed off.
 - **Step 2, the floor.** `POST /calibrate_floor`: `height_m` 0.1522 (0.15 expected),
   `tilt_deg` 1.46: the lens looks 1.4 degrees down and rolls 0.2 degrees. Kept in
   `~/polaris-d405/d405_floor.json`. Fitted picture by picture before that: 0.1533 m, 1.6 degrees.
+- **Step 3, the lens offset.** Measured with a ruler: the lens is 9 cm ahead of the middle of
+  the wheel axle and on the rover's centre line. Set on the robot (`POST /config`, kept in
+  `~/rover/rover_config.json`): `d405_x` 0.09, `d405_y` 0.
 - **Step 5, the cost.** RDK X5, 8 cores, rover server running, the grid thread at its 10
   grids a second for 20 s: `cpu_ms_per_grid` 56 to 58 ms, but the whole capture process took
   **2.3 cores** (8 % of one core at rest). `cpu_ms_per_grid` is the grid thread's own time;

@@ -20,6 +20,8 @@ same format as sim/fusion_live.py, and a mission to a point picked on the map.
                              (either key): drive without stopping or not, and what feeds the
                              rover's local map; same as --continu and --source-locale. 409
                              while a mission runs
+    POST /vitesse            {"vitesse": m/s, 0.05 to 0.30}: the missions' speed (--vitesse),
+                             also during a mission, from the next path sent to the rover
 
 Outside a mission: read only (GET /state of the rover, GET /obstacles of the perception service).
 Frame: the odometry frame at start (or at the last /reset), origin at the start point, x towards
@@ -66,6 +68,7 @@ from rover_reel import ArretOperateur, RaspRoverReel, ServeurRoverError, client_
 import fusion_feed as ff  # noqa: E402
 
 DECALAGE = 20.0  # m: positive coordinates for the tile grid
+VITESSE_MIN, VITESSE_MAX = 0.05, 0.30  # m/s, POST /vitesse (0.30: the rover's own maximum)
 DEMI = 2.5  # m: window of the rover map around it
 TAILLE = 480  # px: side of the pictures
 
@@ -245,6 +248,7 @@ class FusionReelle:
         self.resets = 0
         self.mission = {'etat': 'aucune', 'texte': '', 'pas': 0}
         self.fil_mission = None
+        self.rover_mission = None  # the running mission's rover driver: POST /vitesse reaches it
         self.arret_demande = threading.Event()
         self.requete = requete or client_http(args.rover, delai=args.delai_http)
         self.percevoir = percevoir or percevoir_http(
@@ -469,6 +473,24 @@ class FusionReelle:
             flush=True,
         )
         return 200, {'ok': True, 'continu': continu, 'source_locale': source}
+
+    def regler_vitesse(self, corps):
+        """POST /vitesse {"vitesse": m/s}: the cruise speed of missions, while running (the
+        dashboard's speed slider). During a mission it applies from the next path sent to the
+        rover (the one it follows keeps its speed). (code, answer)"""
+        v = corps.get('vitesse')
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            return 400, {'error': '{"vitesse": m/s} is expected'}
+        if not VITESSE_MIN <= v <= VITESSE_MAX:
+            return 400, {'error': f'"vitesse" must be between {VITESSE_MIN} and {VITESSE_MAX} m/s'}
+        v = float(v)
+        with self.verrou:
+            self.args.vitesse = v
+            rover = self.rover_mission
+        if rover is not None:
+            rover.vitesse = v  # read at each POST /path of the drivers (vitesse=, then .vitesse)
+        print(time.strftime('%H:%M:%S'), f'mission speed {v:.2f} m/s', flush=True)
+        return 200, {'ok': True, 'vitesse': v}
 
     def regler_marqueur(self, corps):
         """POST /marqueur: turn --drone-sans-marqueur on or off while running. (code, answer)
@@ -903,6 +925,7 @@ class FusionReelle:
                 raise RuntimeError('the rover does not answer GET /state')
             rover.placer(depart[:2])
             rover.recaler()
+            self.rover_mission = rover
             issue = self._boucle_mission(rover)
         except ArretOperateur as e:
             issue = 'arret_operateur'
@@ -914,6 +937,7 @@ class FusionReelle:
             issue = 'erreur'
             self.journal_mission(texte=f'ERROR: {type(e).__name__}: {e}')
         finally:
+            self.rover_mission = None
             if issue != 'arrive':
                 arreter_le_rover(self.requete, journal=lambda t: print(t, flush=True))
             self.journal_mission(etat=issue)
@@ -1070,6 +1094,7 @@ class FusionReelle:
             delai_pret=30.0,
             signaler=lambda t: self.journal_mission(texte=t),
         )
+        self.rover_mission = rover
         rover.placer(odo.pose()[:2])
         debut = time.monotonic()
         while not ae.pret(odo.etat):  # ESP32, gyroscope, nothing running
@@ -1515,6 +1540,7 @@ class FusionReelle:
             'rover': {'x': pose[0] - DECALAGE, 'y': pose[1] - DECALAGE, 'cap': pose[2]},
             'objectif': [c - DECALAGE for c in objectif] if objectif else [],
             'carte_locale': bool(self.args.carte_locale),
+            'vitesse': self.args.vitesse,  # m/s, missions (POST /vitesse)
             'source_rover': (
                 'REAL rover: the obstacle grid of its depth camera (D405, computed on the '
                 'rover) and odometry, fused while it drives'
@@ -1695,6 +1721,8 @@ def handler(fr):
                     return self._json(*fr.regler_marqueur(corps))
                 if nom == '/conduite':
                     return self._json(*fr.regler_conduite(corps))
+                if nom == '/vitesse':
+                    return self._json(*fr.regler_vitesse(corps))
                 if nom == '/calibrer':
                     return self._json(*fr.calibrer())
             except (KeyError, TypeError, ValueError) as e:

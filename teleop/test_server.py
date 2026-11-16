@@ -640,6 +640,9 @@ def test_driving_switches_are_relayed_to_the_maps_server(rover):
         r = requests.post('http://127.0.0.1:8164/fusion/conduite', json=body, timeout=5)
         assert r.status_code == 200
         assert received == [('/conduite', {'continu': True, 'source_locale': 'rover'})]
+        body = {'vitesse': 0.15, 'v': 9}  # the speed slider: only "vitesse" goes on
+        r = requests.post('http://127.0.0.1:8164/fusion/vitesse', json=body, timeout=5)
+        assert r.status_code == 200 and received[-1] == ('/vitesse', {'vitesse': 0.15})
     finally:
         for s in (srv, fusion):
             s.shutdown()

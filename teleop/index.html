@@ -133,7 +133,7 @@
     </div>
     <button class="stop" id="stop">STOP (Space)</button>
     <div>
-      <label>Speed <span id="vlab"></span></label>
+      <label title="The speed of the keys, and of the autonomous missions too: moving it sets the missions' speed on the maps server, from the next path sent to the rover.">Speed (keys and missions) <span id="vlab"></span></label>
       <input type="range" id="speed" min="0.05" max="0.20" step="0.01" value="0.10">
       <label>Turn rate <span id="wlab"></span></label>
       <input type="range" id="turn" min="0.4" max="1.5" step="0.1" value="0.9">
@@ -413,6 +413,7 @@ function showStatus(s) {
   $('noMarkerBox').hidden = sm === undefined;
   if (sm !== undefined && performance.now() - noMarkerClick > 3000) $('noMarker').checked = sm;
   showLocalNav(s);
+  showMissionSpeed(s);
   if (!s) {
     el.innerHTML = '<b>Maps</b>: no answer from the fusion (/fusion/status.json). '
       + 'Is it running? (sim/fusion_live.py, port 8094 by default, server.py --fusion)';
@@ -850,11 +851,35 @@ function showGimbal(g, err) {
 }
 $('panlab').textContent = $('tiltlab').textContent = '0°';
 
+// The speed slider drives the keys and, once moved, the autonomous missions too (the maps
+// server's POST /vitesse, from the next path it sends). The missions' speed in use is shown
+// beside it, from the maps server's status; none with a maps server that has no such setting.
+let missionSpeed = null, speedClick = -1e9;
 function sliders() {
-  $('vlab').textContent = (+$('speed').value).toFixed(2) + ' m/s';
+  $('vlab').textContent = (+$('speed').value).toFixed(2) + ' m/s'
+    + (missionSpeed != null ? ` · missions ${missionSpeed.toFixed(2)}` : '');
   $('wlab').textContent = (+$('turn').value).toFixed(1) + ' rad/s';
 }
+function showMissionSpeed(s) {
+  if (performance.now() - speedClick < 3000) return;  // just set: the status may be older
+  const v = s && typeof s.vitesse === 'number' ? s.vitesse : null;
+  if (v !== missionSpeed) { missionSpeed = v; sliders(); }
+}
 $('speed').oninput = $('turn').oninput = sliders; sliders();
+$('speed').addEventListener('change', async () => {
+  const v = +$('speed').value;
+  speedClick = performance.now();
+  try {
+    const { ok, status, d } = await fusionPost('vitesse', { vitesse: v });
+    if (ok) {
+      missionSpeed = d.vitesse;
+      mapMsg(`Missions at ${v.toFixed(2)} m/s, from the next path sent to the rover`);
+    } else if (status !== 404) {
+      mapMsg((d && d.error) || 'mission speed refused (HTTP ' + status + ')');
+    }
+  } catch (e) { /* no maps server: the keys' speed still changed */ }
+  sliders();
+});
 
 const cls = (el, c) => { el.className = c || ''; };
 async function poll() {

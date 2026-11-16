@@ -683,3 +683,30 @@ def test_an_older_rover_server_without_a_grid_is_said_not_fatal() -> None:
     f.tour()  # no exception: the maps keep working
     assert f.local['source'] == 'rover' and 'HTTP 404' in f.local['erreur']
     assert 'no recent grid' in f.status['info'] and f.status['etat'] == 'ok'
+
+
+def test_the_mission_speed_follows_the_dashboard_slider() -> None:
+    f = fr.FusionReelle(
+        fr.options(['--vitesse', '0.3']),
+        requete=lambda methode, chemin, corps=None: {
+            'odom': {'x': 0.0, 'y': 0.0, 'heading_deg': 0.0, 'v': 0.0}
+        },
+        percevoir=lambda *a: None,
+        percevoir_frais=lambda *a: None,
+    )
+    f.tour()
+    assert f.status['vitesse'] == 0.3
+    assert f.regler_vitesse({'vitesse': 0.15}) == (200, {'ok': True, 'vitesse': 0.15})
+    f.tour()
+    assert f.args.vitesse == 0.15 and f.status['vitesse'] == 0.15
+
+    class Driver:  # a mission's rover driver: it reads .vitesse at each POST /path
+        vitesse = 0.15
+
+    f.rover_mission = Driver()
+    assert f.regler_vitesse({'vitesse': 0.1})[0] == 200
+    assert f.rover_mission.vitesse == 0.1  # the running mission gets it too
+    for bad in ({}, {'vitesse': 'fast'}, {'vitesse': True}, {'vitesse': float('nan')},
+                {'vitesse': 0.01}, {'vitesse': 0.5}):  # fmt: skip
+        assert f.regler_vitesse(bad)[0] == 400
+    assert f.args.vitesse == 0.1 and f.rover_mission.vitesse == 0.1  # unchanged by those

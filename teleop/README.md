@@ -85,6 +85,11 @@ give the guard's state and the distance to the obstacle; "STOPPED before an obst
 red. On a rover server older than the local navigation the guard box is hidden and the row
 says so.
 
+**Speed slider.** It sets the speed of the keys and, once moved, the autonomous missions' too
+(the maps server's `POST /vitesse`, `--vitesse` at start): from the next path sent to the
+rover, also during a mission. The missions' speed in use is written beside it. The slider
+stops at 0.20 m/s, the dashboard's limit for the keys, so missions set with it go no faster.
+
 **Depth camera tab.** The rover's D405 colour picture and depth (red near, blue far), relayed
 from the robot's `/d405/*`, with the distance at the centre; nothing is asked of the robot
 while the tab is hidden.

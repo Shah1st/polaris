@@ -41,6 +41,8 @@
   POST /fusion/conduite {"continu": bool, "source_locale": "rover"|"service"}  drive without
                      stopping, and what feeds the rover map (docs/local-navigation.md); 409
                      for turning either on with a rover server older than the local navigation
+  POST /fusion/vitesse {"vitesse": m/s}  the missions' speed (the page's speed slider), from
+                     the next path sent to the rover
                      (these five: sim/fusion_reelle.py; the others: the simulation only)
   POST /api/guard    {"local_guard": true|false}  the rover's local guard (its POST /config
                      {"local_guard": 1|0}, nothing else); 409 on a rover server without it
@@ -134,6 +136,7 @@ FUSION_POSTS = {
     '/fusion/carte_locale': ('carte_locale',),
     '/fusion/calibrer': (),
     '/fusion/conduite': ('continu', 'source_locale'),
+    '/fusion/vitesse': ('vitesse',),
 }
 GUARD_EVERY = 10  # the rover's settings (local_guard) are read every 10th state poll (5 s)
 SNAPSHOT_PERIOD = 0.1  # s: a camera that answers one picture per request is asked this often
