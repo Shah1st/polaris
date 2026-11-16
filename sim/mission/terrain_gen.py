@@ -133,7 +133,9 @@ class Island:
 
     def rim(self, x, y):
         a = np.arctan2(y, x)
-        r = self.r * (0.93 + 0.035 * np.sin(3 * a + self.ph[2]) + 0.025 * np.sin(5 * a + self.ph[3]))
+        r = self.r * (
+            0.93 + 0.035 * np.sin(3 * a + self.ph[2]) + 0.025 * np.sin(5 * a + self.ph[3])
+        )
         return np.hypot(x, y) - r  # > 0 outside the island
 
     def height(self, x, y):
@@ -265,7 +267,9 @@ class Island:
 
         def grove(x, y):  # trees gather in groves and leave clearings
             v = math.sin(x * 9.5 / s + self.ph[1]) * math.cos(y * 8.5 / s + self.ph[2])
-            return clear_of_path(x, y) and v > -0.25 and math.hypot(x - 0.2 * s, y + 0.25 * s) > 3.5
+            return (
+                clear_of_path(x, y) and v > -0.25 and math.hypot(x - 0.2 * s, y + 0.25 * s) > 3.5
+            )
 
         area = (s / 40.0) ** 2
         for x, y in self.spots(int(72 * area), 2.3, taken, grove):

@@ -71,7 +71,9 @@ def _write_obj(path: str, v: np.ndarray, f: np.ndarray, uv) -> None:
             np.savetxt(out, f + 1, fmt='f %d %d %d')
 
 
-def convert(model_path: str, out_dir: str, size: float, up: str = 'y', max_tex: int = 4096) -> dict:
+def convert(
+    model_path: str, out_dir: str, size: float, up: str = 'y', max_tex: int = 4096
+) -> dict:
     """Re-centre, scale and write the model as OBJ + PNG; returns the manifest."""
     import trimesh
 
@@ -247,16 +249,24 @@ def picture(maps: dict, points=None, scale: int = 1) -> np.ndarray:
     img = np.zeros((*g.shape, 3), np.uint8)
     img[...] = (30, 26, 22)
     free = ~maps['blocked']
-    img[free] = (np.stack([70 + 60 * shade, 120 + 80 * shade, 70 + 50 * shade], -1)[free]).astype(np.uint8)
+    img[free] = (np.stack([70 + 60 * shade, 120 + 80 * shade, 70 + 50 * shade], -1)[free]).astype(
+        np.uint8
+    )
     img[maps['blocked'] & np.isfinite(g)] = (70, 80, 150)
-    img[maps['canopy']] = (img[maps['canopy']] * 0.55 + np.array([20, 110, 150]) * 0.45).astype(np.uint8)
-    safe_edge = maps['safe'] & ~cv2.erode(maps['safe'].astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+    img[maps['canopy']] = (img[maps['canopy']] * 0.55 + np.array([20, 110, 150]) * 0.45).astype(
+        np.uint8
+    )
+    safe_edge = maps['safe'] & ~cv2.erode(
+        maps['safe'].astype(np.uint8), np.ones((3, 3), np.uint8)
+    ).astype(bool)
     img[safe_edge] = (255, 255, 255)
     img = img[::-1].copy()
     if scale != 1:
         img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
     for (i, j), colour in points or []:
-        cv2.circle(img, (int(j * scale), int((g.shape[0] - 1 - i) * scale)), 6, colour, -1, cv2.LINE_AA)
+        cv2.circle(
+            img, (int(j * scale), int((g.shape[0] - 1 - i) * scale)), 6, colour, -1, cv2.LINE_AA
+        )
     return img
 
 
@@ -302,7 +312,9 @@ class Terrain:
         return i, j
 
     def xy(self, i, j):
-        return self.x0 + (np.asarray(j) + 0.5) * self.res, self.y0 + (np.asarray(i) + 0.5) * self.res
+        return self.x0 + (np.asarray(j) + 0.5) * self.res, self.y0 + (
+            np.asarray(i) + 0.5
+        ) * self.res
 
     def ground_at(self, x, y):
         return self.ground_filled[self.cell(x, y)]
