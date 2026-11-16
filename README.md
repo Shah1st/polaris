@@ -1,29 +1,172 @@
-# Polaris: drone/rover guidance POC
+# Polaris: a drone guides a rover
 
-Hackathon proof of concept for a guidance system. An overhead 2D camera (on a drone or a fixed
-mount) sees the whole area and builds the global map, and the rover's position comes from the
-same camera. A rover with a 3D depth camera follows the planned path and avoids local obstacles
-on its own. Everything runs on one laptop with ROS 2 Jazzy.
+Hackathon proof of concept (Leukerbad, November 2026). A camera looking down from above, a
+drone or a phone on a mount, sees the whole area, maps the obstacles and locates the rover. A
+planner turns that map into a path, and a small ground rover (Waveshare RaspRover) drives it,
+with its own depth camera for what the overhead view misses. Everything runs on one laptop
+plus the rover; the demo chain is plain Python, with no ROS required.
 
-**Status:** the overhead-camera nodes (`guidance_calib`, `guidance_global_map`,
-`guidance_rover_pose`) have a working baseline, described in
-[Overhead camera](#overhead-camera). The supervisor is still a placeholder, and Nav2,
-robot_localization and the rover are not wired up yet. `TODO(...)` comments mark what is missing.
+![Forest search-and-rescue mission in simulation: the 3D scene on the left, the merged map and the drone and rover layers on the right](docs/images/forest-mission-sim.webp)
 
+*Search-and-rescue mission in simulation: two rovers and one drone fill one merged map
+(`merging_map.CarteFusion`). Map fusion and path planning are the real code; sensors and
+motion are simulated.*
+
+- [Vision](#vision)
+- [How it works](#how-it-works)
+- [Quick start](#quick-start)
+- [What is proven](#what-is-proven)
+- [Repository map](#repository-map)
+- [ROS 2 workspace](#ros-2-packages)
+- [Tests and lint](#tests-and-lint)
+- [Known limits](#known-limits)
+- [Team](#team)
+
+## Vision
+
+What we built and drove during the hackathon is one rover guided by one camera above it. The
+goal behind it is larger: **a swarm of ground and aerial robots that scout an area together,
+each at its own scale, into one shared map.** Drones see wide and coarse from above, rovers
+see close and fine on the ground, and each robot is sent where the others cannot see.
+
+| Use case | How the swarm would work |
+|---|---|
+| **A missing person in a forest** | Drones map the clearings and the tree line from above; rovers go under the canopy, where no drone can see, and the merged map shows what is left to search. |
+| **Victims of a house fire** | A drone with a thermal camera and a ground robot map the rooms together and locate people before anyone goes in. |
+| **Any area to scout before people enter it** | The same map and planner, with other robots and sensors plugged in. |
+
+What already points that way in this repository:
+
+- **One map for any number of robots, at several scales.** The fused map takes tiles from
+  every source, from 80 cm cells (a drone's first survey) down to 5 cm (a rover). The finest
+  and most recent view wins, and a rover's view wins over a drone's
+  ([merging_map/](merging_map/README.md)).
+- **Any device can be plugged in.** A JSON file lists the drones, rovers and sensors around
+  that map; the example runs two drones and two rovers in simulation
+  ([devices/](devices/README.md)).
+- **A forest search in simulation**, with two rovers and one drone: the picture above.
+
+What is not there yet: on real hardware the system has run with one rover and one phone
+standing in for the drone. Several robots at once exist only in simulation, and no thermal
+camera has been used.
+
+## How it works
+
+```mermaid
+flowchart LR
+    phone["<b>Phone above the area</b><br/>CamStream app, iphone-camera/"]
+    browser["<b>Browser</b><br/>cameras, maps, keys,<br/>clicked goal"]
+    dash["<b>Dashboard</b><br/>teleop/server.py"]
+    fusion["<b>Maps, planner, missions</b><br/>sim/fusion_reelle.py<br/>overhead pipeline + merging_map A*"]
+    rover["<b>Rover</b><br/>rover/rover_server.py<br/>motors, odometry, safety"]
+
+    phone -- "pictures over<br/>Wi-Fi or USB" --> dash
+    browser <--> dash
+    dash --> fusion
+    fusion -- "GET /state<br/>POST /path, /move, /stop" --> rover
+    rover -. "GET /local_grid<br/>depth camera obstacles<br/>(optional)" .-> fusion
 ```
-overhead camera ─┬─► guidance_global_map ─► /map ────────────────► Nav2 planner
-                 ├─► guidance_rover_pose ─► robot_localization ─► Nav2 (rover pose)
-                 └─► guidance_calib (image → ground plane, used by the two above)
 
-rover depth camera ─► Nav2 local costmap ─► Nav2 controller ─► rover
+1. **Drone map.** The overhead picture is resampled to a metric top view; pixels that differ
+   from the floor around them become obstacles on a grid of 5 cm cells
+   (`src/guidance_global_map`). The rover is found by the AprilTag on its top, or by a vision
+   model.
+2. **Planning.** `merging_map/` stores the map tiles of the drone and the rover, fuses them and
+   plans with A*, keeping 15 cm between the rover's centre and any obstacle.
+3. **Driving.** `sim/fusion_reelle.py` sends the path to the rover's HTTP server, which runs
+   the motors, the odometry and the safety stops.
+4. **Local map (optional, off by default).** The rover's depth camera (Intel RealSense D405)
+   adds the obstacles near the rover as a second layer, and a guard on the rover can slow it
+   down and stop it before what it sees.
+5. **Dashboard.** `teleop/` shows the cameras and the three maps (rover, drone, fused) in a
+   browser, drives the rover from the keyboard and sends it to a clicked goal.
 
-rover camera ─► rover mapper (host, GPU) ──TCP──► guidance_rover_vo ─┬─► /rover/vo/odom ─► robot_localization
-                                                                     └─► /rover/points ─► Nav2 local costmap
+| From above, on the real floor | Map fusion and planning |
+|---|---|
+| <img src="docs/images/overhead-real.jpg" width="420" alt="A picture of the arena taken from above, next to the obstacle grid computed from it"> | ![Four panels of the map fusion demo: drone view, zoomed tiles, fused map with replanning, unreachable goal](merging_map/demo_fusion.png) |
+| A picture from the phone above the arena and the obstacle grid computed from it. The red circle is where the rover was found. | Output of `merging_map/demo_fusion.py` on a simulated world (labels in French): the coarse drone view shows no path, the drone zooms where a passage may hide, the rover finds a fallen trunk and replans, and a goal that cannot be reached is replaced by the nearest point. |
 
-guidance_supervisor: sends goals to Nav2, tracks mission state, watches health
+The ROS 2 Jazzy nodes in `src/` publish the same overhead map on topics; the demo chain does
+not go through them.
+
+## Quick start
+
+**Run the tests (no hardware, no ROS)**
+
+```bash
+pip install opencv-contrib-python numpy pytest
+scripts/test_fast.sh
 ```
 
-## Packages
+**Try the overhead pipeline on one photo**
+
+```bash
+export PYTHONPATH=src/guidance_calib:src/guidance_global_map
+python -m guidance_global_map.segment_image photo.jpg out/scene --camera-height 1.9
+```
+
+This writes the obstacle overlay, the map drawn cell by cell and the grid as numbers (see
+[Overhead camera](#overhead-camera)).
+
+**Run the whole chain on a Mac, with the rover and the phone on the same network**
+
+```bash
+ROVER=http://<rover address>:8080 PHONE=http://<phone address>:8080/stream scripts/mac/run_local.sh start
+scripts/mac/run_local.sh status
+scripts/mac/run_local.sh stop
+```
+
+Then open `http://localhost:8082`. The script starts the dashboard (8082), the perception
+service (8095), the map fusion (8096) and the 3D mapper (8081); it never sends a motor command
+by itself, and `stop` only ends the local processes. Its settings are environment variables,
+listed at the top of [scripts/mac/run_local.sh](scripts/mac/run_local.sh). What each side needs
+first:
+
+| Side | Setup |
+|---|---|
+| Rover | `rover/rover_server.py` running on the rover: [rover/README.md](rover/README.md) |
+| Phone | The CamStream app serving its camera: [iphone-camera/README.md](iphone-camera/README.md) (in French) |
+| Mac | The Python environment of the mapper (PyTorch): [rover_mapper/README.md](rover_mapper/README.md) (in French) |
+
+The step-by-step guide for a real run is [docs/demo-reelle.md](docs/demo-reelle.md) (in
+French). The settings that decide what the rover does are in [docs/state.md](docs/state.md).
+
+## What is proven
+
+Taken from [docs/state.md](docs/state.md), which has the full table and is the file to read
+first.
+
+| Part | Evidence |
+|---|---|
+| Global navigation from the overhead camera, rover located by its tag, local map off | Seen working live by the team |
+| Smaller obstacle growth (15 cm keep-out, 15 cm steps, shadows removed) | Seen working live by the team |
+| Obstacle detection from above | Seven real photos of the floor mock-up |
+| Reading the rover's tag (AprilTag 25h9, id 10) | One real photo |
+| Vision model that finds the rover from above | 17 real pictures, by its author |
+| Local navigation with the rover's depth camera, first version | Driven on the robot: overprotective (rover standing still, phantom obstacles) |
+| Local navigation, reworked (confirmed obstacles, guard the width of the body, the two maps as layers) | Tests only, not on the robot |
+| The rover clears the drone's false obstacles (`--clear-drone`, off by default) | Tests only, not on the robot |
+| Drone map placed by the rover's move, without a tag | Tests only, with rendered pictures |
+| ROS nodes (`/map`, `/rover/pose_overhead`, `merging_map_node`) | Run in the container on one photo; not part of the demo chain |
+
+## Repository map
+
+| Folder | What it is |
+|---|---|
+| [sim/](sim/README.md) | `fusion_reelle.py`, the heart of the demo (maps, planner, missions), and the MuJoCo simulation of the rover and a drone |
+| [merging_map/](merging_map/README.md) | Drone + rover map fusion, A* planner, what to do when the rover is blocked |
+| [teleop/](teleop/README.md) | Web dashboard: driving, cameras, maps, missions |
+| [rover/](rover/README.md) | The server that runs on the rover (motors, odometry, safety, depth grid, guard) and its test bench |
+| [rover_mapper/](rover_mapper/README.md) | Live 3D map from the rover's single camera (Depth Anything 3) and the perception service; README in French |
+| [iphone-camera/](iphone-camera/README.md) | CamStream, the iPhone app that serves the overhead camera; README in French |
+| [devices/](devices/README.md) | Plug any drone, rover or sensor around the one fused map, from a JSON file |
+| `src/` | ROS 2 Jazzy packages: overhead calibration, global map, rover pose, bridges, bringup |
+| [docs/](docs/state.md) | [state.md](docs/state.md) (what runs today), [overhead-camera.md](docs/overhead-camera.md), [local-navigation.md](docs/local-navigation.md), [demo-reelle.md](docs/demo-reelle.md) |
+| `scripts/` | `test_fast.sh` and `mac/run_local.sh` |
+| [camera-stabilization-test/](camera-stabilization-test/README.md), `camera-test/` | Standalone camera experiments |
+| `data/` | A generated overhead scene for the marker setup |
+
+## ROS 2 packages
 
 | Package | Build type | Purpose |
 |---|---|---|
@@ -32,11 +175,12 @@ guidance_supervisor: sends goals to Nav2, tracks mission state, watches health
 | `guidance_global_map` | ament_python | Overhead image → `nav_msgs/OccupancyGrid` on `/map` |
 | `guidance_rover_pose` | ament_python | Rover pose in the map frame from the overhead camera |
 | `guidance_rover_vo` | ament_python | Bridge from the rover mapper: visual odometry and local 3D points |
-| `guidance_supervisor` | ament_python | Goals to Nav2, mission state machine, health checks |
+| `guidance_supervisor` | ament_python | `merging_map_node`: the map fusion and its planner on ROS topics. `supervisor_node` (goals, mission state, health checks) is still a placeholder |
 | `guidance_bringup` | ament_python | `guidance.launch.py` and `config/` for parameters |
 
-Local obstacle avoidance comes from Nav2 (controller + local costmap fed by the depth camera),
-set up in `guidance_bringup`, so it has no package of its own.
+Nav2 and robot_localization are not wired up: configuring Nav2 in `guidance_bringup` is still
+a TODO. Today the planner is `merging_map`'s A*, and local obstacle avoidance is the rover's
+own guard ([docs/local-navigation.md](docs/local-navigation.md)).
 
 ## Rover mapper bridge (`guidance_rover_vo`)
 
@@ -181,7 +325,33 @@ fix 10 on the rover with its top edge facing forward. This also gives the rover'
 ## Tests and lint
 
 ```bash
-colcon test && colcon test-result --verbose   # per-package tests through colcon
-pytest                                        # same tests directly (after sourcing install/)
+scripts/test_fast.sh                                             # plain Python, about 270 tests
+docker run --rm -v "$PWD":/ws polaris-dev scripts/test_fast.sh   # the same, in the dev container
+colcon test && colcon test-result --verbose                      # ROS packages, after colcon build
 ruff check . && ruff format --check .
 ```
+
+`scripts/test_fast.sh` covers the overhead camera, the map fusion, the real-rover chain against
+a simulated rover and the rover's local map and guard. The `teleop` and `rover_mapper` tests
+need `requests` and `torch` on top. One test,
+`test_a_small_blurred_tag_is_read`, depends on the OpenCV version: it fails with OpenCV 4.11.
+
+## Known limits
+
+- Scenes are small and crowded: with 15 cm of keep-out the rover needs 30 cm between obstacles.
+- Without the local map and with the rover's guard off (the defaults), an obstacle the overhead
+  camera misses is found only by bumping into it.
+- Placing the drone map by the rover's move needs a still camera between the two stops.
+- A change of lens, resolution or stabilisation mode on the phone changes the scale: let the
+  system measure it again (tag or move), never reuse an old number.
+- The reworked local navigation and the clearing of false drone obstacles have only run in
+  tests, not on the robot.
+
+The limits of the overhead pipeline itself are listed [above](#overhead-camera), and the open
+decisions in [docs/state.md](docs/state.md).
+
+## Team
+
+Built during the hackathon by Shah1st, Pacotiber, RBDRB, Romaindcrl, Fawzi, Oleksandr Pitenko
+and Svietozar Pliekhov (names from the git history), with Claude as coding agent. Notes for
+coding agents are in [AGENTS.md](AGENTS.md).
