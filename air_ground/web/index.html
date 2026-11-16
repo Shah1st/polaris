@@ -3,235 +3,441 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Polaris control</title>
+<title>Polaris · Air–ground guidance</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #14171c; --panel: #1d2128; --panel2: #252a33; --line: #323843;
-    --text: #e6e9ee; --muted: #8c95a3; --accent: #4ea1ff; --ok: #3ecf8e;
-    --warn: #f5b942; --bad: #ff5d5d;
+    --bg: #05080C; --bg2: #0A1017;
+    --panel: linear-gradient(180deg, rgba(17, 26, 36, .88), rgba(10, 16, 23, .88));
+    --line: rgba(120, 190, 255, .10); --line2: rgba(120, 190, 255, .20);
+    --text: #E6F1FA; --mute: #8297AA; --dim: #4C5F70;
+    --cyan: #3BE8FF; --green: #4BFFA5; --coral: #FF4D6D; --amber: #FFB547;
+    --violet: #9B7BFF; --magenta: #FF3DCB;
+    --r: 14px;
+    --sans: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
   }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-         font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; position: sticky; top: 0;
-           z-index: 5; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
-  header h1 { font-size: 16px; margin: 0 12px 0 0; }
-  .pill { padding: 3px 10px; border-radius: 99px; background: var(--panel2);
-          border: 1px solid var(--line); font-size: 12px; white-space: nowrap; }
-  .pill.ok { border-color: var(--ok); color: var(--ok); }
-  .pill.warn { border-color: var(--warn); color: var(--warn); }
-  .pill.bad { border-color: var(--bad); color: var(--bad); }
+  html, body { margin: 0; }
+  body {
+    background: radial-gradient(1200px 700px at 12% -10%, rgba(59, 232, 255, .07), transparent 60%),
+                radial-gradient(900px 600px at 105% 110%, rgba(155, 123, 255, .07), transparent 60%),
+                var(--bg);
+    color: var(--text); font: 13px/1.45 var(--sans); min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  body::before {  /* a faint blueprint grid behind everything */
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background-image: linear-gradient(rgba(59, 232, 255, .025) 1px, transparent 1px),
+                      linear-gradient(90deg, rgba(59, 232, 255, .025) 1px, transparent 1px);
+    background-size: 32px 32px;
+    mask-image: radial-gradient(ellipse at center, black 30%, transparent 85%);
+  }
+  a { color: var(--cyan); text-decoration: none; }
+  button { font: inherit; color: inherit; }
+  .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  /* ------------------------------------------------------------- header */
+  header {
+    position: sticky; top: 0; z-index: 20; height: 60px; display: flex; align-items: center;
+    gap: 14px; padding: 0 18px; border-bottom: 1px solid var(--line);
+    background: rgba(5, 8, 12, .78); backdrop-filter: blur(14px);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand b { font-weight: 700; letter-spacing: .32em; font-size: 15px; }
+  .brand .sub { color: var(--mute); font-size: 12px; padding-left: 12px; margin-left: 2px;
+                border-left: 1px solid var(--line2); letter-spacing: .04em; }
+  .chips { display: flex; gap: 8px; flex-wrap: nowrap; overflow: hidden; margin-left: 10px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 11px;
+    border-radius: 99px; border: 1px solid var(--line); background: rgba(255, 255, 255, .025);
+    color: var(--mute); font-size: 11.5px; white-space: nowrap;
+  }
+  .chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--dim); }
+  .chip.ok { color: var(--text); } .chip.ok::before { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .chip.warn { color: var(--amber); } .chip.warn::before { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+  .chip.bad { color: var(--coral); } .chip.bad::before { background: var(--coral); box-shadow: 0 0 8px var(--coral); }
+  .chip.mode { color: var(--cyan); border-color: rgba(59, 232, 255, .35); background: rgba(59, 232, 255, .07);
+               letter-spacing: .14em; font-weight: 600; font-size: 10.5px; }
+  .chip.mode::before { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); animation: blink 1.6s infinite; }
+  .chip.mode.sim { color: var(--violet); border-color: rgba(155, 123, 255, .4); background: rgba(155, 123, 255, .08); }
+  .chip.mode.sim::before { background: var(--violet); box-shadow: 0 0 8px var(--violet); }
+  @keyframes blink { 50% { opacity: .35; } }
   .spacer { flex: 1; }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  main { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
-         gap: 12px; padding: 12px 16px; max-width: 1700px; margin: 0 auto; }
-  @media (max-width: 1000px) { main { grid-template-columns: minmax(0, 1fr); } }
-  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-            padding: 12px; margin-bottom: 12px; }
-  section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
-               color: var(--muted); margin: 0 0 10px; font-weight: 600; }
-  section h2 .unit { text-transform: none; letter-spacing: 0; font-weight: 400; }
-  button { background: var(--panel2); color: var(--text); border: 1px solid var(--line);
-           border-radius: 7px; padding: 7px 12px; font: inherit; cursor: pointer;
-           touch-action: manipulation; user-select: none; }
-  button:hover { border-color: var(--accent); }
-  button.stop { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 700; }
-  button.held { background: var(--accent); border-color: var(--accent); color: #fff; }
-  select { background: var(--bg); color: var(--text); border: 1px solid var(--line);
-           border-radius: 7px; padding: 7px 9px; font: inherit; }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
-  .row:last-child { margin-bottom: 0; }
-  .unit { color: var(--muted); }
-  .help { color: var(--muted); font-size: 12px; }
-  .status { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; }
-  .status b { color: var(--text); font-weight: 600; }
-  kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px;
-        padding: 0 5px; font-size: 11px; }
+  .clock { color: var(--mute); font-size: 12px; }
+  .bench { color: var(--mute); font-size: 12px; border: 1px solid var(--line); padding: 5px 10px; border-radius: 8px; }
+  .bench:hover { color: var(--text); border-color: var(--line2); }
+  .stop {
+    height: 38px; padding: 0 20px; border-radius: 10px; border: 1px solid rgba(255, 77, 109, .6);
+    background: linear-gradient(180deg, #FF5A78, #E0304F); color: #fff; font-weight: 700;
+    letter-spacing: .16em; cursor: pointer; box-shadow: 0 0 0 0 rgba(255, 77, 109, .5), 0 6px 18px rgba(255, 77, 109, .25);
+    display: inline-flex; align-items: center; gap: 10px; transition: transform .08s, box-shadow .2s;
+  }
+  .stop:hover { box-shadow: 0 0 0 4px rgba(255, 77, 109, .18), 0 6px 22px rgba(255, 77, 109, .4); }
+  .stop:active { transform: translateY(1px); }
+  .stop kbd { font: 600 9.5px var(--mono); letter-spacing: .05em; padding: 2px 5px; border-radius: 4px;
+              background: rgba(0, 0, 0, .22); color: rgba(255, 255, 255, .85); }
+  #faults { position: relative; z-index: 2; margin: 12px 14px 0; padding: 10px 14px; border-radius: 10px;
+            border: 1px solid rgba(255, 77, 109, .45); background: rgba(255, 77, 109, .08); color: #FFC2CE;
+            white-space: pre-line; font-size: 12.5px; }
 
-  /* the map */
-  .guide { padding: 8px 10px; border-radius: 7px; background: var(--panel2); margin-bottom: 10px;
-           font-variant-numeric: tabular-nums; font-size: 15px; }
-  .guide.ok { color: var(--ok); } .guide.warn { color: var(--warn); } .guide.bad { color: var(--bad); }
-  .map { position: relative; background: #101318; border-radius: 8px; overflow: hidden;
-         aspect-ratio: 1 / 1; max-height: 66vh; width: 100%; display: flex; align-items: center;
-         justify-content: center; }
-  .map img { width: 100%; height: 100%; object-fit: contain; display: block; cursor: crosshair; }
-  .map .msg, .video .msg { position: absolute; color: var(--muted); text-align: center; padding: 16px; }
-  .map .coord { position: absolute; left: 8px; bottom: 8px; padding: 2px 8px; border-radius: 6px;
-                background: rgba(16, 19, 24, .8); font-size: 12px; font-variant-numeric: tabular-nums;
-                pointer-events: none; }
-  .key { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
-  .key i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; }
-  .key i.ring { width: 10px; height: 10px; border-radius: 50%; background: none; border: 2px solid #ffe600; }
+  /* ------------------------------------------------------------- layout */
+  .app { position: relative; z-index: 1; display: grid; gap: 14px; padding: 14px;
+         grid-template-columns: 330px minmax(0, 1fr) 372px; height: calc(100vh - 60px); min-height: 700px; }
+  .col { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+  .below { position: relative; z-index: 1; display: grid; gap: 14px; padding: 0 14px 18px;
+           grid-template-columns: repeat(12, minmax(0, 1fr)); }
+  .s4 { grid-column: span 4; } .s5 { grid-column: span 5; } .s7 { grid-column: span 7; } .s12 { grid-column: span 12; }
+  @media (max-width: 1250px) { .brand .sub, .clock, #cBatt { display: none; } }
+  @media (max-width: 1450px) {
+    .app { grid-template-columns: minmax(0, 1fr); height: auto; }
+    .stage-wrap { height: 72vh; order: -1; }
+    .s4, .s5, .s7 { grid-column: span 12; }
+  }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+           box-shadow: 0 12px 32px rgba(0, 0, 0, .35), inset 0 1px 0 rgba(255, 255, 255, .03); padding: 14px 16px; }
+  .ph { display: flex; align-items: center; gap: 8px; margin: -2px 0 12px; color: var(--mute);
+        font-size: 10.5px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; }
+  .ph::before { content: ""; width: 3px; height: 11px; border-radius: 2px; background: var(--cyan);
+                box-shadow: 0 0 8px var(--cyan); }
+  .ph .r { margin-left: auto; letter-spacing: .06em; text-transform: none; font-weight: 500; }
+  .tag { font: 600 10px var(--mono); letter-spacing: .12em; padding: 3px 8px; border-radius: 6px;
+         border: 1px solid var(--line2); color: var(--mute); }
+  .tag.act { color: var(--cyan); border-color: rgba(59, 232, 255, .4); background: rgba(59, 232, 255, .07); }
+  .tag.ok { color: var(--green); border-color: rgba(75, 255, 165, .4); background: rgba(75, 255, 165, .07); }
+  .tag.warn { color: var(--amber); border-color: rgba(255, 181, 71, .4); background: rgba(255, 181, 71, .07); }
+  .tag.bad { color: var(--coral); border-color: rgba(255, 77, 109, .4); background: rgba(255, 77, 109, .07); }
+  .btn { height: 30px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line2);
+         background: rgba(255, 255, 255, .03); color: var(--text); cursor: pointer; font-size: 12px; }
+  .btn:hover:not(:disabled) { border-color: rgba(59, 232, 255, .45); background: rgba(59, 232, 255, .06); }
+  .btn:disabled { opacity: .35; cursor: default; }
 
-  /* cameras */
-  .cams { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  @media (max-width: 560px) { .cams { grid-template-columns: 1fr; } }
-  .cam .cap { display: flex; justify-content: space-between; gap: 8px; font-size: 12px;
-              color: var(--muted); margin-bottom: 4px; }
-  .cam .cap b { color: var(--text); font-weight: 600; }
-  .video { position: relative; background: #000; border-radius: 8px; overflow: hidden;
-           aspect-ratio: 4 / 3; display: flex; align-items: center; justify-content: center; }
+  /* ------------------------------------------------------------- mission */
+  .headline { font-size: 17px; font-weight: 600; line-height: 1.3; min-height: 44px; letter-spacing: -.005em; }
+  .headline.ok { color: var(--green); } .headline.warn { color: var(--amber); }
+  .headline.bad { color: var(--coral); } .headline.act { color: var(--text); }
+  .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; margin: 12px 0;
+             background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .metric { background: #0B121A; padding: 9px 11px; }
+  .ml { color: var(--dim); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; font-weight: 600; }
+  .mv { font: 500 15px var(--mono); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mv small { font-size: 11px; color: var(--mute); }
+  .mv.ok { color: var(--green); } .mv.warn { color: var(--amber); }
+  .hint { color: var(--dim); font-size: 11.5px; margin-top: 10px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+
+  /* ------------------------------------------------------------- perception stack */
+  .src { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 10px; align-items: center;
+         padding: 9px 0; border-top: 1px solid var(--line); }
+  .src:first-of-type { border-top: 0; padding-top: 2px; }
+  .ic { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;
+        background: rgba(59, 232, 255, .06); border: 1px solid rgba(59, 232, 255, .16); color: var(--cyan); }
+  .ic.rv { background: rgba(155, 123, 255, .07); border-color: rgba(155, 123, 255, .22); color: var(--violet); }
+  .ic.fu { background: rgba(75, 255, 165, .06); border-color: rgba(75, 255, 165, .2); color: var(--green); }
+  .ic svg { width: 16px; height: 16px; }
+  .sn { font-weight: 600; font-size: 12.5px; display: flex; gap: 7px; align-items: baseline; }
+  .sn span { font: 600 9px var(--mono); letter-spacing: .14em; color: var(--dim); }
+  .sd { color: var(--mute); font: 11px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  .dot.ok { background: var(--green); box-shadow: 0 0 10px var(--green); }
+  .dot.warn { background: var(--amber); box-shadow: 0 0 10px var(--amber); }
+  .dot.bad { background: var(--coral); box-shadow: 0 0 10px var(--coral); }
+  .switch { position: relative; width: 38px; height: 21px; border-radius: 99px; border: 1px solid var(--line2);
+            background: rgba(255, 255, 255, .04); cursor: pointer; padding: 0; transition: background .2s; }
+  .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%;
+                   background: var(--mute); transition: transform .2s, background .2s; }
+  .switch.on { background: rgba(155, 123, 255, .25); border-color: rgba(155, 123, 255, .6); }
+  .switch.on::after { transform: translateX(17px); background: var(--violet); box-shadow: 0 0 10px var(--violet); }
+
+  /* ------------------------------------------------------------- vitals */
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .tile { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: rgba(0, 0, 0, .18); }
+  .tile .mv { font-size: 14px; }
+  .bar { height: 3px; border-radius: 3px; background: rgba(255, 255, 255, .06); margin-top: 6px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--green); box-shadow: 0 0 8px var(--green); transition: width .4s; }
+
+  /* ------------------------------------------------------------- the map */
+  .stage-wrap { position: relative; padding: 0; overflow: hidden; min-height: 0; }
+  #stage { position: absolute; inset: 0; cursor: crosshair; touch-action: none; }
+  #stage.drag { cursor: grabbing; }
+  #map { display: block; }
+  .hud { position: absolute; z-index: 3; display: flex; gap: 8px; align-items: center; pointer-events: none; }
+  .hud > * { pointer-events: auto; }
+  .hud.tl { top: 14px; left: 14px; flex-direction: column; align-items: flex-start; gap: 6px; }
+  .hud.tr { top: 14px; right: 14px; flex-wrap: wrap; justify-content: flex-end; max-width: 70%; }
+  .hud.bl { bottom: 14px; left: 14px; }
+  .hud.br { bottom: 14px; right: 14px; flex-direction: column; align-items: flex-end; gap: 6px; }
+  .glass { background: rgba(6, 10, 15, .72); border: 1px solid var(--line); border-radius: 10px; backdrop-filter: blur(10px); }
+  .title { padding: 7px 12px; display: flex; gap: 10px; align-items: center; }
+  .title b { font-size: 10.5px; letter-spacing: .2em; font-weight: 700; }
+  .live { display: inline-flex; gap: 6px; align-items: center; font: 600 10px var(--mono); color: var(--coral); letter-spacing: .12em; }
+  .live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--coral);
+                  box-shadow: 0 0 8px var(--coral); animation: blink 1.2s infinite; }
+  .seg { display: inline-flex; padding: 3px; gap: 2px; }
+  .seg button { border: 0; background: transparent; color: var(--mute); padding: 5px 11px; border-radius: 7px;
+                font-size: 11.5px; font-weight: 500; cursor: pointer; }
+  .seg button.on { background: rgba(59, 232, 255, .13); color: var(--cyan); box-shadow: inset 0 0 0 1px rgba(59, 232, 255, .3); }
+  .seg button:hover:not(.on) { color: var(--text); }
+  .tog { display: inline-flex; padding: 3px; gap: 2px; }
+  .tog button { border: 0; background: transparent; color: var(--dim); padding: 5px 9px; border-radius: 7px;
+                font-size: 11px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+  .tog button::before { content: ""; width: 8px; height: 8px; border-radius: 2px; border: 1px solid currentColor; }
+  .tog button.on { color: var(--text); }
+  .tog button.on::before { background: var(--c, var(--cyan)); border-color: var(--c, var(--cyan)); box-shadow: 0 0 6px var(--c, var(--cyan)); }
+  .legend { padding: 9px 12px; display: grid; gap: 5px; font-size: 11px; color: var(--mute); min-width: 170px; }
+  .legend .lg { display: flex; align-items: center; gap: 8px; }
+  .sw { width: 14px; height: 9px; border-radius: 2px; flex: none; }
+  .gbar { height: 8px; border-radius: 4px; width: 150px; background: linear-gradient(90deg, #3BE8FF, #9B7BFF 55%, #FF3DCB); }
+  .gl { display: flex; justify-content: space-between; font: 10px var(--mono); color: var(--dim); width: 150px; }
+  .stats { padding: 7px 12px; font: 11px var(--mono); color: var(--mute); display: flex; gap: 14px; }
+  .stats b { color: var(--text); font-weight: 500; }
+  .scale { padding: 7px 12px; display: flex; gap: 10px; align-items: center; font: 11px var(--mono); color: var(--mute); }
+  .scale i { display: block; height: 6px; border: 1px solid var(--text); border-top: 0; opacity: .8; }
+  .empty { position: absolute; inset: 0; display: grid; place-items: center; z-index: 2; pointer-events: none; }
+  .empty div { text-align: center; color: var(--mute); }
+  .radar { width: 120px; height: 120px; margin: 0 auto 16px; border-radius: 50%; position: relative;
+           border: 1px solid rgba(59, 232, 255, .25); box-shadow: inset 0 0 30px rgba(59, 232, 255, .06); }
+  .radar::before { content: ""; position: absolute; inset: 24px; border-radius: 50%; border: 1px solid rgba(59, 232, 255, .15); }
+  .radar::after { content: ""; position: absolute; inset: 0; border-radius: 50%;
+                  background: conic-gradient(from 0deg, rgba(59, 232, 255, .35), transparent 25%); animation: spin 2.4s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ------------------------------------------------------------- cameras */
+  .cam { padding: 0; overflow: hidden; position: relative; }
+  .video { position: relative; aspect-ratio: 4 / 3; background: #03060A; display: grid; place-items: center; }
   .video img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .video .msg { color: var(--dim); font-size: 12px; padding: 0 18px; text-align: center; }
+  .cam .cap { position: absolute; top: 10px; left: 10px; right: 10px; display: flex; justify-content: space-between; gap: 8px; z-index: 2; }
+  .cam .cap span { padding: 4px 9px; font: 600 10px var(--mono); letter-spacing: .12em; }
+  .cam .cap .info { letter-spacing: .02em; font-weight: 500; color: var(--mute); }
+  .cam .corner { position: absolute; width: 14px; height: 14px; border: 1.5px solid rgba(59, 232, 255, .55); z-index: 2; }
+  .corner.a { left: 8px; bottom: 8px; border-right: 0; border-top: 0; } .corner.b { right: 8px; bottom: 8px; border-left: 0; border-top: 0; }
 
-  /* driving */
-  .pads { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  @media (max-width: 560px) { .pads { grid-template-columns: 1fr; } }
-  .pad { display: grid; grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(2, 46px);
-         gap: 6px; justify-content: center; margin: 4px 0 8px; }
-  .pad button { font-size: 18px; padding: 0; }
-  .pads .help { text-align: center; }
-  .task { padding: 8px 10px; border-radius: 7px; background: var(--panel2); margin-bottom: 10px;
-          font-variant-numeric: tabular-nums; }
+  /* ------------------------------------------------------------- events */
+  .events { flex: 1; min-height: 140px; display: flex; flex-direction: column; }
+  #events { list-style: none; margin: 0; padding: 0; overflow: auto; flex: 1; min-height: 0; }
+  #events li { display: grid; grid-template-columns: 62px 54px minmax(0, 1fr); gap: 8px; padding: 7px 0;
+               border-top: 1px solid var(--line); font-size: 12px; animation: slide .35s ease-out; }
+  #events li:first-child { border-top: 0; }
+  @keyframes slide { from { opacity: 0; transform: translateY(-4px); } }
+  .et { font: 11px var(--mono); color: var(--dim); }
+  .ek { font: 600 9.5px var(--mono); letter-spacing: .1em; align-self: start; padding: 2px 0; color: var(--cyan); }
+  .ek.d405 { color: var(--violet); } .ek.guard { color: var(--amber); } .ek.end { color: var(--green); }
+  .ek.end.bad { color: var(--coral); } .ek.route { color: #8FF3FF; }
+  .ex { color: var(--text); opacity: .9; }
+  .none { color: var(--dim); font-size: 12px; padding: 6px 0; }
 
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px 12px; }
-  .kv .k { color: var(--muted); font-size: 11px; }
-  .kv .v { font-variant-numeric: tabular-nums; font-size: 15px; }
-  .kv .v.warn { color: var(--warn); } .kv .v.bad { color: var(--bad); } .kv .v.ok { color: var(--ok); }
-  .scroll { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
-  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); }
-  th { color: var(--muted); font-weight: 500; font-size: 12px; }
-  .err-ok { color: var(--ok); } .err-warn { color: var(--warn); } .err-bad { color: var(--bad); }
-  details summary { cursor: pointer; color: var(--muted); }
-  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 9;
-           background: var(--bad); color: #fff; padding: 8px 14px; border-radius: 8px;
-           display: none; max-width: 90vw; }
-  #faults { margin: 12px 16px 0; padding: 8px 12px; border: 1px solid var(--bad); border-radius: 10px;
-            background: var(--panel); color: var(--bad); font-weight: 600; white-space: pre-line; }
+  /* ------------------------------------------------------------- below the fold */
+  .pads { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; }
+  .pad { display: grid; grid-template-columns: repeat(3, 46px); grid-template-rows: repeat(2, 46px); gap: 6px; }
+  .pad button { border-radius: 10px; border: 1px solid var(--line2); background: rgba(255, 255, 255, .03);
+                font-size: 17px; cursor: pointer; user-select: none; touch-action: none; }
+  .pad button.held { background: rgba(59, 232, 255, .16); border-color: var(--cyan); color: var(--cyan); box-shadow: 0 0 14px rgba(59, 232, 255, .25); }
+  .padcap { color: var(--dim); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; font-weight: 600; margin-bottom: 8px; }
+  .keys { color: var(--dim); font-size: 11.5px; margin-top: 12px; }
+  kbd { font: 10.5px var(--mono); border: 1px solid var(--line2); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--mute); }
+  .task { font: 12px var(--mono); color: var(--mute); margin-bottom: 12px; }
+  .kvs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line);
+         border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .kv { background: #0B121A; padding: 7px 10px; }
+  .kv .k { color: var(--dim); font-size: 10px; letter-spacing: .06em; }
+  .kv .v { font: 12.5px var(--mono); }
+  .kv .v.ok { color: var(--green); } .kv .v.warn { color: var(--amber); } .kv .v.bad { color: var(--coral); }
+  .d405v { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+  .d405v .video { border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  select { background: #0B121A; color: var(--text); border: 1px solid var(--line2); border-radius: 7px; height: 30px; padding: 0 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; color: var(--dim); font-weight: 600; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; padding: 6px 8px; }
+  td { padding: 6px 8px; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 11.5px; }
+  td.unit { color: var(--dim); } td.err-bad { color: var(--coral); } td.err-warn { color: var(--amber); }
+  details > summary { cursor: pointer; list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  #toast { position: fixed; z-index: 50; bottom: 22px; left: 50%; transform: translateX(-50%); max-width: 640px;
+           padding: 11px 16px; border-radius: 10px; border: 1px solid rgba(255, 77, 109, .5);
+           background: rgba(20, 8, 12, .9); color: #FFD3DB; backdrop-filter: blur(10px); display: none; font-size: 12.5px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Polaris control</h1>
-  <span id="pAir" class="pill">Air camera …</span>
-  <span id="pLink" class="pill">Rover …</span>
-  <span id="pBatt" class="pill">Battery …</span>
-  <span id="pGyro" class="pill">Gyro …</span>
-  <span id="pCpu" class="pill">CPU …</span>
-  <span id="pMode" class="pill">…</span>
-  <span id="pTilt" class="pill" hidden>…</span>
-  <span id="pSim" class="pill warn" hidden>SIMULATION</span>
-  <span class="spacer"></span>
-  <a id="aBench" target="_blank" rel="noopener" hidden title="Calibration, measured moves, tilt tests, settings">Rover test bench ↗</a>
-  <button class="stop" id="bStop" title="Space or Esc: forgets the goal and stops the rover">STOP</button>
+  <div class="brand">
+    <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+      <defs><linearGradient id="gstar" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#3BE8FF"/><stop offset="1" stop-color="#9B7BFF"/></linearGradient></defs>
+      <path d="M16 1 L19 13 L31 16 L19 19 L16 31 L13 19 L1 16 L13 13 Z" fill="url(#gstar)"/>
+      <circle cx="16" cy="16" r="2.2" fill="#05080C"/>
+    </svg>
+    <b>POLARIS</b><span class="sub">Air–ground guidance</span>
+  </div>
+  <div class="chips">
+    <span id="cMode" class="chip mode">CONNECTING</span>
+    <span id="cAir" class="chip">Air camera</span>
+    <span id="cRover" class="chip">Rover</span>
+    <span id="cBatt" class="chip">Battery</span>
+    <span id="cTilt" class="chip bad" hidden>Tilt</span>
+  </div>
+  <div class="spacer"></div>
+  <span class="clock mono" id="clock">--:--:--</span>
+  <a id="aBench" class="bench" target="_blank" rel="noopener" hidden title="Calibration, measured moves, settings">Rover bench ↗</a>
+  <button class="stop" id="bStop" title="Space or Esc: forgets the goal and stops the rover">STOP <kbd>SPACE</kbd></button>
 </header>
 <div id="faults" hidden></div>
 
-<main>
-  <div>
-    <section>
-      <h2>Map <span class="unit">— the floor seen from the air, in metres</span></h2>
-      <div class="guide" id="guide">Connecting to the guide…</div>
-      <div class="map">
-        <img id="top" alt="Top view of the floor from the air camera" hidden>
-        <div class="msg" id="topMsg">No view from the air yet</div>
-        <div class="coord" id="coord" hidden></div>
+<div class="app">
+  <!-- ---------------------------------------------------------- left: mission, sensors, rover -->
+  <div class="col">
+    <section class="panel">
+      <div class="ph">Mission <span class="r"><span class="tag" id="mTag">IDLE</span></span></div>
+      <div class="headline" id="status">Connecting to the guide…</div>
+      <div class="metrics">
+        <div class="metric"><div class="ml">To go</div><div class="mv" id="mDist">–</div></div>
+        <div class="metric"><div class="ml">Goal</div><div class="mv" id="mGoal">–</div></div>
+        <div class="metric"><div class="ml">Route</div><div class="mv" id="mRoute">–</div></div>
+        <div class="metric"><div class="ml">Position from</div><div class="mv" id="mNav">–</div></div>
       </div>
-      <div class="row" style="margin-top:8px">
-        <span class="key"><i style="background:#50ff50"></i>rover (estimate)</span>
-        <span class="key"><i class="ring"></i>rover in the last picture</span>
-        <span class="key"><i style="background:#ff3c3c"></i>goal and path</span>
-        <span class="key"><i style="background:#00b4ff"></i>where it has been</span>
-        <span class="key"><i style="background:#ff2828"></i>obstacle (height or colour)</span>
-        <span class="key"><i style="background:#c83ca0"></i>too close for the rover (its radius)</span>
-        <span class="key"><i style="background:#5ac85a"></i>floor, height known</span>
-        <span class="spacer"></span>
-        <button id="bView" title="The photos of the floor, or the 5 cm grid the route is planned on">Grid view</button>
+      <div class="row"><button class="btn" id="bCancel" disabled>Cancel goal</button>
+        <span class="hint" style="margin:0">Click the map to send the rover</span></div>
+    </section>
+
+    <section class="panel">
+      <div class="ph">Perception stack <span class="r" id="fusionNote"></span></div>
+      <div class="src">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg></div>
+        <div><div class="sn">ARKit pose <span>AIR</span></div><div class="sd" id="dPose">–</div></div><i class="dot" id="sPose"></i>
+      </div>
+      <div class="src">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4M3 17l9 4 9-4"/></svg></div>
+        <div><div class="sn">Vision map <span>AIR</span></div><div class="sd" id="dMap">–</div></div><i class="dot" id="sMap"></i>
+      </div>
+      <div class="src">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 20a12 12 0 0 1 16 0"/><path d="M7 16.5a7.5 7.5 0 0 1 10 0"/><circle cx="12" cy="13" r="1.4" fill="currentColor"/><path d="M12 3v6"/></svg></div>
+        <div><div class="sn">LiDAR depth <span>AIR</span></div><div class="sd" id="dLidar">–</div></div><i class="dot" id="sLidar"></i>
+      </div>
+      <div class="src">
+        <div class="ic rv"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="7" width="18" height="10" rx="2"/><circle cx="8.5" cy="12" r="2"/><circle cx="15.5" cy="12" r="2"/></svg></div>
+        <div><div class="sn">D405 local grid <span>ROVER</span></div><div class="sd" id="dD405">–</div></div><i class="dot" id="sD405"></i>
+      </div>
+      <div class="src">
+        <div class="ic rv"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/></svg></div>
+        <div><div class="sn">Collision guard <span>ROVER</span></div><div class="sd" id="dGuard">–</div></div>
+        <button class="switch" id="bGuard" title="The rover's own guard: slows down and stops before what its D405 sees"></button>
+      </div>
+      <div class="src">
+        <div class="ic fu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 15l6-6"/><path d="M11 6l1.5-1.5a4 4 0 0 1 5.7 5.7L16.5 12M13 18l-1.5 1.5a4 4 0 0 1-5.7-5.7L7.5 12"/></svg></div>
+        <div><div class="sn">Air–ground link <span>FUSION</span></div><div class="sd" id="dLink">–</div></div><i class="dot" id="sLink"></i>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="ph">Rover <span class="r mono" id="roverTask">–</span></div>
+      <div class="tiles">
+        <div class="tile"><div class="ml">Battery</div><div class="mv" id="vBatt">–</div><div class="bar"><i id="vBattBar"></i></div></div>
+        <div class="tile"><div class="ml">Speed</div><div class="mv" id="vSpeed">–</div></div>
+        <div class="tile"><div class="ml">Mode</div><div class="mv" id="vMode">–</div></div>
+        <div class="tile"><div class="ml">Link</div><div class="mv" id="vRtt">–</div></div>
+        <div class="tile"><div class="ml">CPU</div><div class="mv" id="vCpu">–</div></div>
+        <div class="tile"><div class="ml">Gyro</div><div class="mv" id="vGyro">–</div></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ---------------------------------------------------------- centre: the live map -->
+  <section class="panel stage-wrap">
+    <div id="stage"><canvas id="map"></canvas></div>
+    <div class="empty" id="mapEmpty"><div><div class="radar"></div><div id="mapEmptyMsg">Waiting for the air camera</div></div></div>
+    <div class="hud tl">
+      <div class="glass title"><b>LIVE MAP</b><span class="live">LIVE</span></div>
+    </div>
+    <div class="hud tr">
+      <div class="glass seg" id="layers">
+        <button data-layer="photo" class="on" title="The floor as the air camera sees it, obstacles tinted">Photo</button>
+        <button data-layer="grid" title="The grid the route is planned on">Grid</button>
+        <button data-layer="heights" title="Heights: LiDAR and plane sweep">Heights</button>
+      </div>
+      <div class="glass tog" id="overlays">
+        <button data-show="route" class="on" style="--c: var(--cyan)">Route</button>
+        <button data-show="trail" class="on" style="--c: #8FF3FF">Trail</button>
+        <button data-show="d405" class="on" style="--c: var(--violet)">D405</button>
+      </div>
+      <div class="glass seg">
+        <button id="bFit" class="on" title="Frame what has been seen (double click on the map)">Auto-frame</button>
         <button id="bMapReset" title="Forget the map and build it again">Reset map</button>
-        <button id="bCancel" title="Forget the goal; the rover stops if the guide was driving it">Cancel goal</button>
       </div>
-      <div class="status" id="mapInfo" style="margin-top:6px">Map: –</div>
-      <div class="help">Move the phone slowly above the scene: the map grows and firms up. Obstacles are found by their height (they shift between two views, the floor does not) and by the team's colour detection. Click on the map: the rover drives there around the obstacles (the team's A*), and the route is planned again when something new blocks it.</div>
-    </section>
+    </div>
+    <div class="hud bl"><div class="glass legend" id="legend"></div></div>
+    <div class="hud br">
+      <div class="glass stats" id="mapStats">–</div>
+      <div class="glass scale"><i id="scaleBar" style="width:80px"></i><span id="scaleTxt">–</span><span id="cursor" style="color:var(--text)"></span></div>
+    </div>
+  </section>
 
-    <section>
-      <h2>Air-ground link <span class="unit">— how the air camera and the rover's odometry agree</span></h2>
-      <div class="grid" id="linkGrid"></div>
-      <div class="status" id="linkNote" style="margin-top:8px"></div>
+  <!-- ---------------------------------------------------------- right: cameras and events -->
+  <div class="col">
+    <section class="panel cam">
+      <div class="cap"><span class="glass">AIR · ARKIT</span><span class="glass info" id="airInfo">–</span></div>
+      <div class="video"><img id="airCam" alt="" hidden><div class="msg" id="airMsg">Waiting for the phone's address…</div></div>
+      <i class="corner a"></i><i class="corner b"></i>
     </section>
-
-    <section>
-      <details id="cmdBox" open>
-        <summary><b>Commands received by the rover</b> <span class="unit">— who sends what, and how fast the rover acts (measured on the rover)</span></summary>
-        <div class="status" id="rttInfo" style="margin:8px 0">Guide ↔ rover: –</div>
-        <div class="scroll">
-        <table style="margin-bottom:10px">
-          <thead><tr><th>Client</th><th>Req/s</th><th>Usual gap</th><th>Largest gap</th><th>Last</th></tr></thead>
-          <tbody id="cmdClients"></tbody>
-        </table>
-        <table>
-          <thead><tr><th>When</th><th>From</th><th>Command</th><th>→ ESP32</th><th>→ wheels</th><th>Done</th><th>Status</th></tr></thead>
-          <tbody id="cmdLog"><tr><td colspan="7" class="unit">Nothing received yet</td></tr></tbody>
-        </table>
-        </div>
-        <div class="help" style="margin-top:6px">
-          → ESP32: until the rover's 20 Hz loop sent it (≤ 50 ms is normal). → wheels: until the
-          encoders showed it. A held key repeated with more than 500 ms between two commands lets
-          the rover stop (red): that is the network.
-        </div>
-      </details>
+    <section class="panel cam">
+      <div class="cap"><span class="glass">ROVER · ONBOARD</span><span class="glass info" id="roverCamInfo">–</span></div>
+      <div class="video"><img id="roverCam" alt="" hidden><div class="msg" id="roverCamMsg">Waiting for the rover's address…</div></div>
+      <i class="corner a"></i><i class="corner b"></i>
+    </section>
+    <section class="panel events">
+      <div class="ph">Events <span class="r mono" id="evCount"></span></div>
+      <ul id="events"><li class="none" style="display:block">No events yet — set a goal on the map</li></ul>
     </section>
   </div>
+</div>
 
-  <div>
-    <section>
-      <h2>Cameras <span class="unit">— read by this page straight from the phone and the rover</span></h2>
-      <div class="cams">
-        <div class="cam">
-          <div class="cap"><b>Air camera</b><span id="airInfo">–</span></div>
-          <div class="video"><img id="airCam" alt="" hidden><div class="msg" id="airMsg">Waiting for the phone's address…</div></div>
+<!-- ------------------------------------------------------------ below the fold -->
+<div class="below">
+  <section class="panel s5">
+    <div class="ph">Manual control <span class="r">overrides the mission</span></div>
+    <div class="pads">
+      <div><div class="padcap">Drive</div>
+        <div class="pad" id="dpad">
+          <span></span><button data-key="ArrowUp" title="Forward">↑</button><span></span>
+          <button data-key="ArrowLeft" title="Turn left">↺</button><button data-key="ArrowDown" title="Back">↓</button><button data-key="ArrowRight" title="Turn right">↻</button>
+        </div></div>
+      <div><div class="padcap">Camera gimbal</div>
+        <div class="pad" id="gpad">
+          <span></span><button data-gkey="KeyW" title="Up">▲</button><span></span>
+          <button data-gkey="KeyA" title="Left">◀</button><button data-gkey="KeyS" title="Down">▼</button><button data-gkey="KeyD" title="Right">▶</button>
         </div>
-        <div class="cam">
-          <div class="cap"><b>Rover camera</b><span id="roverCamInfo">–</span></div>
-          <div class="video"><img id="roverCam" alt="" hidden><div class="msg" id="roverCamMsg">Waiting for the rover's address…</div></div>
-        </div>
-      </div>
-      <div class="row" style="margin-top:10px">
-        <button id="bD405">Show D405</button>
-        <span class="unit">Range</span>
-        <select id="d405Max"><option value="0.5">0.5 m</option><option value="1" selected>1 m</option><option value="2">2 m</option></select>
-        <span class="spacer"></span>
-        <span class="status" id="d405Status">D405 depth camera hidden</span>
-      </div>
-      <div class="cams" id="d405Views" hidden>
-        <div class="video"><img id="d405Color" alt=""></div>
-        <div class="video"><img id="d405Depth" alt=""></div>
-      </div>
-    </section>
+        <div class="keys mono">pan <b id="gPan">–</b> · tilt <b id="gTilt">–</b></div></div>
+    </div>
+    <div class="keys"><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> drive (<kbd>Shift</kbd> faster) ·
+      <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> gimbal, <kbd>C</kbd> centre · <kbd>Space</kbd>/<kbd>Esc</kbd> stop</div>
+  </section>
 
-    <section>
-      <h2>Drive by hand <span class="unit">— takes over from the guide</span></h2>
-      <div class="task" id="task">–</div>
-      <div class="pads">
-        <div>
-          <div class="pad" id="dpad">
-            <span></span><button data-key="ArrowUp">▲</button><span></span>
-            <button data-key="ArrowLeft">◀</button><button data-key="ArrowDown">▼</button>
-            <button data-key="ArrowRight">▶</button>
-          </div>
-          <div class="help">Rover: hold <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd>, <kbd>Shift</kbd> = fast</div>
-        </div>
-        <div>
-          <div class="pad" id="gpad">
-            <span></span><button data-gkey="KeyW" title="Tilt up">Z</button><span></span>
-            <button data-gkey="KeyA" title="Pan left">Q</button><button data-gkey="KeyS" title="Tilt down">S</button>
-            <button data-gkey="KeyD" title="Pan right">D</button>
-          </div>
-          <div class="help">Camera: <kbd>Z</kbd><kbd>Q</kbd><kbd>S</kbd><kbd>D</kbd>, <kbd>C</kbd> = centre ·
-            pan <b id="gPan">–</b> tilt <b id="gTilt">–</b></div>
-        </div>
-      </div>
-    </section>
+  <section class="panel s7">
+    <div class="ph">D405 depth camera <span class="r"><button class="btn" id="bD405">Show</button>
+      <select id="d405Max" title="Depth colour range"><option value="0.5">0.5 m</option><option value="1" selected>1 m</option><option value="2">2 m</option></select></span></div>
+    <div class="task" id="d405Status">Hidden: the rover's stereo depth camera, at the front</div>
+    <div class="d405v" id="d405Views" hidden>
+      <div class="video"><img id="d405Color" alt=""></div>
+      <div class="video"><img id="d405Depth" alt=""></div>
+    </div>
+  </section>
 
-    <section>
-      <h2>Rover telemetry <span class="unit" id="telAge"></span></h2>
-      <div class="grid" id="telemetry"></div>
-    </section>
-  </div>
-</main>
+  <section class="panel s12">
+    <div class="ph">Telemetry <span class="r mono" id="telAge"></span></div>
+    <div class="kvs" id="telemetry" style="grid-template-columns: repeat(6, minmax(0, 1fr))"></div>
+    <div class="kvs" id="linkGrid" style="grid-template-columns: repeat(6, minmax(0, 1fr)); margin-top: 10px"></div>
+  </section>
+
+  <section class="panel s12">
+    <details id="cmdBox">
+      <summary class="ph" style="margin:0">Commands received by the rover <span class="r mono" id="rttInfo">–</span></summary>
+      <table style="margin-top:12px"><thead><tr><th>Client</th><th>per s</th><th>usual gap</th><th>worst gap</th><th>last</th></tr></thead>
+        <tbody id="cmdClients"></tbody></table>
+      <table style="margin-top:12px"><thead><tr><th>ago</th><th>client</th><th>command</th><th>out</th><th>wheels</th><th>done</th><th>status</th></tr></thead>
+        <tbody id="cmdLog"><tr><td colspan="7" class="unit">Nothing received yet</td></tr></tbody></table>
+    </details>
+  </section>
+</div>
 <div id="toast"></div>
 
 <script>
@@ -239,74 +445,317 @@ const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const fmt = (x, d = 2) => (x === null || x === undefined || Number.isNaN(+x)) ? '–' : (+x).toFixed(d);
 const esc = (t) => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-function pill(id, text, cls) { const p = $(id); p.textContent = text; p.className = 'pill ' + (cls || ''); }
+const cap = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+function chip(id, text, cls) { const c = $(id); c.textContent = text; c.className = 'chip ' + (cls || ''); }
+function dot(id, cls) { $(id).className = 'dot ' + (cls || ''); }
 const kv = (rows) => rows.map(([k, v, cls]) =>
   `<div class="kv"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div></div>`).join('');
 
-let cfg = {};       // the rover's settings (manual speeds)
-let guide = null;   // the guide's last /state
+let cfg = {};        // the rover's settings (manual speeds, guard)
+let guide = null;    // the guide's last /state
 let urls = { phone: null, rover: null };
 
-// ---------------------------------------------------------------- HTTP helpers
 let toastTimer;
 function toast(msg) {
   const t = $('toast'); t.textContent = msg; t.style.display = 'block';
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = 'none', 3500);
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = 'none', 3800);
 }
 async function post(path, body = {}) {
   try {
-    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify(body) });
+    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const j = await r.json();
     if (!r.ok) toast(j.error || r.statusText);
     return j;
   } catch (e) { toast('Guide unreachable: ' + e.message); }
 }
+setInterval(() => { $('clock').textContent = new Date().toLocaleTimeString([], { hour12: false }); }, 500);
 
-// ---------------------------------------------------------------- the map (top view)
-async function topLoop() {
-  const img = $('top');
+// ================================================================ the live map (one canvas)
+const stage = $('stage'), cv = $('map'), ctx = cv.getContext('2d');
+let W = 0, H = 0, dpr = 1;
+function resize() {
+  const r = stage.getBoundingClientRect(); dpr = window.devicePixelRatio || 1;
+  W = r.width; H = r.height;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  cv.style.width = W + 'px'; cv.style.height = H + 'px';
+}
+new ResizeObserver(resize).observe(stage);
+
+let layer = 'photo';
+const show = { route: true, trail: true, d405: true };
+let mapBmp = null, mapBounds = null;
+const view = { cx: 0, cy: 0, ppm: 150 }, target = { cx: 0, cy: 0, ppm: 150 };
+let autoFit = true, viewReady = false;
+const sx = (x) => W / 2 + (x - view.cx) * view.ppm, sy = (y) => H / 2 - (y - view.cy) * view.ppm;
+const fx = (px) => view.cx + (px - W / 2) / view.ppm, fy = (py) => view.cy - (py - H / 2) / view.ppm;
+
+function fitTarget() {
+  if (!guide || !W) return;
+  const M = guide.map || {};
+  const b = (M.seen_box || guide.bounds || []).slice();
+  if (b.length !== 4) return;
+  const add = (x, y) => { b[0] = Math.min(b[0], x); b[1] = Math.min(b[1], y); b[2] = Math.max(b[2], x); b[3] = Math.max(b[3], y); };
+  if (guide.rover) add(guide.rover[0], guide.rover[1]);
+  if (guide.goal) add(guide.goal[0], guide.goal[1]);
+  const w = Math.max(1.2, b[2] - b[0]), h = Math.max(1.2, b[3] - b[1]);
+  target.cx = (b[0] + b[2]) / 2; target.cy = (b[1] + b[3]) / 2;
+  target.ppm = Math.min(W / (w * 1.12), (H - 40) / (h * 1.12));
+  if (!viewReady) { Object.assign(view, target); viewReady = true; }
+}
+
+async function mapLoop() {
   for (;;) {
     try {
-      const r = await fetch('/top.jpg?view=' + mapView + '&t=' + Date.now());
-      if (r.ok) {
-        const url = URL.createObjectURL(await r.blob()), old = img.src;
-        img.src = url; img.hidden = false; $('topMsg').hidden = true;
-        if (old.startsWith('blob:')) URL.revokeObjectURL(old);
-      } else if (img.hidden) {
-        $('topMsg').textContent = 'No view from the air yet: ' + ((await r.json()).error || '');
+      const bounds = guide && guide.bounds;
+      const r = await fetch(`/top.jpg?view=${layer}&bare=1&t=${Date.now()}`);
+      if (r.ok && bounds) {
+        const bmp = await createImageBitmap(await r.blob());
+        if (mapBmp && mapBmp.close) mapBmp.close();
+        mapBmp = bmp; mapBounds = bounds; $('mapEmpty').hidden = true;
+      } else if (!r.ok && !mapBmp) {
+        const j = await r.json().catch(() => ({}));
+        $('mapEmptyMsg').textContent = j.error ? cap(j.error) : 'Waiting for the air camera';
       }
-    } catch (e) { /* the state loop says the guide is unreachable */ }
-    await sleep(150);
+    } catch (e) { /* the state loop says when the guide is unreachable */ }
+    await sleep(140);
   }
 }
-// The picture is square in a square box only when the bounds are: place clicks on the picture itself.
-function floorPoint(e) {
-  const img = $('top'), r = img.getBoundingClientRect();
-  if (!guide || !img.naturalWidth) return null;
-  const scale = Math.min(r.width / img.naturalWidth, r.height / img.naturalHeight);
-  const w = img.naturalWidth * scale, h = img.naturalHeight * scale;
-  const fx = (e.clientX - r.left - (r.width - w) / 2) / w, fy = (e.clientY - r.top - (r.height - h) / 2) / h;
-  if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return null;
-  const [x0, y0, x1, y1] = guide.bounds;
-  return { fx, fy, x: x0 + fx * (x1 - x0), y: y1 - fy * (y1 - y0) };
-}
-$('top').addEventListener('click', (e) => { const p = floorPoint(e); if (p) post('/goal', { x: p.x, y: p.y }); });
-$('top').addEventListener('mousemove', (e) => {
-  const p = floorPoint(e);
-  $('coord').hidden = !p;
-  if (p) $('coord').textContent = `x ${p.x.toFixed(2)} m · y ${p.y.toFixed(2)} m`;
-});
-$('top').addEventListener('mouseleave', () => $('coord').hidden = true);
-$('bCancel').onclick = () => post('/cancel');
-$('bMapReset').onclick = () => post('/map/reset');
-let mapView = 'photo';  // 'photo': the floor as seen; 'grid': the grid the route is planned on
-$('bView').onclick = () => {
-  mapView = mapView === 'photo' ? 'grid' : 'photo';
-  $('bView').textContent = mapView === 'photo' ? 'Grid view' : 'Photo view';
-};
 
-// ---------------------------------------------------------------- cameras, straight from their source
+// a nice round length for the scale bar
+function niceScale() {
+  const steps = [0.05, 0.1, 0.2, 0.25, 0.5, 1, 2, 5];
+  let best = steps[0];
+  for (const s of steps) if (s * view.ppm <= 140) best = s;
+  $('scaleBar').style.width = Math.round(best * view.ppm) + 'px';
+  $('scaleTxt').textContent = best >= 1 ? best + ' m' : Math.round(best * 100) + ' cm';
+}
+
+function drawGrid() {
+  const x0 = fx(0), x1 = fx(W), y0 = fy(H), y1 = fy(0);
+  const step = view.ppm > 260 ? 0.1 : 0.25;
+  ctx.lineWidth = 1;
+  for (let x = Math.floor(x0 / step) * step; x <= x1; x += step) {
+    const major = Math.abs(x - Math.round(x)) < 1e-6;
+    ctx.strokeStyle = major ? 'rgba(59,232,255,.10)' : 'rgba(59,232,255,.04)';
+    ctx.beginPath(); ctx.moveTo(Math.round(sx(x)) + .5, 0); ctx.lineTo(Math.round(sx(x)) + .5, H); ctx.stroke();
+  }
+  for (let y = Math.floor(y0 / step) * step; y <= y1; y += step) {
+    const major = Math.abs(y - Math.round(y)) < 1e-6;
+    ctx.strokeStyle = major ? 'rgba(59,232,255,.10)' : 'rgba(59,232,255,.04)';
+    ctx.beginPath(); ctx.moveTo(0, Math.round(sy(y)) + .5); ctx.lineTo(W, Math.round(sy(y)) + .5); ctx.stroke();
+  }
+  ctx.fillStyle = 'rgba(130,151,170,.55)'; ctx.font = '10px "JetBrains Mono", monospace';
+  for (let x = Math.ceil(x0); x <= x1; x++) ctx.fillText(x + ' m', sx(x) + 4, H - 6);
+  for (let y = Math.ceil(y0); y <= y1; y++) ctx.fillText(y + ' m', 6, sy(y) - 4);
+}
+
+function label(x, y, text, rgb) {
+  ctx.font = '600 10px Inter, "Segoe UI", sans-serif';
+  const w = ctx.measureText(text).width + 14, h = 18;
+  ctx.fillStyle = 'rgba(6,10,15,.82)'; ctx.strokeStyle = `rgba(${rgb},.6)`; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.roundRect(x, y - h / 2, w, h, 5); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = `rgb(${rgb})`; ctx.fillText(text, x + 7, y + 3.5);
+}
+
+function routePoints(g) {
+  if (!g || !g.goal || !g.rover) return null;
+  return [[g.rover[0], g.rover[1]], ...(g.waypoints || []), g.goal];
+}
+const pathLength = (pts) => pts ? pts.slice(1).reduce((d, p, i) => d + Math.hypot(p[0] - pts[i][0], p[1] - pts[i][1]), 0) : null;
+
+function drawBeam() {
+  const B = guide.beam_points; if (!B) return;
+  const c = (B.cell || 0.05) * view.ppm;
+  ctx.fillStyle = 'rgba(155,123,255,.14)';
+  for (const [x, y] of B.floor) ctx.fillRect(sx(x) - c / 2, sy(y) - c / 2, c, c);
+  ctx.save(); ctx.shadowColor = '#9B7BFF'; ctx.shadowBlur = 10; ctx.fillStyle = 'rgba(155,123,255,.92)';
+  for (const [x, y] of B.obstacle) ctx.fillRect(sx(x) - c / 2 + 1, sy(y) - c / 2 + 1, c - 2, c - 2);
+  ctx.restore();
+}
+
+function drawTrail() {
+  const T = guide.trail; if (!T || T.length < 2) return;
+  ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  const n = T.length;
+  for (let i = 1; i < n; i++) {
+    ctx.strokeStyle = `rgba(143,243,255,${0.08 + 0.45 * i / n})`; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(sx(T[i - 1][0]), sy(T[i - 1][1])); ctx.lineTo(sx(T[i][0]), sy(T[i][1])); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawRoute(t) {
+  const pts = routePoints(guide); if (!pts) return;
+  ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  const path = () => { ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(sx(p[0]), sy(p[1])) : ctx.moveTo(sx(p[0]), sy(p[1]))); };
+  ctx.shadowColor = '#3BE8FF'; ctx.shadowBlur = 16; ctx.strokeStyle = 'rgba(59,232,255,.85)'; ctx.lineWidth = 3; path(); ctx.stroke();
+  ctx.shadowBlur = 0; ctx.setLineDash([2, 12]); ctx.lineDashOffset = -t * 36; ctx.strokeStyle = 'rgba(255,255,255,.95)';
+  ctx.lineWidth = 2.5; path(); ctx.stroke(); ctx.setLineDash([]);
+  for (const p of pts.slice(1, -1)) {  // the turns
+    const x = sx(p[0]), y = sy(p[1]);
+    ctx.fillStyle = '#05080C'; ctx.strokeStyle = '#3BE8FF'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(x, y - 5); ctx.lineTo(x + 5, y); ctx.lineTo(x, y + 5); ctx.lineTo(x - 5, y); ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawGoal(t) {
+  const g = guide.goal; if (!g) return;
+  const x = sx(g[0]), y = sy(g[1]), p = view.ppm;
+  ctx.save();
+  for (let i = 0; i < 2; i++) {
+    const f = (t * 0.65 + i * 0.5) % 1;
+    ctx.strokeStyle = `rgba(59,232,255,${(1 - f) * 0.7})`; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(x, y, (0.03 + f * 0.2) * p, 0, 2 * Math.PI); ctx.stroke();
+  }
+  ctx.strokeStyle = '#3BE8FF'; ctx.lineWidth = 2; ctx.shadowColor = '#3BE8FF'; ctx.shadowBlur = 10;
+  const a = Math.max(7, 0.035 * p), b = Math.max(14, 0.08 * p);
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    ctx.beginPath(); ctx.moveTo(x + dx * a, y + dy * a); ctx.lineTo(x + dx * b, y + dy * b); ctx.stroke();
+  }
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x, y, 2.5, 0, 2 * Math.PI); ctx.fill();
+  ctx.restore();
+  const d = pathLength(routePoints(guide));
+  label(x + b + 6, y, d == null ? 'GOAL' : `GOAL · ${d.toFixed(2)} m`, '59,232,255');
+}
+
+function drawRover() {
+  const r = guide.rover; if (!r) return;
+  const blind = (guide.blind_m || 0) > 0.02;
+  const rgb = blind ? '255,181,71' : '75,255,165';
+  const x = sx(r[0]), y = sy(r[1]), p = view.ppm, rad = ((guide.plan && guide.plan.radius_m) || 0.15) * p;
+  ctx.save();
+  const halo = ctx.createRadialGradient(x, y, 0, x, y, rad * 1.5);
+  halo.addColorStop(0, `rgba(${rgb},.20)`); halo.addColorStop(1, `rgba(${rgb},0)`);
+  ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(x, y, rad * 1.5, 0, 2 * Math.PI); ctx.fill();
+  ctx.setLineDash([4, 5]); ctx.strokeStyle = `rgba(${rgb},.5)`; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+  ctx.translate(x, y); ctx.rotate(-r[2] * Math.PI / 180);
+  const L = 0.26 * p, Wd = 0.2 * p;
+  ctx.shadowColor = `rgb(${rgb})`; ctx.shadowBlur = 12;
+  ctx.fillStyle = `rgba(${rgb},.16)`; ctx.strokeStyle = `rgb(${rgb})`; ctx.lineWidth = 1.6;
+  ctx.beginPath(); ctx.roundRect(-L / 2, -Wd / 2, L, Wd, 0.035 * p); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = `rgb(${rgb})`;
+  ctx.beginPath(); ctx.moveTo(L / 2 + 0.07 * p, 0); ctx.lineTo(L / 2 - 0.01 * p, -0.055 * p); ctx.lineTo(L / 2 - 0.01 * p, 0.055 * p); ctx.closePath(); ctx.fill();
+  ctx.restore();
+  label(x + rad + 6, y - rad * 0.7, blind ? `ROVER · ODOMETRY ${guide.blind_m.toFixed(2)} m` : 'ROVER', rgb);
+}
+
+function drawSighting() {
+  const a = guide.air || {}, m = a.marker;
+  if (!m || a.seen_age_s == null || a.seen_age_s > 0.6) return;
+  const x = sx(m.x), y = sy(m.y);
+  ctx.save(); ctx.strokeStyle = 'rgba(255,181,71,.9)'; ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.arc(x, y, 0.1 * view.ppm, 0, 2 * Math.PI); ctx.stroke();
+  for (let k = 0; k < 4; k++) {
+    const ang = k * Math.PI / 2 + Math.PI / 4, r0 = 0.1 * view.ppm;
+    ctx.beginPath(); ctx.moveTo(x + Math.cos(ang) * r0, y + Math.sin(ang) * r0);
+    ctx.lineTo(x + Math.cos(ang) * (r0 + 6), y + Math.sin(ang) * (r0 + 6)); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+let hover = null, ripple = null;
+function drawCursor(t) {
+  if (ripple) {
+    const f = (t - ripple.t) / 0.7;
+    if (f > 1) ripple = null;
+    else { ctx.strokeStyle = `rgba(59,232,255,${1 - f})`; ctx.lineWidth = 2;
+           ctx.beginPath(); ctx.arc(sx(ripple.x), sy(ripple.y), 6 + f * 40, 0, 2 * Math.PI); ctx.stroke(); }
+  }
+  if (!hover || dragging) return;
+  ctx.save(); ctx.strokeStyle = 'rgba(59,232,255,.18)'; ctx.setLineDash([3, 4]); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(hover.px, 0); ctx.lineTo(hover.px, H); ctx.moveTo(0, hover.py); ctx.lineTo(W, hover.py); ctx.stroke();
+  ctx.restore();
+}
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (!W) return;
+  const t = now / 1000;
+  if (autoFit) {
+    fitTarget();
+    for (const k of ['cx', 'cy', 'ppm']) view[k] += (target[k] - view[k]) * 0.08;
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  drawGrid();
+  if (mapBmp && mapBounds) {
+    const [x0, y0, x1, y1] = mapBounds;
+    ctx.imageSmoothingEnabled = layer !== 'grid';
+    ctx.drawImage(mapBmp, sx(x0), sy(y1), (x1 - x0) * view.ppm, (y1 - y0) * view.ppm);
+    ctx.strokeStyle = 'rgba(59,232,255,.18)'; ctx.lineWidth = 1;
+    ctx.strokeRect(sx(x0), sy(y1), (x1 - x0) * view.ppm, (y1 - y0) * view.ppm);
+  }
+  niceScale();
+  if (!guide) return;
+  if (show.d405) drawBeam();
+  if (show.trail) drawTrail();
+  if (show.route) drawRoute(t);
+  drawGoal(t); drawSighting(); drawRover(); drawCursor(t);
+}
+requestAnimationFrame(frame);
+
+// zoom, pan, click
+let press = null, dragging = false;
+stage.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const r = stage.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  const bx = fx(mx), by = fy(my);
+  view.ppm = Math.max(30, Math.min(3000, view.ppm * Math.exp(-e.deltaY * 0.0015)));
+  view.cx = bx - (mx - W / 2) / view.ppm; view.cy = by + (my - H / 2) / view.ppm;
+  setAuto(false);
+}, { passive: false });
+stage.addEventListener('pointerdown', (e) => { press = { x: e.clientX, y: e.clientY, cx: view.cx, cy: view.cy }; dragging = false; stage.setPointerCapture(e.pointerId); });
+stage.addEventListener('pointermove', (e) => {
+  const r = stage.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+  hover = { px, py };
+  $('cursor').textContent = `${fx(px).toFixed(2)}, ${fy(py).toFixed(2)} m`;
+  if (press) {
+    const dx = e.clientX - press.x, dy = e.clientY - press.y;
+    if (!dragging && Math.hypot(dx, dy) > 5) { dragging = true; stage.classList.add('drag'); setAuto(false); }
+    if (dragging) { view.cx = press.cx - dx / view.ppm; view.cy = press.cy + dy / view.ppm; }
+  }
+});
+stage.addEventListener('pointerup', (e) => {
+  const was = dragging; dragging = false; stage.classList.remove('drag');
+  if (press && !was) {
+    const r = stage.getBoundingClientRect(), x = fx(e.clientX - r.left), y = fy(e.clientY - r.top);
+    ripple = { x, y, t: performance.now() / 1000 };
+    post('/goal', { x, y });
+  }
+  press = null;
+});
+stage.addEventListener('pointerleave', () => { hover = null; $('cursor').textContent = ''; });
+stage.addEventListener('dblclick', () => setAuto(true));
+function setAuto(on) { autoFit = on; $('bFit').classList.toggle('on', on); }
+$('bFit').onclick = () => setAuto(!autoFit);
+$('bMapReset').onclick = () => { post('/map/reset'); mapBmp = null; $('mapEmpty').hidden = false; };
+$('bCancel').onclick = () => post('/cancel');
+
+const LEGENDS = {
+  photo: [['#FF4D6D', 'Obstacle'], ['rgba(255,77,109,.35)', 'Safety margin'], ['rgba(59,232,255,.35)', 'Floor measured'], ['#0B1016', 'Not seen yet']],
+  grid: [['#172431', 'Free · 3 cm cells'], ['#FF4D6D', 'Obstacle'], ['rgba(255,77,109,.35)', 'Safety margin'], ['#0B1016', 'Unknown']],
+};
+function renderLegend() {
+  const overlays = `<div class="lg"><span class="sw" style="background:#3BE8FF;height:3px"></span>Planned route</div>
+    <div class="lg"><span class="sw" style="background:#9B7BFF"></span>Seen by the rover's D405</div>`;
+  $('legend').innerHTML = layer === 'heights'
+    ? `<div class="gbar"></div><div class="gl"><span>floor</span><span>15 cm</span><span>30 cm+</span></div>
+       <div class="lg" style="margin-top:3px"><span class="sw" style="background:#FFC2CE"></span>Obstacle edge</div>${overlays}`
+    : LEGENDS[layer].map(([c, t]) => `<div class="lg"><span class="sw" style="background:${c};border:1px solid rgba(120,190,255,.15)"></span>${t}</div>`).join('') + overlays;
+}
+renderLegend();
+document.querySelectorAll('#layers button').forEach(b => b.onclick = () => {
+  layer = b.dataset.layer;
+  document.querySelectorAll('#layers button').forEach(o => o.classList.toggle('on', o === b));
+  renderLegend();
+});
+document.querySelectorAll('#overlays button').forEach(b => b.onclick = () => {
+  show[b.dataset.show] = !show[b.dataset.show]; b.classList.toggle('on', show[b.dataset.show]);
+});
+
+// ================================================================ cameras, read at their source
 function startStream(img, msg, url, what) {
   img.onload = () => { img.hidden = false; msg.hidden = true; };
   img.onerror = () => { img.hidden = true; msg.hidden = false;
@@ -315,18 +764,17 @@ function startStream(img, msg, url, what) {
   img.src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
 }
 function startCameras() {
-  if (urls.phone) startStream($('airCam'), $('airMsg'), urls.phone + '/stream', 'the phone (' + urls.phone + ')');
+  if (urls.phone) startStream($('airCam'), $('airMsg'), urls.phone + '/stream', 'the phone');
   else $('airMsg').textContent = 'No phone address';
   if (urls.rover) {
-    startStream($('roverCam'), $('roverCamMsg'), urls.rover + '/video_feed', 'the rover (' + urls.rover + ')');
+    startStream($('roverCam'), $('roverCamMsg'), urls.rover + '/video_feed', 'the rover');
     $('aBench').href = urls.rover; $('aBench').hidden = false;
-  } else $('roverCamMsg').textContent = 'No rover address';
+  } else $('roverCamMsg').textContent = 'No rover: mapping only';
 }
 
 let d405On = false;
-function loadOnce(img, url) {  // one picture at a time: no queue on a slow Wi-Fi
-  return new Promise(res => { img.onload = img.onerror = () => res();
-    img.src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now(); });
+function loadOnce(img, url) {
+  return new Promise(res => { img.onload = img.onerror = () => res(); img.src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now(); });
 }
 async function d405Loop() {
   while (d405On && urls.rover) {
@@ -339,40 +787,48 @@ async function d405StatusLoop() {
   while (d405On) {
     try {
       const s = await (await fetch('/rover/d405/status')).json();
-      if (!s.ok) {
-        $('d405Status').innerHTML = `<b style="color:var(--bad)">${esc(s.error || 'D405 not ready')}</b>`;
-      } else {
+      if (!s.ok) $('d405Status').innerHTML = `<span style="color:var(--coral)">${esc(s.error || 'D405 not ready')}</span>`;
+      else {
         const d = s.depth || {};
-        $('d405Status').innerHTML = `centre <b>${d.centre_m == null ? '–' : (d.centre_m * 100).toFixed(0) + ' cm'}</b>`
-          + ` · nearest <b>${d.nearest_m == null ? '–' : (d.nearest_m * 100).toFixed(0) + ' cm'}</b>`
-          + ` · ${(100 * (d.valid || 0)).toFixed(0)} % measured · ${d.age_ms ?? '–'} ms old`;
+        $('d405Status').textContent = `centre ${d.centre_m == null ? '–' : (d.centre_m * 100).toFixed(0) + ' cm'} · nearest `
+          + `${d.nearest_m == null ? '–' : (d.nearest_m * 100).toFixed(0) + ' cm'} · ${(100 * (d.valid || 0)).toFixed(0)} % measured · ${d.age_ms ?? '–'} ms old`;
       }
     } catch (e) { $('d405Status').textContent = 'guide unreachable'; }
     await sleep(1000);
   }
 }
 $('bD405').onclick = () => {
-  d405On = !d405On;
-  $('bD405').textContent = d405On ? 'Hide D405' : 'Show D405';
-  $('d405Views').hidden = !d405On;
-  if (d405On) { d405Loop(); d405StatusLoop(); } else { $('d405Status').textContent = 'D405 depth camera hidden'; }
+  d405On = !d405On; $('bD405').textContent = d405On ? 'Hide' : 'Show'; $('d405Views').hidden = !d405On;
+  if (d405On) { d405Loop(); d405StatusLoop(); } else $('d405Status').textContent = "Hidden: the rover's stereo depth camera, at the front";
 };
 
-// ---------------------------------------------------------------- manual driving
+// ================================================================ the rover's guard switch
+$('bGuard').onclick = async () => {
+  const on = !(+cfg.local_guard === 1);
+  const j = await post('/guard', { on });
+  if (j && !j.error) cfg.local_guard = on ? 1 : 0;
+  renderGuard();
+  loadConfig(true);
+};
+function renderGuard() {
+  const on = +cfg.local_guard === 1;
+  $('bGuard').classList.toggle('on', on);
+  $('dGuard').textContent = cfg.local_guard === undefined ? 'no rover settings yet'
+    : on ? 'on · slows and stops before obstacles' : 'off';
+}
+
+// ================================================================ manual driving
 const held = new Set();
 const ARROWS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
 let fast = false, wasDriving = false;
 function manualCommand() {
-  const vmax = fast ? cfg.v_manual_fast : cfg.v_manual;
-  const wmax = fast ? cfg.w_manual_fast : cfg.w_manual;
+  const vmax = fast ? cfg.v_manual_fast : cfg.v_manual, wmax = fast ? cfg.w_manual_fast : cfg.w_manual;
   const f = (held.has('ArrowUp') ? 1 : 0) - (held.has('ArrowDown') ? 1 : 0);
   const t = (held.has('ArrowLeft') ? 1 : 0) - (held.has('ArrowRight') ? 1 : 0);
-  return { v: f * (vmax || 0.15), omega: t * (wmax || 1.2) * (f ? 0.6 : 1) };  // gentler curve while moving
+  return { v: f * (vmax || 0.15), omega: t * (wmax || 1.2) * (f ? 0.6 : 1) };
 }
-function refreshPad() {
-  document.querySelectorAll('#dpad button').forEach(b => b.classList.toggle('held', held.has(b.dataset.key)));
-}
-setInterval(() => {  // repeat while held: the rover stops by itself after manual_timeout
+function refreshPad() { document.querySelectorAll('#dpad button').forEach(b => b.classList.toggle('held', held.has(b.dataset.key))); }
+setInterval(() => {
   if (held.size) { post('/rover/cmd', manualCommand()); wasDriving = true; }
   else if (wasDriving) { post('/rover/cmd', { v: 0, omega: 0 }); wasDriving = false; }
 }, 100);
@@ -391,23 +847,19 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('keyup', (e) => { fast = e.shiftKey; if (held.delete(e.key)) refreshPad(); });
 window.addEventListener('blur', () => { held.clear(); refreshPad(); gheld.clear(); refreshGpad(); });
 document.querySelectorAll('#dpad button').forEach(b => {
-  const on = (e) => { e.preventDefault(); b.setPointerCapture?.(e.pointerId);
-                      held.add(b.dataset.key); refreshPad(); post('/rover/cmd', manualCommand()); };
+  const on = (e) => { e.preventDefault(); b.setPointerCapture?.(e.pointerId); held.add(b.dataset.key); refreshPad(); post('/rover/cmd', manualCommand()); };
   const off = () => { held.delete(b.dataset.key); refreshPad(); };
   b.addEventListener('pointerdown', on);
   for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(ev, off);
 });
-
-// e.code is the key's position, so Z/Q/S/D on AZERTY and W/A/S/D on QWERTY both work.
+// e.code is the key's position: Z/Q/S/D on AZERTY and W/A/S/D on QWERTY both work
 const GKEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD'];
 const gheld = new Set();
 let wasPanning = false;
 const gimbalCommand = () => ({ pan_rate: (gheld.has('KeyD') ? 1 : 0) - (gheld.has('KeyA') ? 1 : 0),
                                tilt_rate: (gheld.has('KeyW') ? 1 : 0) - (gheld.has('KeyS') ? 1 : 0) });
-function refreshGpad() {
-  document.querySelectorAll('#gpad button').forEach(b => b.classList.toggle('held', gheld.has(b.dataset.gkey)));
-}
-setInterval(() => {  // keep-alive only: presses and releases are sent at once by the handlers
+function refreshGpad() { document.querySelectorAll('#gpad button').forEach(b => b.classList.toggle('held', gheld.has(b.dataset.gkey))); }
+setInterval(() => {
   if (gheld.size) { post('/rover/gimbal', gimbalCommand()); wasPanning = true; }
   else if (wasPanning) { post('/rover/gimbal', { pan_rate: 0, tilt_rate: 0 }); wasPanning = false; }
 }, 250);
@@ -418,126 +870,162 @@ document.addEventListener('keydown', (e) => {
     if (!gheld.has(e.code)) { gheld.add(e.code); refreshGpad(); post('/rover/gimbal', gimbalCommand()); }
   } else if (e.code === 'KeyC' && !e.repeat) post('/rover/gimbal', { center: true });
 });
-document.addEventListener('keyup', (e) => {
-  if (gheld.delete(e.code)) { refreshGpad(); post('/rover/gimbal', gimbalCommand()); }
-});
+document.addEventListener('keyup', (e) => { if (gheld.delete(e.code)) { refreshGpad(); post('/rover/gimbal', gimbalCommand()); } });
 document.querySelectorAll('#gpad button').forEach(b => {
-  const on = (e) => { e.preventDefault(); b.setPointerCapture?.(e.pointerId);
-                      gheld.add(b.dataset.gkey); refreshGpad(); post('/rover/gimbal', gimbalCommand()); };
+  const on = (e) => { e.preventDefault(); b.setPointerCapture?.(e.pointerId); gheld.add(b.dataset.gkey); refreshGpad(); post('/rover/gimbal', gimbalCommand()); };
   const off = () => { if (gheld.delete(b.dataset.gkey)) { refreshGpad(); post('/rover/gimbal', gimbalCommand()); } };
   b.addEventListener('pointerdown', on);
   for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(ev, off);
 });
 
-// ---------------------------------------------------------------- render: the guide
-function renderGuide(g) {
+// ================================================================ render: the guide
+function statusClass(g) {
   const st = g.status || '';
-  const M = g.map || {};
-  $('mapInfo').textContent = M.views == null ? 'Map: –'
-    : `Map: ${M.views} views, ${M.pairs} height pairs · seen ${fmt(M.seen_m2, 2)} m², height known on ${fmt(M.known_m2, 2)} m², obstacles ${fmt(M.obstacle_m2, 3)} m²`
-      + (M.update_s != null ? ` · update ${fmt(M.update_s, 2)} s` : '') + (M.error ? ' · error: ' + M.error : '')
-      + (g.plan ? ` · route: radius ${fmt(g.plan.radius_m, 2)} m, ${g.plan.routes} planned` + (g.plan.note ? ` (${g.plan.note})` : '') : '')
-      + (g.beam ? (g.beam.error ? ` · D405: ${g.beam.error}` : ` · D405: look ${g.beam.age_ms} ms old, ${g.beam.obstacle_cells} obstacle / ${g.beam.floor_cells} floor cells, ${g.beam.events} on the way`) : '');
-  const cls = g.rover_error || /^stopped|not reachable|lost/.test(st) ? 'bad'
-    : /^arrived/.test(st) ? 'ok' : /waiting|not seen|blind/.test(st) ? 'warn' : '';
-  $('guide').textContent = st.charAt(0).toUpperCase() + st.slice(1);
-  $('guide').className = 'guide ' + cls;
-  $('bCancel').disabled = !g.goal;
-
-  const a = g.air || {}, phoneOk = /^ok/.test(g.phone || '');
-  pill('pAir', phoneOk ? `Air camera OK · ${fmt(a.height_m, 2)} m up` : 'Air camera: ' + (g.phone || '–'),
-       phoneOk ? (a.marker && a.seen_age_s !== null && a.seen_age_s < 1 ? 'ok' : 'warn') : 'bad');
-  $('airInfo').textContent = a.fps == null ? '–'
-    : `${fmt(a.fps, 0)} fps` + (g.latency_ms != null ? ` · ${g.latency_ms} ms old` : '')
-      + (a.size ? ` · ${a.size[0]}×${a.size[1]}` : '');
-
-  const L = g.link || {}, m = a.marker, r = g.rover;
-  const seen = a.seen_age_s == null ? ['never', 'bad']
-    : a.seen_age_s < 1 ? ['now', 'ok'] : [fmt(a.seen_age_s, 1) + ' s ago', a.seen_age_s > 3 ? 'bad' : 'warn'];
-  const scale = m ? [fmt(m.scale_error * 100, 0) + ' %', Math.abs(m.scale_error) > 0.2 ? 'bad' : Math.abs(m.scale_error) > 0.1 ? 'warn' : ''] : ['–'];
-  const track = a.tracking ? [a.tracking, a.tracking === 'normal' ? 'ok' : 'warn'] : ['–'];
-  $('linkGrid').innerHTML = kv([
-    ['Rover on the floor', r ? `${fmt(r[0], 2)}, ${fmt(r[1], 2)} m` : 'unknown', r ? '' : 'warn'],
-    ['Rover heading', r ? fmt(r[2], 0) + '°' : '–'],
-    ['Goal', g.goal ? `${fmt(g.goal[0], 2)}, ${fmt(g.goal[1], 2)} m` : 'none'],
-    ['Seen from the air', ...seen],
-    ['Marker in the picture', m ? fmt(m.side_px, 0) + ' px' : '–', m && m.side_px < 20 ? 'warn' : ''],
-    ['Marker size error', ...scale],
-    ['Link', L.ready ? 'tied' : 'not tied yet', L.ready ? 'ok' : 'warn'],
-    ['Odometry turned by', L.ready ? fmt(L.theta_deg, 1) + '°' : '–'],
-    ['Last correction', L.updates ? `${fmt(L.last_error_cm, 1)} cm, ${fmt(L.last_error_deg, 1)}°` : '–'],
-    ['Sightings used', `${L.updates ?? 0}` + (L.resets ? ` (${L.resets} restarts)` : '')],
-    ['Phone tracking', ...track],
-    ['Floor', a.floor_known == null ? '–' : a.floor_known ? 'found' : 'not found yet', a.floor_known === false ? 'warn' : ''],
-    ['Paths sent', g.paths_sent ?? 0],
-    ['Driven (seen from the air)', fmt(g.trail_m, 2) + ' m'],
-  ]);
-  $('linkNote').textContent = g.dropped ? 'Last sighting not used: ' + g.dropped : '';
-  const t = g.rover_rtt_ms;
-  $('rttInfo').innerHTML = t ? `Guide ↔ rover: <b>${t.usual} ms</b> usual, `
-    + `<b style="color:${t.worst > 500 ? 'var(--bad)' : 'inherit'}">${t.worst} ms</b> worst (last 100 requests)` : 'Guide ↔ rover: –';
+  if (g.rover_error || /^stopped|not reachable|lost|refused/.test(st)) return 'bad';
+  if (/^arrived/.test(st)) return 'ok';
+  if (/waiting|not seen|blind|mapping only/.test(st)) return 'warn';
+  return g.goal ? 'act' : '';
+}
+const KIND = { goal: 'GOAL', route: 'ROUTE', d405: 'D405', guard: 'GUARD', end: 'END' };
+let lastEvents = '';
+function renderEvents(list) {
+  const key = list.map(e => e.t + e.kind).join('|');
+  if (key === lastEvents) return;
+  lastEvents = key;
+  $('evCount').textContent = list.length ? list.length + ' latest' : '';
+  $('events').innerHTML = list.length ? list.map(e => {
+    const bad = e.kind === 'end' && !/^arrived/.test(e.text) ? ' bad' : '';
+    const time = new Date(e.t * 1000).toLocaleTimeString([], { hour12: false });
+    return `<li><span class="et">${time}</span><span class="ek ${e.kind}${bad}">${KIND[e.kind] || esc(e.kind).toUpperCase()}</span><span class="ex">${esc(cap(e.text))}</span></li>`;
+  }).join('') : '<li class="none" style="display:block">No events yet — set a goal on the map</li>';
 }
 
-// ---------------------------------------------------------------- render: the rover
+function renderGuide(g) {
+  const cls = statusClass(g);
+  $('status').textContent = cap(g.status || '–');
+  $('status').className = 'headline ' + cls;
+  const tag = cls === 'ok' ? ['ARRIVED', 'ok'] : cls === 'bad' ? ['STOPPED', 'bad'] : g.goal ? ['EN ROUTE', 'act']
+    : g.mapping_only ? ['MAPPING', 'warn'] : ['IDLE', ''];
+  $('mTag').textContent = tag[0]; $('mTag').className = 'tag ' + tag[1];
+  const pts = routePoints(g), d = pathLength(pts);
+  $('mDist').innerHTML = d == null ? '–' : `${d.toFixed(2)} <small>m</small>`;
+  $('mGoal').innerHTML = g.goal ? `${fmt(g.goal[0])}, ${fmt(g.goal[1])}` : '–';
+  $('mRoute').innerHTML = g.goal ? `${(g.waypoints || []).length} <small>turns · ${(g.plan || {}).routes ?? 0} plans</small>` : `– <small>${(g.plan || {}).routes ?? 0} plans</small>`;
+  const a = g.air || {}, blind = (g.blind_m || 0) > 0.02;
+  const nav = $('mNav');
+  if (!g.rover) { nav.textContent = '–'; nav.className = 'mv'; }
+  else if (blind) { nav.innerHTML = `Odometry <small>${g.blind_m.toFixed(2)} m</small>`; nav.className = 'mv warn'; }
+  else { nav.innerHTML = 'Air fix <small>live</small>'; nav.className = 'mv ok'; }
+  $('bCancel').disabled = !g.goal;
+
+  // perception stack
+  const phoneOk = /^ok/.test(g.phone || '');
+  $('dPose').textContent = phoneOk ? `${fmt(a.height_m, 2)} m up · ${fmt(a.fps, 0)} fps · ${g.latency_ms ?? '–'} ms` : cap(g.phone || '–');
+  dot('sPose', phoneOk ? (a.tracking === 'normal' ? 'ok' : 'warn') : 'bad');
+  const M = g.map || {};
+  $('dMap').textContent = M.error ? M.error : M.views == null ? '–' : `${M.views} views · ${M.pairs} pairs · ${fmt(M.seen_m2, 1)} m² seen`;
+  dot('sMap', M.error ? 'bad' : M.views ? 'ok' : '');
+  const Ld = g.lidar;
+  if (!Ld) { $('dLidar').textContent = 'off'; dot('sLidar', ''); }
+  else if (Ld.maps && !Ld.error) { $('dLidar').textContent = `${Ld.maps} depth maps · ${Ld.points ? (Ld.points / 1000).toFixed(1) + 'k pts' : '–'}`; dot('sLidar', 'ok'); }
+  else { $('dLidar').textContent = Ld.error ? cap(Ld.error) : 'waiting'; dot('sLidar', Ld.maps ? 'ok' : 'warn'); }
+  const B = g.beam;
+  if (!B) { $('dD405').textContent = 'no rover'; dot('sD405', ''); }
+  else if (B.error) { $('dD405').textContent = cap(B.error); dot('sD405', 'warn'); }
+  else { $('dD405').textContent = `${B.age_ms} ms · ${B.obstacle_cells} obstacle / ${B.floor_cells} free · ${B.events} replans`; dot('sD405', 'ok'); }
+  const Lk = g.link || {};
+  $('dLink').textContent = Lk.ready ? `tied · ${Lk.updates} fixes · last ${fmt(Lk.last_error_cm, 1)} cm` : 'waiting for the rover in view';
+  dot('sLink', Lk.ready ? 'ok' : g.mapping_only ? '' : 'warn');
+  const n = [phoneOk, M.views > 0, Ld && Ld.maps > 0, B && !B.error, Lk.ready].filter(Boolean).length;
+  $('fusionNote').textContent = `${n}/5 live`;
+
+  // map HUD
+  $('mapStats').innerHTML = M.views == null ? '–'
+    : `VIEWS <b>${M.views}</b> SEEN <b>${fmt(M.seen_m2, 2)} m²</b> OBSTACLES <b>${fmt(M.obstacle_m2, 2)} m²</b>`
+      + (M.update_s != null ? ` UPDATE <b>${Math.round(M.update_s * 1000)} ms</b>` : '');
+
+  // header
+  chip('cAir', phoneOk ? `Air · ${fmt(a.height_m, 2)} m` : 'Air camera: no picture', phoneOk ? (a.seen_age_s != null && a.seen_age_s < 1 ? 'ok' : 'warn') : 'bad');
+  const sim = g.rover_state && g.rover_state.sim;
+  $('cMode').textContent = g.mapping_only ? 'MAPPING ONLY' : sim ? 'SIMULATION' : 'LIVE';
+  $('cMode').className = 'chip mode' + (sim ? ' sim' : '');
+  $('airInfo').textContent = a.fps == null ? '–' : `${fmt(a.fps, 0)} FPS` + (g.latency_ms != null ? ` · ${g.latency_ms} MS` : '') + (a.size ? ` · ${a.size[0]}×${a.size[1]}` : '');
+
+  const m = a.marker, r = g.rover;
+  const seen = a.seen_age_s == null ? ['never', 'bad'] : a.seen_age_s < 1 ? ['now', 'ok'] : [fmt(a.seen_age_s, 1) + ' s ago', a.seen_age_s > 3 ? 'bad' : 'warn'];
+  $('linkGrid').innerHTML = kv([
+    ['Rover on the floor', r ? `${fmt(r[0])}, ${fmt(r[1])} m` : 'unknown', r ? '' : 'warn'],
+    ['Heading', r ? fmt(r[2], 0) + '°' : '–'],
+    ['Seen from the air', ...seen],
+    ['Marker', m ? fmt(m.side_px, 0) + ' px · ' + fmt(m.scale_error * 100, 0) + ' %' : '–'],
+    ['Odometry turned by', Lk.ready ? fmt(Lk.theta_deg, 1) + '°' : '–'],
+    ['Last correction', Lk.updates ? `${fmt(Lk.last_error_cm, 1)} cm, ${fmt(Lk.last_error_deg, 1)}°` : '–'],
+    ['Phone tracking', a.tracking || '–', a.tracking && a.tracking !== 'normal' ? 'warn' : ''],
+    ['Floor', a.floor_known == null ? '–' : a.floor_known ? 'found' : 'not found yet', a.floor_known === false ? 'warn' : ''],
+    ['Paths sent', g.paths_sent ?? 0],
+    ['Driven (from the air)', fmt(g.trail_m) + ' m'],
+    ['Safety radius', g.plan ? fmt(g.plan.radius_m) + ' m' : '–'],
+    ['Last sighting', g.dropped ? 'not used: ' + g.dropped : 'used'],
+  ]);
+  const t = g.rover_rtt_ms;
+  $('rttInfo').textContent = t ? `guide ↔ rover ${t.usual} ms usual · ${t.worst} ms worst` : '–';
+  $('vRtt').innerHTML = t ? `${t.usual} <small>ms</small>` : '–';
+  renderEvents(g.events || []);
+}
+
+// ================================================================ render: the rover
 function renderFaults(s, g) {
   const c = s.ctrl || {}, L = s.link || {}, lines = [];
-  if (g.rover_error) lines.push('Rover not reachable: ' + g.rover_error);
+  if (g.rover_error && !g.mapping_only) lines.push('Rover not reachable: ' + g.rover_error);
   if (c.fault) lines.push('Rover stopped by itself: ' + c.fault);
   if (s.loop_errors) lines.push(`Rover control loop errors: ${s.loop_errors}` + (s.last_loop_error ? ' (last: ' + s.last_loop_error + ')' : ''));
   if (L.handler_errors) lines.push(`ESP32 message errors: ${L.handler_errors}` + (L.last_handler_error ? ' (last: ' + L.last_handler_error + ')' : ''));
-  $('faults').textContent = lines.join('\n');
-  $('faults').hidden = !lines.length;
+  $('faults').textContent = lines.join('\n'); $('faults').hidden = !lines.length;
 }
 function renderRover(s, g) {
   renderFaults(s, g);
   const o = s.odom || {}, c = s.ctrl || {}, L = s.link || {};
   const stale = g.rover_state_age_s != null && g.rover_state_age_s > 1.5;
-  if (g.rover_error || stale) pill('pLink', 'Rover: no answer', 'bad');
-  else if (L.connected && L.rx_age !== null && L.rx_age < 1) pill('pLink', 'Rover OK', 'ok');
-  else pill('pLink', L.error ? 'ESP32: ' + L.error : 'ESP32: no data', 'bad');
+  if (g.rover_error || stale) chip('cRover', 'Rover: no answer', 'bad');
+  else if (s.sim || (L.connected && L.rx_age !== null && L.rx_age < 1)) chip('cRover', 'Rover online', 'ok');
+  else chip('cRover', L.error ? 'ESP32: ' + L.error : 'ESP32: no data', 'bad');
   if (s.battery_v) {
     const v = s.battery_v, pct = Math.max(0, Math.min(100, (v - 9.6) / (12.6 - 9.6) * 100));
-    pill('pBatt', `Battery ${fmt(v, 2)} V (${pct.toFixed(0)}%)`, v < 10.2 ? 'bad' : v < 10.8 ? 'warn' : 'ok');
-  } else pill('pBatt', 'Battery –');
-  pill('pGyro', o.gyro_ready ? 'Gyro OK' : 'Gyro calibrating, keep still',
-       o.gyro_ready ? (o.heading_source === 'gyro' ? 'ok' : 'warn') : 'warn');
-  if (s.cpu_temp != null) pill('pCpu', `CPU ${fmt(s.cpu_temp, 0)} °C`, s.cpu_temp > 85 ? 'bad' : s.cpu_temp > 70 ? 'warn' : 'ok');
-  else pill('pCpu', 'CPU –');
-  pill('pMode', (c.mode || '–').toUpperCase(), c.mode && c.mode !== 'idle' ? 'ok' : '');
-  $('pSim').hidden = !s.sim;
+    const cls = v < 10.2 ? 'bad' : v < 10.8 ? 'warn' : 'ok';
+    chip('cBatt', `Battery ${pct.toFixed(0)} %`, cls);
+    $('vBatt').innerHTML = `${fmt(v, 1)} <small>V</small>`;
+    $('vBattBar').style.width = pct + '%';
+    $('vBattBar').style.background = $('vBattBar').style.boxShadow = '';
+    if (cls !== 'ok') $('vBattBar').style.background = cls === 'bad' ? 'var(--coral)' : 'var(--amber)';
+  } else { chip('cBatt', 'Battery –'); $('vBatt').textContent = '–'; }
+  $('vSpeed').innerHTML = `${fmt(o.v, 2)} <small>m/s</small>`;
+  $('vMode').textContent = (c.mode || '–').toUpperCase();
+  $('vCpu').innerHTML = s.cpu_temp != null ? `${fmt(s.cpu_temp, 0)} <small>°C</small>` : '–';
+  $('vGyro').textContent = o.gyro_ready ? 'ready' : 'calibrating';
   const G = c.guard || {}, gs = G.state || 'off';
-  $('pTilt').hidden = gs === 'ok' || gs === 'off';
-  if (!$('pTilt').hidden) pill('pTilt', 'TILT: ' + (G.reason || gs), gs === 'caution' ? 'warn' : 'bad');
-
+  $('cTilt').hidden = gs === 'ok' || gs === 'off';
+  if (!$('cTilt').hidden) chip('cTilt', 'Tilt: ' + (G.reason || gs), gs === 'caution' ? 'warn' : 'bad');
   const cam = s.camera || {};
-  $('roverCamInfo').textContent = cam.error ? cam.error : cam.fps ? `${cam.fps} fps` : '–';
+  $('roverCamInfo').textContent = cam.error ? cam.error : cam.fps ? `${cam.fps} FPS` : '–';
   if (s.gimbal) { $('gPan').textContent = fmt(s.gimbal.pan, 0) + '°'; $('gTilt').textContent = fmt(s.gimbal.tilt, 0) + '°'; }
-
-  let t = 'Idle';
+  let t = 'idle';
   if (c.current) {
     const cur = c.current, p = c.progress;
-    t = cur.kind === 'move' ? `Moving ${fmt(cur.value * 100, 0)} cm — ${p === null ? 'settling' : fmt(p * 100, 1) + ' cm'}`
-      : cur.kind === 'path' ? `Following a path — ${p === null ? 'settling' : fmt(p, 2) + ' m done'}`
-      : `Turning ${fmt(cur.value, 0)}° — ${p === null ? 'settling' : fmt(p, 1) + '°'}`;
-  } else if (c.mode === 'manual') t = 'Driven by hand';
-  if ((c.queued || []).length) t += ` · ${c.queued.length} step(s) queued`;
+    t = cur.kind === 'path' ? `path · ${p === null ? 'settling' : fmt(p, 2) + ' m'}` : cur.kind === 'move' ? `move · ${fmt(cur.value * 100, 0)} cm` : `turn · ${fmt(cur.value, 0)}°`;
+  } else if (c.mode === 'manual') t = 'driven by hand';
   const last = (c.history || [])[0];
-  if (!c.current && last) t += ` · last step: ${last.status}`;
-  $('task').textContent = 'Rover: ' + t;
-
+  if (!c.current && last) t += ` · last ${last.status}`;
+  $('roverTask').textContent = t;
   const rows = [
     ['Odometry x', fmt(o.x, 3) + ' m'], ['Odometry y', fmt(o.y, 3) + ' m'], ['Heading', fmt(o.heading_deg, 1) + '°'],
-    ['Heading gyro', fmt(o.heading_gyro_deg, 1) + '°'], ['Heading wheels', fmt(o.heading_enc_deg, 1) + '°'],
-    ['Speed', fmt(o.v, 3) + ' m/s'], ['Wheel L', fmt(o.L, 3) + ' m/s'], ['Wheel R', fmt(o.R, 3) + ' m/s'],
-    ['Cmd v', fmt(c.v_cmd, 3) + ' m/s'], ['Cmd ω', fmt(c.w_cmd, 2) + ' rad/s'], ['Yaw rate', fmt(o.yaw_rate_dps, 1) + ' °/s'],
-    ['Roll', fmt(s.roll_deg, 1) + '°'], ['Pitch', fmt(s.pitch_deg, 1) + '°'],
-    ['Distance', fmt(o.distance * 100, 1) + ' cm'], ['Odometer', fmt(o.odometer, 2) + ' m'],
-    ['Stops received', s.stop_count ?? '–'], ['Server up', s.uptime_s == null ? '–' : fmt(s.uptime_s / 60, 0) + ' min'],
+    ['Heading gyro', fmt(o.heading_gyro_deg, 1) + '°'], ['Heading wheels', fmt(o.heading_enc_deg, 1) + '°'], ['Speed', fmt(o.v, 3) + ' m/s'],
+    ['Wheel L', fmt(o.L, 3) + ' m/s'], ['Wheel R', fmt(o.R, 3) + ' m/s'], ['Cmd v', fmt(c.v_cmd, 3) + ' m/s'],
+    ['Cmd ω', fmt(c.w_cmd, 2) + ' rad/s'], ['Yaw rate', fmt(o.yaw_rate_dps, 1) + ' °/s'], ['Roll / pitch', fmt(s.roll_deg, 1) + '° / ' + fmt(s.pitch_deg, 1) + '°'],
+    ['Distance', fmt(o.distance * 100, 1) + ' cm'], ['Odometer', fmt(o.odometer, 2) + ' m'], ['Stops received', s.stop_count ?? '–'],
+    ['Server up', s.uptime_s == null ? '–' : fmt(s.uptime_s / 60, 0) + ' min'], ['Queued steps', (c.queued || []).length], ['Guard', gs],
   ];
-  if (s.sim_truth) rows.push(['True x (sim)', fmt(s.sim_truth.x, 3) + ' m'], ['True y (sim)', fmt(s.sim_truth.y, 3) + ' m'],
-                             ['True heading (sim)', fmt(s.sim_truth.heading_deg, 1) + '°']);
   $('telemetry').innerHTML = kv(rows);
-  $('telAge').textContent = g.rover_state_age_s == null ? '' : stale ? `— ${fmt(g.rover_state_age_s, 1)} s old` : '— live, 10 per second';
+  $('telAge').textContent = g.rover_state_age_s == null ? '' : stale ? `${fmt(g.rover_state_age_s, 1)} s old` : 'live · 10 Hz';
 }
 
 async function stateLoop() {
@@ -545,22 +1033,20 @@ async function stateLoop() {
     try {
       guide = await (await fetch('/state')).json();
       if (guide.phone_url !== urls.phone || guide.rover_url !== urls.rover) {
-        urls = { phone: guide.phone_url, rover: guide.rover_url };
-        startCameras();
+        urls = { phone: guide.phone_url, rover: guide.rover_url }; startCameras();
       }
       renderGuide(guide);
       if (guide.rover_state) renderRover(guide.rover_state, guide);
-      else { pill('pLink', guide.rover_error ? 'Rover: no answer' : 'Rover …', guide.rover_error ? 'bad' : '');
-             renderFaults({}, guide); }
+      else { chip('cRover', guide.mapping_only ? 'No rover' : guide.rover_error ? 'Rover: no answer' : 'Rover …', guide.mapping_only ? '' : 'bad'); renderFaults({}, guide); }
     } catch (e) {
-      $('guide').textContent = 'Guide not reachable'; $('guide').className = 'guide bad';
-      pill('pAir', 'Air camera ?', 'bad'); pill('pLink', 'Rover ?', 'bad');
+      $('status').textContent = 'Guide not reachable'; $('status').className = 'headline bad';
+      chip('cAir', 'Air camera ?', 'bad'); chip('cRover', 'Rover ?', 'bad');
     }
     await sleep(200);
   }
 }
 
-// ---------------------------------------------------------------- commands received by the rover
+// ================================================================ commands received by the rover
 function msCell(v, warn, bad) {
   if (v == null) return '<td class="unit">–</td>';
   return `<td class="${v > bad ? 'err-bad' : v > warn ? 'err-warn' : ''}">${v} ms</td>`;
@@ -568,38 +1054,35 @@ function msCell(v, warn, bad) {
 const shortClient = (c) => esc(c.replace(/^\S+ /, '').replace('python-urllib', 'python (urllib)').replace('python-requests', 'python (requests)'));
 async function commandsLoop() {
   for (;;) {
-    if ($('cmdBox').open) {
+    if ($('cmdBox').open && urls.rover) {
       try {
-        const r = await fetch('/rover/commands');
-        const s = await r.json();
+        const r = await fetch('/rover/commands'), s = await r.json();
         if (!r.ok) throw new Error(s.error);
         $('cmdClients').innerHTML = s.clients.map(c => `<tr><td>${esc(c.client)}</td><td>${c.per_s}</td>`
           + msCell(c.median_gap_ms, 300, 600) + msCell(c.max_gap_ms, 500, 1000)
           + `<td>${c.last_s == null ? '–' : c.last_s.toFixed(1) + ' s ago'}</td></tr>`).join('');
         $('cmdLog').innerHTML = s.entries.length ? s.entries.slice(0, 15).map(e => {
-          const rep = e.count > 1 ? ` <span class="unit">×${e.count} over ${e.held_s.toFixed(1)} s, gap ≤</span>`
-            + `<span class="${e.max_gap_ms > 500 ? 'err-bad' : 'unit'}"> ${e.max_gap_ms} ms</span>` : '';
+          const rep = e.count > 1 ? ` <span class="unit">×${e.count} over ${e.held_s.toFixed(1)} s</span>` : '';
           const stCls = ['done', 'ok'].includes(e.status) ? '' : ['pending', 'superseded'].includes(e.status) ? 'unit' : 'err-bad';
           return `<tr><td>${e.ago_s.toFixed(1)} s</td><td>${shortClient(e.client)}</td><td>${esc(e.text)}${rep}</td>`
             + msCell(e.out_ms, 80, 150) + msCell(e.wheels_ms, 400, 800)
             + (e.done_ms == null ? '<td class="unit">–</td>' : `<td>${(e.done_ms / 1000).toFixed(1)} s</td>`)
             + `<td class="${stCls}">${e.code >= 300 ? 'HTTP ' + e.code : e.status === 'pending' ? '…' : esc(e.status)}</td></tr>`;
         }).join('') : '<tr><td colspan="7" class="unit">Nothing received yet</td></tr>';
-      } catch (err) {
-        $('cmdLog').innerHTML = `<tr><td colspan="7" class="unit">The rover's command log is not reachable</td></tr>`;
-      }
+      } catch (err) { $('cmdLog').innerHTML = `<tr><td colspan="7" class="unit">The rover's command log is not reachable</td></tr>`; }
     }
     await sleep(700);
   }
 }
-async function loadConfig() {  // manual speeds; the defaults of manualCommand() until it answers
+async function loadConfig(once = false) {  // manual speeds, the guard; defaults until it answers
   for (;;) {
-    try { const r = await fetch('/rover/config'); if (r.ok) { cfg = await r.json(); return; } } catch (e) { /* retry */ }
+    try { const r = await fetch('/rover/config'); if (r.ok) { cfg = await r.json(); renderGuard(); return; } } catch (e) { /* retry */ }
+    if (once) return;
     await sleep(3000);
   }
 }
-
-topLoop(); stateLoop(); commandsLoop(); loadConfig();
+renderGuard();
+mapLoop(); stateLoop(); commandsLoop(); loadConfig();
 </script>
 </body>
 </html>

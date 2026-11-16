@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 
 import synthetic as syn  # noqa: E402
-from floor_map import FloorMap  # noqa: E402
+from floor_map import OBSTACLE_BGR, FloorMap  # noqa: E402
 from planner import RoutePlanner  # noqa: E402
 from pose_camera import Pose  # noqa: E402
 
@@ -161,7 +161,10 @@ def test_the_grid_view_is_the_planners_grid_on_the_same_pixels() -> None:
     picture, grid = fmap.render_grid(), fmap.render()
     assert picture.shape == grid.shape
     r, c = cell_of(fmap, *BOXES[1][0])
-    assert tuple(picture[r + 2, c + 2]) == (40, 40, 190)  # an obstacle cell: dark red
+    assert tuple(picture[r + 2, c + 2]) == OBSTACLE_BGR  # an obstacle cell
+    heights = fmap.render_heights()
+    assert heights.shape == grid.shape
+    assert heights[r, c, 2] > heights[r, c, 1] + 60  # a high box: magenta, not the floor
 
 
 def test_the_moving_rover_leaves_no_trail_of_obstacles() -> None:

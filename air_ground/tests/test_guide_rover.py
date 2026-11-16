@@ -105,7 +105,10 @@ def test_click_on_the_top_view_and_the_simulated_rover_drives_there(tmp_path) ->
         ctype, jpg = get(base + '/top.jpg')
         top = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
         assert ctype == 'image/jpeg' and top.shape == (400, 400, 3)
-        assert b'Click on the map' in get(base + '/')[1]
+        assert b'Click the map' in get(base + '/')[1]
+        for view in ('photo', 'grid', 'heights'):  # the three layers, bare for the page
+            ctype, jpg = get(base + f'/top.jpg?view={view}&bare=1')
+            assert ctype == 'image/jpeg' and len(jpg) > 1000
 
         # what the dashboard needs besides the map: the cameras' addresses (the browser reads
         # them itself), the rover's own telemetry, what the last picture gave
@@ -162,5 +165,5 @@ def test_drawing_puts_things_where_they_are() -> None:
     snap = {'rover': [0.0, 0.0, 0.0], 'goal': (0.5, 0.5), 'waypoints': [(0.5, 0.0)]}
     out = draw(top, bounds, res, snap, [(-0.5, 0.0), (0.0, 0.0)], None)
     assert out[100, 105, 1] > 200  # the rover's green arrow, pointing along +x
-    assert out[50, 150, 2] > 200  # the goal's red cross at (0.5, 0.5)
+    assert out[50, 150, 0] > 200  # the goal's cyan cross at (0.5, 0.5)
     assert out[100, 75].any() and not top.any()  # the trail; the input is left untouched

@@ -119,3 +119,43 @@ def marker_image(marker_id: int = 10, px: int = 240, family: str = 'DICT_APRILTA
 
 def header(d: dict) -> str:
     return json.dumps(d, separators=(',', ':'))
+
+
+def render_depth(pose, boxes=(), size=(256, 144), rover=None) -> tuple[np.ndarray, tuple]:
+    """The LiDAR depth map (metres along the optical axis, float32) a camera at `pose` (a
+    pose_camera.Pose) measures of the floor and of boxes (x0, y0, x1, y1, height), at the
+    depth map's own size; `rover` = (x, y, radius, height): a cylinder. Returns the map and its
+    intrinsics (fx, fy, cx, cy), scaled from the picture's as ARKit does."""
+    w, h = size
+    s = w / pose.width
+    fx, fy = pose.k[0, 0] * s, pose.k[1, 1] * s
+    cx, cy = pose.k[0, 2] * s, pose.k[1, 2] * s
+    v, u = np.mgrid[0:h, 0:w].astype(np.float64)
+    rays = np.stack([(u - cx) / fx, (v - cy) / fy, np.ones_like(u)], -1) @ pose.r.T  # z = 1 deep
+    c = pose.c
+    with np.errstate(divide='ignore', invalid='ignore'):
+        depth = np.where(rays[..., 2] < -1e-6, -c[2] / rays[..., 2], np.inf)
+        for x0, y0, x1, y1, top in boxes:
+            lo, hi = np.array([x0, y0, 0.0]), np.array([x1, y1, top])
+            t0 = (lo - c) / rays
+            t1 = (hi - c) / rays
+            near = np.minimum(t0, t1).max(-1)
+            far = np.maximum(t0, t1).min(-1)
+            hit = (far >= near) & (near > 0)
+            depth = np.where(hit & (near < depth), near, depth)
+        if rover is not None:
+            rx, ry, rr, rh = rover
+            ox, oy = c[0] - rx, c[1] - ry
+            a = rays[..., 0] ** 2 + rays[..., 1] ** 2
+            b = 2 * (ox * rays[..., 0] + oy * rays[..., 1])
+            disc = b * b - 4 * a * (ox * ox + oy * oy - rr * rr)
+            t = (-b - np.sqrt(np.maximum(disc, 0))) / (2 * a)
+            z = c[2] + t * rays[..., 2]
+            side = (disc > 0) & (t > 0) & (z >= 0) & (z <= rh)
+            ttop = (rh - c[2]) / rays[..., 2]
+            px, py = c[0] + ttop * rays[..., 0] - rx, c[1] + ttop * rays[..., 1] - ry
+            top_hit = (ttop > 0) & (px * px + py * py <= rr * rr)
+            t = np.where(side, t, np.where(top_hit, ttop, np.inf))
+            depth = np.minimum(depth, t)
+    depth[~np.isfinite(depth) | (depth > 5.0)] = 0.0
+    return depth.astype(np.float32), (fx, fy, cx, cy)

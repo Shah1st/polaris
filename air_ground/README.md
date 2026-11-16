@@ -46,34 +46,35 @@ and `CarteFusion.astar` from `merging_map/fusion_carte.py`, pulled straight wher
 clear. The guide checks the route being driven every 0.5 s and plans again when the grid blocks
 it; with no way left, it stops the rover. A click on a point that cannot be reached is refused.
 
-**The rover's own close look** (`beam.py`, `--beam URL`): the D405 on the front of the rover is
-a second stream, next to the air camera. Its detection is the team's
-(`rover_mapper/perception_service.py --d405`: the floor found in the depth itself, obstacles
-4 to 40 cm above it, in the rover's frame); each of its looks is placed on the floor with where
-the rover was when it was taken (its odometry at that time, through the air-ground link), then
-believed over the air map, which sees tall things lean and moving things late:
+**The rover's own close look** (`beam.py`): the D405 on the front of the rover is a second
+stream, next to the air camera. It is the team's local navigation (`docs/local-navigation.md`):
+`rover_mapper/d405_server.py` turns each depth picture into 5 cm cells, `rover/local_map.py`
+keeps them around the rover in its odometry frame, and the rover server gives them on
+`GET /local_grid`. The guide reads that grid four times a second, places its cells on the
+floor through the air-ground link, and believes them over the air map, which sees tall things
+lean and moving things late:
 
 * a cell it sees as an obstacle is one at once: added (put down in front of the rover, or
   missed from the air) or confirmed;
 * a cell it sees as floor is cleared at once (taken away, or a false obstacle of the air map),
   and what the air had said of it is forgotten;
 * its verdict holds until the air, looking again 15 views later, says otherwise;
-* something it sees within the rover's radius of the first 0.8 m of the route: the route is
-  planned again at once (an event, not the next half-second check).
+* something it sees inside the band the rover sweeps along the first 0.8 m of the route: the
+  route is planned again at once (an event, not the next half-second check).
 
-Its place on the rover is `--beam-offset` (0.10 m ahead of the centre by default: **to
-measure**); it looks straight ahead (fixed on the chassis: the turret carries the USB camera).
-Not tried on the real rover yet: the perception service has to run where it reaches the D405's
-capture server (`rover_mapper/d405_server.py`, 127.0.0.1:8091 on the robot): on the robot
-itself, or on this computer through `ssh -N -L 8091:127.0.0.1:8091 sunrise@<rover>`:
+The rover's own **guard** (setting `local_guard`, a switch on the dashboard: `POST /guard`)
+slows the rover down and stops it before what the D405 sees; a path of this guide that it ends
+as `blocked` puts that obstacle on the map and the route is planned again around it (three in
+a row without getting through end the goal). The guide names its paths `air-<goal>-<n>`: a new
+one replaces the running one at speed (the team's `POST /path` with an `"id"`).
+`--no-d405` leaves the D405 out. Not tried on the real rover yet.
 
-```bash
-python rover_mapper/perception_service.py --d405 http://127.0.0.1:8091 --port 8095
-python air_ground/guide_rover.py --phone http://<iPhone>:8080 --rover http://<rover>:8080     --beam http://127.0.0.1:8095
-```
-
-Not there yet: the LiDAR depth with the pose (Pro iPhones) is read (`camstream.read_depth`,
-`FloorMap.add_depth`) but not wired into the dashboard nor tried on a real iPhone.
+**The iPhone's LiDAR** (Pro models, CamStream's ARKit mode sends each depth map with the pose of
+its frame on `/depth`): every point it measures is placed on the floor and gives that 2 cm
+cell its height at once, without waiting for two views (`FloorMap.add_depth`); the rover's own
+points are left out, a box taken away fades out after about eight maps. A phone without LiDAR
+answers that it has none and is asked again every few seconds only; `--no-lidar` leaves it out.
+Tested on synthetic depth only (`test_lidar.py`), not on a real iPhone yet.
 
 ## Run
 
@@ -86,25 +87,33 @@ Without `--rover` it only maps. The defaults are the real rover's marker (AprilT
 Open `http://127.0.0.1:8097` (`--port` for another one: on Windows a second server may share a
 busy port without an error, check with `netstat -ano`).
 
-* **Map**: the floor as seen from the air, built up as the phone moves; "Grid view" shows the
-  grid the route is planned on. Obstacles in red, the zone too close for the rover's centre in
-  violet, the route in red; the rover where the guide believes it is (green arrow) and where the
-  last picture saw it (yellow ring), where it has been (blue); a click sets the goal, "Cancel
-  goal" forgets it, "Reset map" starts the map again.
+The dashboard (`web/index.html`), one page made for a large screen and for recordings:
+
+* **Live map** in the middle, drawn by the page itself: three views of the same grid (Photo:
+  the floor as seen, obstacles in coral; Grid: the cells the route is planned on; Heights: the
+  LiDAR and plane-sweep heights, cyan low to magenta high), the safety margin around each
+  obstacle, the route (animated), the goal, the rover (green while the air camera sees it,
+  amber on odometry, with how far it drove blind), its trail and what its D405 sees (violet).
+  It frames what has been seen by itself; scroll to zoom, drag to pan, double click to frame
+  again; a click sets the goal.
+* **Mission** (status, distance to go along the route, turns, where the position comes from),
+  **Perception stack** (ARKit pose, vision map, LiDAR, D405, the rover's guard switch, the
+  air-ground link: what each gives now), the rover's vitals, and **Events** (goal, route
+  planned, D405 replans, guard stops, arrival).
 * **Cameras**: the phone's stream and the rover's camera, read by the browser straight from
-  the phone and from the rover (no relay, no processing in between), and the rover's D405.
-* **Air-ground link**: whether the rover is seen from the air, the size of its marker in the
-  picture, how far the last sighting corrected the odometry.
-* **Drive by hand** (arrows, Z/Q/S/D for the camera), **STOP** (Space or Esc: forgets the goal
-  and stops the rover, whoever drives it), the rover's telemetry and **the commands it
-  received** with their latencies: what the rover's own test page shows, which stays one click
-  away ("Rover test bench") for calibration, measured moves and tilt tests.
+  the phone and from the rover (no relay, no processing in between); below, the D405's colour
+  and depth, **manual driving** (arrows, Z/Q/S/D for the camera), the telemetry and **the
+  commands the rover received** with their latencies. **STOP** (Space or Esc) forgets the goal
+  and stops the rover, whoever drives it. The rover's own test page stays one click away
+  ("Rover bench") for calibration, measured moves and tilt tests.
 
 The browser must reach the phone and the rover by the addresses given to `--phone` and
 `--rover` (it reads their pictures itself). The rover's JSON goes through this server.
 
 Without any hardware, the same dashboard on a simulated rover filmed by a fake phone that keeps
-moving (ports 8097 to 8099 on this computer):
+moving, with boxes of several heights, LiDAR depth maps, and a simulated D405 that sees one
+more box the air camera cannot (ports 8097 to 8099 on this computer; a goal at -0.6, 0.05
+makes the rover meet it, plan again and drive around):
 
 ```bash
 python air_ground/demo_sim.py
@@ -149,12 +158,14 @@ the team shares it.
   it), a goal behind a closed wall refused (`test_planner.py`, fake rover with wrong odometry);
   the drive around the wall ends 3 cm from the goal with no pause, the picture lost for 2 s does
   not stop it.
-* The D405 stream: its looks land where the rover points; it adds, confirms and clears cells;
-  a box right in front is not taken for the rover; a box only it sees, on the straight line to
-  the goal, is driven around (`test_beam.py`, simulated rover and D405).
-* The rover's follower keeps above 0.12 m/s through three corrections in a row
-  (`rover/tests/test_rover_core.py`); **the robot runs this only once `rover_core.py` is
-  deployed on it**.
+* The D405 stream (the team's `/local_grid`): its cells land where the rover points; it adds,
+  confirms and clears cells; a box right in front is not taken for the rover; a box only it
+  sees, on the straight line to the goal, is driven around, with a new path id each time; a
+  guard stop becomes an obstacle and a new route (`test_beam.py`, simulated rover and D405).
+* The LiDAR: one synthetic depth map puts a 15 cm box on the map within 2 cm of its height and
+  leaves a 2 cm mat and the rover out; a box taken away fades (`test_lidar.py`).
+* Since main was merged in (16 Nov), `rover/` is the team's own, unchanged: their local grid,
+  guard and path ids; the guide drives it through them.
 * The grid on the real recording replayed four times: it stops changing after the second pass
   (980, 1016, 1008 obstacle cells); it used to keep everything it had ever seen.
 * **First real ARKit test** (15 Nov 2026, evening, `runs/20261115-231847.jsonl`, rover code not

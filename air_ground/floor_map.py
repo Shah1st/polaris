@@ -35,6 +35,14 @@ from pose_camera import Pose
 
 HEIGHTS = (0.0, 0.03, 0.06, 0.09, 0.12, 0.16, 0.20, 0.25, 0.30, 0.36)  # m, the swept planes
 CELL = 0.03  # m, the cells the map decides on (obstacle or floor); the team's grid is 5 cm
+# the dashboard's colours (BGR), so that the pictures and the page look like one thing
+UNKNOWN_BGR = (22, 16, 11)  # never seen: near black
+FREE_BGR = (49, 36, 23)  # floor: slate blue
+LINE_BGR = (255, 232, 59)  # cell lines: the cyan accent, faint
+OBSTACLE_BGR = (109, 77, 255)  # coral
+EDGE_BGR = (206, 194, 255)  # an obstacle's edge
+LOW_BGR = (255, 232, 59)  # heights: cyan (low) ...
+HIGH_BGR = (203, 61, 255)  # ... to magenta (high)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -738,41 +746,89 @@ class FloorMap:
         }
 
     def render(self, min_votes: float = 0.6) -> np.ndarray:
-        """The map as a picture: the floor as seen, obstacles tinted red (darker = higher),
-        floor whose height is known slightly green, places never seen dark grey."""
+        """The map as a picture: the floor as seen, obstacles tinted coral (darker = higher)
+        with a bright edge, floor whose height is known slightly cyan, never seen near black."""
         out = self.mosaic.copy()
         never = ~np.isfinite(self.view_score)
-        out[never] = (40, 40, 40)
+        out[never] = UNKNOWN_BGR
         height, known, obstacle = self.obstacles(min_votes)
         floor = known & ~obstacle & ~never
-        out[floor] = (0.8 * out[floor] + 0.2 * np.array([90, 200, 90])).astype(np.uint8)
+        out[floor] = (0.88 * out[floor] + 0.12 * np.array(LOW_BGR)).astype(np.uint8)
         if obstacle.any():
             level = np.clip(height[obstacle] / self.heights[-1], 0.2, 1.0)[:, None]
-            red = np.array([40, 40, 255], np.float32)
-            out[obstacle] = (0.35 * out[obstacle] + 0.65 * red * (1.2 - 0.5 * level)).clip(0, 255)
+            coral = np.array(OBSTACLE_BGR, np.float32)
+            out[obstacle] = (0.35 * out[obstacle] + 0.65 * coral * (1.2 - 0.5 * level)).clip(
+                0, 255
+            )
+            ob = obstacle.astype(np.uint8)
+            edge = obstacle & ~cv2.erode(ob, np.ones((3, 3), np.uint8)).astype(bool)
+            out[edge] = EDGE_BGR
         return out
 
     def render_grid(self, cell: float = 0.05, min_votes: float = 0.6) -> np.ndarray:
-        """The grid the planner uses, drawn like the team's drone map, at the picture's size
-        (same pixels as `render`): free light, obstacle dark red, unknown grey, cell lines."""
+        """The grid the planner uses, at the picture's size (same pixels as `render`), in the
+        dashboard's colours: unknown near black, free slate blue with faint cell lines,
+        obstacles coral with a bright edge."""
         g = self.grid(cell, min_votes)
         cells = np.array(g['cells'], np.int8)[::-1]  # row 0 = north, as pictures
         k = max(1, round(cell / self.res))
         colours = np.zeros((*cells.shape, 3), np.uint8)
-        colours[cells == -1] = (70, 70, 70)
-        colours[cells == 0] = (225, 232, 225)
-        colours[cells == 1] = (40, 40, 190)
+        colours[cells == -1] = UNKNOWN_BGR
+        colours[cells == 0] = FREE_BGR
+        colours[cells == 1] = OBSTACLE_BGR
         up = np.repeat(np.repeat(colours, k, axis=0), k, axis=1)
-        out = np.full((self.rows, self.cols, 3), 70, np.uint8)
+        out = np.full((self.rows, self.cols, 3), UNKNOWN_BGR, np.uint8)
         out[: up.shape[0], : up.shape[1]] = up
-        if k >= 4:  # the cell lines, faint
-            out[::k, :] = (out[::k, :] * 0.85).astype(np.uint8)
-            out[:, ::k] = (out[:, ::k] * 0.85).astype(np.uint8)
+        obstacle = (out == OBSTACLE_BGR).all(axis=2)  # before the lines change some pixels
+        if k >= 4:  # the cell lines, faint, on what is known
+            lines = np.zeros(out.shape[:2], bool)
+            lines[::k, :] = lines[:, ::k] = True
+            lines &= (out != UNKNOWN_BGR).any(axis=2) & ~obstacle
+            out[lines] = (out[lines] * 0.84 + np.array(LINE_BGR) * 0.16).astype(np.uint8)
+        ob = obstacle.astype(np.uint8)
+        edge = obstacle & ~cv2.erode(ob, np.ones((3, 3), np.uint8)).astype(bool)
+        out[edge] = EDGE_BGR
         return out
+
+    def render_heights(self, top: float = 0.30, min_votes: float = 0.6) -> np.ndarray:
+        """The heights as a picture (LiDAR where it measured, else the plane sweep): the floor
+        dark with the picture's texture, things above it from cyan (low) to magenta (`top` m
+        and higher), obstacles with a bright edge; never seen near black."""
+        height, known, obstacle = self.obstacles(min_votes)
+        gray = cv2.cvtColor(self.mosaic, cv2.COLOR_BGR2GRAY).astype(np.float32)[..., None] / 255
+        out = np.empty((self.rows, self.cols, 3), np.float32)
+        out[:] = UNKNOWN_BGR
+        seen = np.isfinite(self.view_score)
+        texture = np.array(FREE_BGR, np.float32) * 0.6 + gray * 70
+        out[seen] = texture[seen]
+        level = np.clip(height / top, 0.0, 1.0)[..., None]
+        colour = (1 - level) * np.array(LOW_BGR, np.float32) + level * np.array(
+            HIGH_BGR, np.float32
+        )
+        raised = known & (height >= 0.015)
+        out[raised] = (0.15 * out + 0.85 * colour * (0.7 + 0.3 * level))[raised]
+        out[known & ~raised] = (0.85 * out + 0.15 * np.array(LOW_BGR, np.float32))[known & ~raised]
+        ob = obstacle.astype(np.uint8)
+        edge = obstacle & ~cv2.erode(ob, np.ones((3, 3), np.uint8)).astype(bool)
+        out[edge] = EDGE_BGR
+        return out.clip(0, 255).astype(np.uint8)
+
+    def seen_box(self) -> list[float] | None:
+        """[x0, y0, x1, y1] in metres around what the air camera has seen, or None."""
+        seen = np.isfinite(self.view_score)
+        rows, cols = np.nonzero(seen.any(axis=1))[0], np.nonzero(seen.any(axis=0))[0]
+        if not len(rows):
+            return None
+        x0, _, _, y1 = self.bounds
+        r = self.res
+        left, right = x0 + cols[0] * r, x0 + (cols[-1] + 1) * r
+        box = (left, y1 - (rows[-1] + 1) * r, right, y1 - rows[0] * r)
+        return [round(v, 3) for v in box]
 
     def stats(self) -> dict:
         height, known, obstacle = self.obstacles()
         return {
+            'seen_box': self.seen_box(),
             'views': self.views,
             'pairs': self.pairs,
             'keyframes': len(self.keyframes),

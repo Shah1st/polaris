@@ -43,12 +43,14 @@ class FakeRover:
         self.stop_count = 0
         self.boot_id = 'boot-1'
         self.paths: list[list[tuple[float, float]]] = []
+        self.path_ids: list[str | None] = []
         self.trail: list[tuple[float, Pose2]] = []
         self.t = 0.0
 
-    def path(self, points, speed):
+    def path(self, points, speed, path_id=None):
         self.points, self.speed, self.mode = [tuple(p) for p in points], speed, 'path'
         self.paths.append(self.points)
+        self.path_ids.append(path_id)
 
     def stop(self):
         self.points, self.mode = [], 'idle'

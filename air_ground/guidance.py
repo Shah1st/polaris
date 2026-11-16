@@ -208,8 +208,15 @@ class RoverClient:
     def state(self) -> dict:
         return self._call('/state')
 
-    def path(self, points: list[tuple[float, float]], speed: float) -> None:
-        self._call('/path', {'points': [list(p) for p in points], 'frame': 'odom', 'speed': speed})
+    def path(
+        self, points: list[tuple[float, float]], speed: float, path_id: str | None = None
+    ) -> None:
+        """With an id, a path replacing a running one takes over at speed, without a stop
+        (the team's rover, rover_core.py): the guide's corrections never stop the rover."""
+        body = {'points': [list(p) for p in points], 'frame': 'odom', 'speed': speed}
+        if path_id:
+            body['id'] = path_id
+        self._call('/path', body)
 
     def stop(self) -> None:
         self._call('/stop', {})
@@ -259,6 +266,12 @@ class Guide:
     last_seen: float | None = None
     sent: tuple[float, float] | None = None  # end of the path the rover is following (odom)
     paths_sent: int = 0
+    goals: int = 0  # goals set so far: part of each path's id
+    # the rover's guard stopped a path of this guide before an obstacle (its place on the
+    # floor), not yet handled by whoever plans the route
+    blocked_at: list = field(default_factory=list)
+    blocked_in_a_row: int = 0
+    _history_seen: object = None
     dropped: str | None = None  # why the last sighting was not used
     _boot_id: object = None
     _stop_count: int | None = None
@@ -276,6 +289,8 @@ class Guide:
 
     def set_goal(self, x: float, y: float, waypoints=()) -> None:
         """Go to (x, y) in the floor frame, through `waypoints` first (a planner's path)."""
+        self.goals += 1
+        self.blocked_in_a_row = 0
         self.goal = (float(x), float(y))
         self.waypoints = [(float(a), float(b)) for a, b in waypoints]
         self.sent = None
@@ -322,6 +337,7 @@ class Guide:
             self._boot_id = boot
             self._stop_count = None
         self.history.add(t, self.odom)
+        self._read_guard(ctrl.get('history') or [])
         stops = state.get('stop_count')
         if self.goal is not None:
             # Someone drives by hand, or pressed STOP while this guide was driving.
@@ -335,6 +351,33 @@ class Guide:
                 self.goal, self.sent, self.waypoints = None, None, []
                 self.status = 'stopped: someone else took the rover over'
         self._stop_count = stops
+
+    def _read_guard(self, history: list) -> None:
+        """The rover's own guard (its D405, local_guard = 1) ended one of this guide's paths
+        as 'blocked' before an obstacle: its place (odometry) goes to `blocked_at`, on the
+        floor, for the planner; three in a row without the rover moving end the goal."""
+        if not history:
+            return
+        last = history[0]
+        key = (last.get('id'), last.get('status'), last.get('duration'))
+        if key == self._history_seen:
+            return
+        first = self._history_seen is None
+        self._history_seen = key
+        if first or not str(last.get('id') or '').startswith('air-'):
+            return
+        if last.get('status') != 'blocked':
+            self.blocked_in_a_row = 0
+            return
+        ob = last.get('obstacle')
+        if ob is not None and self.link.ready:
+            p = self.link.to_floor(Pose2(float(ob[0]), float(ob[1]), 0.0))
+            self.blocked_at.append((p.x, p.y))
+        self.blocked_in_a_row += 1
+        self.sent = None  # sent again, around it, once the route is planned again
+        if self.goal is not None and self.blocked_in_a_row >= 3:
+            self.goal, self.waypoints = None, []
+            self.status = "stopped: the rover's guard blocked it three times in a row"
 
     def on_sighting(self, seen, t_picture: float) -> bool:
         """The rover as one picture saw it (a rover_marker.RoverSeen), taken at `t_picture` on
@@ -448,7 +491,8 @@ class Guide:
                 self.status = f'stopped {distance * 100:.1f} cm from the goal'
                 return self.status
         self._state_since_command = False
-        self.rover.path([self.link.to_odom(x, y) for x, y in route], self.cfg.speed)
+        self.rover.path([self.link.to_odom(x, y) for x, y in route], self.cfg.speed,
+                        f'air-{self.goals}-{self.paths_sent + 1}')  # fmt: skip
         self.sent = end
         self._sent_at = now
         self.paths_sent += 1

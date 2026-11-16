@@ -1,27 +1,26 @@
-"""The rover's own close look: the D405 depth camera, a second stream next to the air camera.
+"""The rover's own close look: its D405 depth camera, a second stream next to the air camera.
 
 The air camera maps the whole area but sees tall things lean, moves, and loses details; the
-D405 on the front of the rover measures what is right ahead, in metres, at a few frames a
-second. Each of its looks is placed on the floor with the rover's pose at that moment, and
-then (floor_map.FloorMap.add_beam):
+D405 on the front of the rover measures what is right ahead, in metres. The team's local
+navigation (docs/local-navigation.md) runs it on the robot: rover_mapper/d405_server.py turns
+each depth picture into 5 cm cells, rover/local_map.py keeps them around the rover in its
+odometry frame (an obstacle after 2 pictures of 3, forgotten 10 s after its last look), and
+the rover server gives them on GET /local_grid. This module reads that grid; the guide places
+its cells on the floor through the air-ground link and FloorMap.add_beam believes them over
+the air map:
 
-- adds an obstacle the air did not see (or not yet: one just put down in front),
-- confirms one it did see,
-- clears one that is not there (a box taken away, a false obstacle of the air map).
+- an obstacle it sees is one at once: added (one just put down in front, or missed from the
+  air) or confirmed;
+- floor it sees is cleared at once (a box taken away, a false obstacle of the air map).
 
-Its detection is the team's: rover_mapper/perception_service.py --d405 (the floor found in
-the depth itself, obstacles 4 to 40 cm above it, 5 cm cells, rover frame: x ahead, y to the
-left). This module reads its GET /obstacles:
-
-    beam = BeamReader('http://<rover>:8095')      # a thread; keeps the newest look
-    look = beam.latest(max_age=1.0)               # a BeamLook, or None
-    obstacles, free = look.on_floor(rover_pose)   # floor-frame points (N x 2) of its cells
+    beam = BeamReader('http://<rover>:8080')      # a thread; keeps the newest grid
+    grid = beam.latest(max_age=2.0)               # a LocalGrid, or None
+    obstacles, floor = grid.on_floor(link)        # floor-frame points (N x 2) of its cells
 """
 
 from __future__ import annotations
 
 import json
-import math
 import threading
 import time
 import urllib.error
@@ -32,79 +31,82 @@ import numpy as np
 
 
 @dataclass
-class BeamLook:
-    cells: np.ndarray  # int8 (rows, cols): -1 unseen / 0 floor / 1 obstacle; [i][j] at
-    x0: float  # x = x0 + j * res (ahead), y = y0 + i * res (to the left), in the
-    y0: float  # D405's frame on the floor
+class LocalGrid:
+    cells: np.ndarray  # int8 (rows, cols): -1 not seen / 0 free / 1 obstacle; cell [i][j]
+    x0: float  # starts at (x0 + j * res, y0 + i * res) in the rover's ODOMETRY frame
+    y0: float
     res: float
-    age_s: float  # how old the look was when the service answered
-    received: float  # time.monotonic() here when it arrived
-    seq: int
+    pose: tuple[float, float, float] | None  # the rover's odometry pose (x, y, heading rad)
+    age_s: float | None  # age of the newest picture in it
+    frames: int  # pictures that fed it so far: a new value is a new look
+    received: float  # time.monotonic() here
 
-    @property
-    def taken(self) -> float:
-        """When the D405 took it, on this computer's clock (time.monotonic())."""
-        return self.received - self.age_s
-
-    def on_floor(self, pose, offset=(0.0, 0.0), yaw_deg: float = 0.0, max_range: float = 1.0,
-                 sub: int = 2) -> tuple[np.ndarray, np.ndarray]:  # fmt: skip
-        """(obstacle points, floor points), (N, 2) each, in the floor frame, for the rover at
-        `pose` (x, y, heading in radians: guidance.Pose2). `offset`: where the D405's frame
-        is on the rover (m, ahead and to the left of its centre); `yaw_deg`: where it looks,
-        counter-clockwise from the rover's front. Only cells within `max_range` m ahead (the
-        D405's error grows fast with distance). Each cell gives sub x sub points, so that a
-        finer map is covered."""
-        rows, cols = self.cells.shape
+    def on_floor(self, link, max_dist: float = 1.5, sub: int = 3) -> tuple[np.ndarray, np.ndarray]:
+        """(obstacle points, floor points) (N, 2) in the floor frame: `sub` x `sub` points in
+        each of its cells (the map's decision cells are smaller than its 5 cm: one point per
+        cell would leave every other row of them untouched), through the air-ground link
+        (guidance.OdomLink), within `max_dist` of the rover."""
         ii, jj = np.nonzero(self.cells >= 0)
         if not len(ii):
             return np.zeros((0, 2)), np.zeros((0, 2))
-        f = (np.arange(sub) + 0.5) / sub
-        fi, fj = np.meshgrid(f, f, indexing='ij')
-        x = self.x0 + (jj[:, None] + fj.ravel()[None, :]) * self.res  # ahead of the D405
-        y = self.y0 + (ii[:, None] + fi.ravel()[None, :]) * self.res  # to its left
-        state = np.repeat(self.cells[ii, jj][:, None], sub * sub, axis=1)
-        keep = (x > 0) & (x <= max_range)
-        x, y, state = x[keep], y[keep], state[keep]
-        a = math.radians(yaw_deg)
-        xr = offset[0] + x * math.cos(a) - y * math.sin(a)  # on the rover: ahead, left
-        yr = offset[1] + x * math.sin(a) + y * math.cos(a)
-        c, s = math.cos(pose.heading), math.sin(pose.heading)
-        pts = np.column_stack([pose.x + c * xr - s * yr, pose.y + s * xr + c * yr])
+        x = self.x0 + (jj + 0.5) * self.res
+        y = self.y0 + (ii + 0.5) * self.res
+        state = self.cells[ii, jj]
+        if self.pose is not None:
+            near = np.hypot(x - self.pose[0], y - self.pose[1]) <= max_dist
+            x, y, state = x[near], y[near], state[near]
+        off = ((np.arange(sub) + 0.5) / sub - 0.5) * self.res
+        ox, oy = (a.ravel() for a in np.meshgrid(off, off))
+        x = (x[:, None] + ox).ravel()
+        y = (y[:, None] + oy).ravel()
+        state = np.repeat(state, len(ox))
+        c, s = np.cos(link.theta), np.sin(link.theta)
+        pts = np.column_stack([c * x - s * y + link.tx, s * x + c * y + link.ty])
         return pts[state == 1], pts[state == 0]
 
 
-def parse_look(d: dict, received: float, seq: int) -> BeamLook:
-    cells = np.asarray(d['cells'], np.int8)
+def parse_grid(d: dict, received: float) -> LocalGrid:
+    cells = np.asarray(d.get('cells') or [], np.int8)
     if cells.ndim != 2:
-        raise ValueError('the D405 look has no grid')
-    if d.get('floor') is False:  # no floor found in the depth: nothing to say
-        cells = np.full(cells.shape, -1, np.int8)
-    return BeamLook(cells, float(d['x0']), float(d['y0']), float(d['res']),
-                    float(d.get('age_s') or 0.0), received, seq)  # fmt: skip
+        cells = np.full((0, 0), -1, np.int8)
+    pose = d.get('pose')
+    return LocalGrid(
+        cells,
+        float(d.get('x0') or 0.0),
+        float(d.get('y0') or 0.0),
+        float(d.get('res') or 0.05),
+        None if pose is None else (float(pose[0]), float(pose[1]), float(pose[2])),
+        None if d.get('age_s') is None else float(d['age_s']),
+        int(d.get('frames') or 0),
+        received,
+    )
 
 
 class BeamReader:
-    """Asks the D405 perception for a fresh look a few times a second, in a thread."""
+    """Asks the rover for its local grid a few times a second, in a thread (the request also
+    keeps the robot's D405 feed running, which starts on demand)."""
 
-    def __init__(self, base_url: str, period: float = 0.2, timeout: float = 2.0,
+    def __init__(self, rover_url: str, period: float = 0.25, timeout: float = 2.0,
                  start: bool = True) -> None:  # fmt: skip
-        self.url = base_url.rstrip('/') + '/obstacles'
+        self.url = rover_url.rstrip('/') + '/local_grid'
         self.period, self.timeout = period, timeout
         self.error: str | None = 'not asked yet'
         self.count = 0
         self.last_s: float | None = None  # how long the last request took
-        self._look: BeamLook | None = None
+        self._grid: LocalGrid | None = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
         if start:
             threading.Thread(target=self._run, daemon=True).start()
 
-    def latest(self, max_age: float | None = None) -> BeamLook | None:
+    def latest(self, max_age: float | None = None) -> LocalGrid | None:
         with self._lock:
-            look = self._look
-        if look is None or (max_age is not None and time.monotonic() - look.taken > max_age):
+            g = self._grid
+        if g is None or g.age_s is None:
             return None
-        return look
+        if max_age is not None and g.age_s > max_age:
+            return None
+        return g
 
     def close(self) -> None:
         self._stop.set()
@@ -115,12 +117,13 @@ class BeamReader:
             try:
                 with urllib.request.urlopen(self.url, timeout=self.timeout) as r:
                     d = json.loads(r.read())
-                now = time.monotonic()
-                self.count += 1
-                look = parse_look(d, now, self.count)
+                g = parse_grid(d, time.monotonic())
                 with self._lock:
-                    self._look = look
-                self.error = None
+                    self._grid = g
+                self.count += 1
+                self.error = d.get('error') or (
+                    None if g.age_s is not None else 'no D405 picture yet'
+                )
             except urllib.error.HTTPError as e:
                 self.error = f'HTTP {e.code}: {e.read().decode("utf-8", "replace")[:120]}'
             except (OSError, ValueError, KeyError) as e:

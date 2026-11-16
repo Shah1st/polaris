@@ -12,7 +12,8 @@ commands it received.
 
     GET  /            the dashboard
     GET  /top.jpg     the map with the rover, the goal and the path drawn on it; with
-                      ?view=grid, the 5 cm grid the planner uses instead of the photos
+                      ?view=grid, the grid the planner uses instead of the photos; with
+                      ?view=heights, the heights (LiDAR and plane sweep) in colour
     GET  /view.jpg    the last picture alone, laid flat on the floor (no memory)
     GET  /map.json    the obstacle grid: 5 cm cells, 1 obstacle / 0 floor / -1 unknown,
                       row 0 = south, and the height of each cell
@@ -31,8 +32,10 @@ commands it received.
 The rover's server sends no CORS headers: its JSON goes through this server, its pictures do
 not (the page's <img> read them from the rover itself).
 
-The phone must be CamStream in ARKit mode (iphone-camera/README.md). Nothing here plans around
-obstacles yet: the rover goes straight to the point.
+The phone must be CamStream in ARKit mode (iphone-camera/README.md); with a LiDAR iPhone its
+depth maps measure the heights at once. The route goes around the obstacles (planner.py, the
+team's A*); the rover's D405 (the team's GET /local_grid) adds, confirms and clears what is
+right ahead of it, and its guard stopping a path puts that obstacle on the map.
 """
 
 from __future__ import annotations
@@ -49,8 +52,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import cv2
 import numpy as np
 from beam import BeamReader
-from camstream import PoseStream
-from floor_map import FloorMap
+from camstream import DepthPoller, PoseStream
+from floor_map import LINE_BGR, OBSTACLE_BGR, FloorMap
 from guidance import ClockSync, Guide, GuideConfig, RoverClient, RoverError
 from planner import RoutePlanner
 from pose_camera import PoseError
@@ -61,6 +64,8 @@ INDEX_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web', 'in
 # What the dashboard may ask the rover through this server.
 ROVER_GET = ('/commands', '/config', '/d405/status')
 ROVER_POST = ('/cmd', '/gimbal')
+# the dashboard's guard switch: POST /guard {"on": true|false} sets this one rover setting only
+GUARD_SETTING = 'local_guard'
 
 
 def to_pixel(x: float, y: float, bounds, res: float) -> tuple[int, int]:
@@ -74,18 +79,16 @@ def draw(top: np.ndarray, bounds, res: float, snap: dict, trail, seen) -> np.nda
     out = top.copy()
     if len(trail) > 1:
         pts = np.array([to_pixel(x, y, bounds, res) for x, y in trail], np.int32)
-        cv2.polylines(out, [pts], False, (255, 180, 0), 1, cv2.LINE_AA)
+        cv2.polylines(out, [pts], False, (200, 170, 60), 1, cv2.LINE_AA)
     rover = snap.get('rover')
     goal = snap.get('goal')
     if goal is not None:
         chain = ([rover[:2]] if rover else []) + [*snap.get('waypoints', []), goal]
         pts = np.array([to_pixel(x, y, bounds, res) for x, y in chain], np.int32)
-        cv2.polylines(out, [pts], False, (60, 60, 255), 1, cv2.LINE_AA)
-        cv2.drawMarker(
-            out, to_pixel(*goal, bounds, res), (60, 60, 255), cv2.MARKER_TILTED_CROSS, 14, 2
-        )
+        cv2.polylines(out, [pts], False, LINE_BGR, 2, cv2.LINE_AA)
+        cv2.drawMarker(out, to_pixel(*goal, bounds, res), LINE_BGR, cv2.MARKER_TILTED_CROSS, 14, 2)
     if seen is not None:
-        cv2.circle(out, to_pixel(seen.x, seen.y, bounds, res), 9, (0, 230, 255), 1, cv2.LINE_AA)
+        cv2.circle(out, to_pixel(seen.x, seen.y, bounds, res), 9, (71, 181, 255), 1, cv2.LINE_AA)
     if rover is not None:
         x, y, heading = rover[0], rover[1], math.radians(rover[2])
         tip = (x + 0.15 * math.cos(heading), y + 0.15 * math.sin(heading))
@@ -93,7 +96,7 @@ def draw(top: np.ndarray, bounds, res: float, snap: dict, trail, seen) -> np.nda
             out,
             to_pixel(x, y, bounds, res),
             to_pixel(*tip, bounds, res),
-            (80, 255, 80),
+            (165, 255, 75),
             2,
             cv2.LINE_AA,
             tipLength=0.35,
@@ -103,7 +106,7 @@ def draw(top: np.ndarray, bounds, res: float, snap: dict, trail, seen) -> np.nda
 
 def shade_blocked(picture: np.ndarray, blocked: np.ndarray, k: int) -> np.ndarray:
     """The map picture with the cells the rover's centre may not enter (the obstacles grown
-    by its radius; `blocked` row 0 = south, `k` picture pixels per cell) shaded violet: the
+    by its radius; `blocked` row 0 = south, `k` picture pixels per cell) shaded coral: the
     route stays out of them."""
     rows, cols = picture.shape[:2]
     mask = np.kron(blocked[::-1].astype(np.uint8), np.ones((k, k), np.uint8)).astype(bool)
@@ -111,7 +114,7 @@ def shade_blocked(picture: np.ndarray, blocked: np.ndarray, k: int) -> np.ndarra
     h, w = min(rows, mask.shape[0]), min(cols, mask.shape[1])
     full[:h, :w] = mask[:h, :w]
     out = picture.copy()
-    out[full] = (0.7 * out[full] + 0.3 * np.array([200, 60, 160])).astype(np.uint8)
+    out[full] = (0.82 * out[full] + 0.18 * np.array(OBSTACLE_BGR)).astype(np.uint8)
     return out
 
 
@@ -159,9 +162,12 @@ class MapWorker:
         self.lock = threading.Lock()
         self.picture: np.ndarray | None = None
         self.grid_picture: np.ndarray | None = None  # the planner's grid, drawn
+        self.heights_picture: np.ndarray | None = None  # the heights, in colour
         self.error: str | None = None
         self.last_s: float | None = None  # seconds the last update took
+        self.depth_said: dict = {}  # what the last LiDAR depth map did
         self._job = None
+        self._depth_job = None
         self._wake = threading.Event()
         self._stop = threading.Event()
         threading.Thread(target=self._run, daemon=True).start()
@@ -170,11 +176,17 @@ class MapWorker:
         self._job = (image, pose, rover_xy)
         self._wake.set()
 
+    def offer_depth(self, depth, rover_xy) -> None:
+        """A LiDAR depth map (camstream.DepthMap, with its pose): the newest one only."""
+        self._depth_job = (depth, rover_xy)
+        self._wake.set()
+
     def reset(self) -> None:
         with self.lock:
             self.fmap.reset()
             self.picture = None
             self.grid_picture = None
+            self.heights_picture = None
 
     def close(self) -> None:
         self._stop.set()
@@ -185,14 +197,20 @@ class MapWorker:
             self._wake.wait(0.5)
             self._wake.clear()
             job, self._job = self._job, None
-            if job is None:
+            depth, self._depth_job = self._depth_job, None
+            if job is None and depth is None:
                 continue
             t0 = time.monotonic()
             try:
                 with self.lock:
-                    self.fmap.add(*job)  # with the team's colour detection on this view
+                    if depth is not None:  # heights measured at once, before the picture's
+                        d, rover_xy = depth
+                        self.depth_said = self.fmap.add_depth(d.metres, d.k, d.pose, rover_xy)
+                    if job is not None:
+                        self.fmap.add(*job)  # with the team's colour detection on this view
                     self.picture = self.fmap.render()
                     self.grid_picture = self.fmap.render_grid()
+                    self.heights_picture = self.fmap.render_heights()
                 self.error = None
             except Exception as e:  # noqa: BLE001 - the map must never stop the guide
                 self.error = f'{type(e).__name__}: {e}'
@@ -241,22 +259,32 @@ class GuideService:
         radius=0.15,
         colour=True,
         log_dir=None,
-        beam=None,
-        beam_offset=(0.10, 0.0),
-        beam_range=1.0,
+        beam=True,
+        beam_range=1.5,
+        lidar=True,
     ):
         """`follow`: the map centres itself where the phone first looks (`bounds` then only
         gives its size); otherwise it covers `bounds` of the floor frame. `radius`: the
         circle around the whole rover, by which obstacles are grown for the route.
         `colour`: the team's colour detection adds its obstacles to the heights' (it cannot
-        tell a flat colour on the floor from an object: off for a painted floor)."""
+        tell a flat colour on the floor from an object: off for a painted floor). `lidar`:
+        ask the phone for its LiDAR depth (/depth; a phone without LiDAR says so, asked
+        again every few seconds only)."""
         self.planner = RoutePlanner(radius=radius)
         # the rover's D405 (beam.py): a second stream, right ahead of the rover
-        self.beam = BeamReader(beam) if beam else None
-        self.beam_offset, self.beam_range = tuple(beam_offset), beam_range
+        rover_url = getattr(rover, 'base', None)
+        self.beam = BeamReader(rover_url) if beam and rover_url else None
+        self.beam_range = beam_range
         self.beam_info: dict = {}
+        self.events: deque[dict] = deque(maxlen=40)  # for the dashboard's event list
+        self._goal_seen = None
         self.beam_events = 0
         self._beam_seq = 0
+        self._beam_said = 0.0  # no new D405 event before then
+        # the phone's LiDAR (ARKit sceneDepth with the pose of its frame): heights at once
+        self.depth = DepthPoller(phone_url) if lidar else None
+        self.depth_info: dict = {}
+        self._depth_seq = 0
         # a record of each drive (run_log.py): None = none
         self.log = RunLog(log_dir) if log_dir else None
         self.clock = time.monotonic  # the time of the record's lines
@@ -278,6 +306,9 @@ class GuideService:
         self.lock = threading.Lock()
         self.top_jpg: bytes | None = None
         self.grid_jpg: bytes | None = None  # the same, on the planner's grid
+        self.heights_jpg: bytes | None = None  # the same, the heights in colour
+        self.bare: dict[str, bytes] = {}  # the same three without the guide's drawings
+        self.beam_overlay: dict | None = None  # the D405's last look on the floor, for the page
         self.phone = 'no picture yet'
         self.rover_error: str | None = None
         self.latency_ms: int | None = None
@@ -311,6 +342,8 @@ class GuideService:
         self.stream.close()
         if self.beam is not None:
             self.beam.close()
+        if self.depth is not None:
+            self.depth.close()
         self.server.shutdown()
         self.server.server_close()
 
@@ -323,6 +356,10 @@ class GuideService:
                 self._read_rover()
             if self.beam is not None:
                 self._use_beam()
+            if self.depth is not None:
+                self._use_depth()
+            if self.guide.blocked_at:
+                self._use_blocked()
             frame = self.stream.latest(max_age=2.0)
             fresh = frame is not None and frame.seq != seq
             if fresh:
@@ -340,54 +377,112 @@ class GuideService:
                     self.rover_error = str(e)
             if self.log is not None:
                 self._write_log(now)
+            if self._goal_seen is not None and self.guide.goal is None:
+                self.event('end', self.guide.status)  # arrived, stopped, cancelled
+            self._goal_seen = self.guide.goal
             if fresh and now >= next_draw:
                 next_draw = now + 0.15
                 self._draw(frame)
             self._stop.wait(0.01 if fresh else 0.03)
 
+    def _use_blocked(self) -> None:
+        """The rover's guard stopped it before an obstacle: that place becomes an obstacle on
+        the map (as if the D405 stream had seen it) and the route is planned again at once."""
+        with self.lock:
+            places, self.guide.blocked_at = list(self.guide.blocked_at), []
+        for x, y in places:
+            a = np.linspace(0, 2 * math.pi, 12, endpoint=False)
+            disc = np.column_stack([x + 0.05 * np.cos(a), y + 0.05 * np.sin(a)])
+            self.mapper.add_beam(np.vstack([[x, y], disc]), np.zeros((0, 2)))
+            self.event('guard', f'rover guard: stopped before an obstacle at {x:.2f}, {y:.2f}')
+        self._next_plan = 0.0
+
+    def event(self, kind: str, text: str) -> None:
+        """Something worth showing on the dashboard's event list (and in the drive's record)."""
+        self.events.appendleft({'t': round(time.time(), 1), 'kind': kind, 'text': text})
+        if self.log is not None:
+            self.log.write('event', at=self.clock(), what=kind, text=text)
+
     def _use_beam(self) -> None:
-        """A new look of the rover's D405: placed on the floor with where the rover was when
-        it was taken, then believed over the air map (FloorMap.add_beam). Something on the
-        way, close ahead: the route is planned again at once, not at the next half second."""
-        look = self.beam.latest(max_age=1.5)
-        if look is None:
+        """A new look of the rover's D405 (its local grid, odometry frame): placed on the floor
+        through the air-ground link, then believed over the air map (FloorMap.add_beam).
+        Something on the way, close ahead: the route is planned again at once, not at the next
+        half second."""
+        grid = self.beam.latest(max_age=2.0)
+        if grid is None:
+            self.beam_info = {'error': self.beam.error or 'no fresh D405 picture',
+                              'looks': self.beam.count}  # fmt: skip
+            return
+        if grid.frames == self._beam_seq:
+            return
+        self._beam_seq = grid.frames
+        with self.lock:
+            link = self.guide.link
+            ready = link.ready
+            here = self.guide.rover_on_floor()
+            goal, waypoints = self.guide.goal, list(self.guide.waypoints)
+        if not ready or here is None:
             self.beam_info = {
-                'error': self.beam.error or 'no fresh look',
-                'looks': self.beam.count,
+                'error': 'the rover is not placed on the map yet',
+                'looks': grid.frames,
             }
             return
-        if look.seq == self._beam_seq:
-            return
-        self._beam_seq = look.seq
-        with self.lock:
-            odom = self.guide.history.at(look.taken)
-            pose = (
-                self.guide.link.to_floor(odom)
-                if odom is not None and self.guide.link.ready
-                else None
-            )
-            goal, waypoints = self.guide.goal, list(self.guide.waypoints)
-        if pose is None:
-            self.beam_info = {'error': 'the rover is not placed on the map yet', 'looks': look.seq}
-            return
-        obstacle, floor = look.on_floor(pose, self.beam_offset, 0.0, self.beam_range)
+        obstacle, floor = grid.on_floor(link, self.beam_range)
         said = self.mapper.add_beam(obstacle, floor)
-        ahead = False
+        ob1, fl1 = grid.on_floor(link, self.beam_range, sub=1)  # one point per cell: the page
+        self.beam_overlay = {
+            'obstacle': np.round(ob1, 3).tolist(),
+            'floor': np.round(fl1, 3).tolist(),
+            'cell': grid.res,
+            'at': time.monotonic(),
+        }
         if goal is not None and len(obstacle):
-            ahead = on_the_way(obstacle, [(pose.x, pose.y), *waypoints, goal],
-                               self.planner.radius + 0.03, 0.8)  # fmt: skip
-            if ahead:
+            route = [(here.x, here.y), *waypoints, goal]
+            # inside the band the rover sweeps (a route planned around it passes at about
+            # its radius: not on the way any more), at most once a second and a half
+            now = time.monotonic()
+            if now >= self._beam_said and on_the_way(
+                obstacle, route, self.planner.radius - 0.02, 0.8
+            ):
                 self._next_plan = 0.0  # plan again now
+                self._beam_said = now + 1.5
                 self.beam_events += 1
-                if self.log is not None:
-                    self.log.write('beam', at=self.clock(), obstacle_cells=said['obstacle_cells'])
+                self.event('d405', 'D405: an obstacle on the way, planning again')
         self.beam_info = {
-            'looks': look.seq,
-            'age_ms': round((time.monotonic() - look.taken) * 1000),
+            'looks': grid.frames,
+            'age_ms': None if grid.age_s is None else round(grid.age_s * 1000),
             'obstacle_cells': said['obstacle_cells'],
             'floor_cells': said['floor_cells'],
             'events': self.beam_events,
             'request_ms': None if self.beam.last_s is None else round(self.beam.last_s * 1000),
+        }
+
+    def _use_depth(self) -> None:
+        """A new LiDAR depth map of the phone, with the pose of its frame: to the map worker,
+        which places every point it measured on the floor (FloorMap.add_depth)."""
+        d = self.depth.latest(max_age=1.5)
+        maps = self.mapper.fmap.depth_maps
+        if d is None:
+            self.depth_info = {'error': self.depth.error or 'no fresh depth map', 'maps': maps}
+            return
+        if self.depth.count == self._depth_seq:
+            return
+        self._depth_seq = self.depth.count
+        if d.pose is None:
+            self.depth_info = {'error': d.pose_error or 'depth without a pose (ARKit mode off)',
+                               'maps': maps}  # fmt: skip
+            return
+        with self.lock:
+            est = self.guide.rover_on_floor()
+        self.mapper.offer_depth(d, None if est is None else (est.x, est.y))
+        said = self.mapper.depth_said
+        self.depth_info = {
+            'maps': maps,
+            'size': [int(d.metres.shape[1]), int(d.metres.shape[0])],
+            'age_ms': d.age_ms,
+            'points': said.get('points'),
+            'error': None if said.get('used', True) else said.get('why'),
+            'floor_offset_cm': round(self.mapper.fmap.floor_offset * 100, 1),
         }
 
     def _write_log(self, now: float) -> None:
@@ -448,6 +543,8 @@ class GuideService:
                 return
             self.plan_note = f'route of {len(new)} point(s) around the obstacles'
             self.guide.set_route(new[:-1])
+        length = sum(math.dist(a, b) for a, b in zip([start, *new], new, strict=False))
+        self.event('route', f'route planned: {length:.2f} m, {len(new) - 1} turn(s)')
         if self.log is not None:
             points = [[round(x, 3), round(y, 3)] for x, y in new]
             margin = self.planner.carte.marge_securite
@@ -558,15 +655,19 @@ class GuideService:
         for name, picture in (
             ('top_jpg', self.mapper.picture),
             ('grid_jpg', self.mapper.grid_picture),
+            ('heights_jpg', self.mapper.heights_picture),
         ):
             if picture is not None and grid is not None and grid['x0'] == self.bounds[0]:
                 k = max(1, round(grid['res'] / self.res))
                 picture = shade_blocked(picture, self.planner.blocked_cells(grid), k)
-            out = draw(picture if picture is not None else view, self.bounds, self.res, snap,
-                       trail, self._seen)  # fmt: skip
+            base = picture if picture is not None else view
+            out = draw(base, self.bounds, self.res, snap, trail, self._seen)
             ok, jpg = cv2.imencode('.jpg', out, [cv2.IMWRITE_JPEG_QUALITY, 80])
             if ok:
                 setattr(self, name, jpg.tobytes())
+            ok, jpg = cv2.imencode('.jpg', base, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if ok:
+                self.bare[name] = jpg.tobytes()
 
     # -- commands -------------------------------------------------------------------------
 
@@ -590,6 +691,7 @@ class GuideService:
             self.log.write('goal', at=self.clock(), goal=[round(x, 3), round(y, 3)], start=start)
         with self.lock:
             self.plan_note = None
+        self.event('goal', f'goal set at {x:.2f}, {y:.2f}')
         self._replan(force=True)  # the route before anything is sent to the rover
         if self.guide.goal is None and self.plan_note:
             if self.log is not None:  # refused at once: the loop never saw this goal
@@ -653,6 +755,21 @@ class GuideService:
             'note': self.plan_note,
         }
         snap['beam'] = self.beam_info if self.beam is not None else None
+        snap['events'] = list(self.events)[:20]
+        snap['blind_m'] = round(self.guide.blind_m, 3)  # driven on odometry since last seen
+        step = max(1, len(trail) // 300)
+        snap['trail'] = [[round(x, 3), round(y, 3)] for x, y in trail[::step]]
+        ov = self.beam_overlay
+        snap['beam_points'] = (
+            {k: v for k, v in ov.items() if k != 'at'}
+            if ov is not None and now - ov['at'] < 2.0
+            else None
+        )
+        snap['lidar'] = (
+            dict(self.depth_info, maps=self.mapper.fmap.depth_maps)
+            if self.depth is not None
+            else None
+        )
         snap['mapping_only'] = self.mapping_only
         if self.mapping_only:
             snap['status'] = 'mapping only (no rover): move the phone above the scene'
@@ -686,9 +803,14 @@ class GuideService:
                 if path == '/':
                     with open(INDEX_HTML, 'rb') as f:
                         self._send(200, f.read(), 'text/html; charset=utf-8')
-                elif path == '/top.jpg':  # ?view=grid: the planner's grid instead of photos
-                    grid = 'view=grid' in self.path
-                    jpg = service.grid_jpg if grid else service.top_jpg
+                elif path == '/top.jpg':  # ?view=grid: the planner's grid; ?view=heights
+                    query = self.path.partition('?')[2]
+                    args = dict(p.partition('=')[::2] for p in query.split('&') if p)
+                    name = {'grid': 'grid_jpg', 'heights': 'heights_jpg'}.get(
+                        args.get('view'), 'top_jpg'
+                    )  # &bare=1: without the drawings (the dashboard draws them itself)
+                    bare = args.get('bare') == '1'
+                    jpg = service.bare.get(name) if bare else getattr(service, name)
                     if jpg is None:
                         self._json({'error': service.phone}, 503)
                     else:
@@ -731,6 +853,10 @@ class GuideService:
                     elif path == '/cancel':
                         service.cancel()
                         self._json({'ok': True})
+                    elif path == '/guard':  # the rover's own guard (its D405), on or off
+                        on = 1 if body.get('on') else 0
+                        self._rover('/config', {GUARD_SETTING: on})
+                        service.event('guard', f'rover guard {"on" if on else "off"}')
                     elif path == '/map/reset':
                         service.mapper.reset()
                         self._json({'ok': True})
@@ -800,23 +926,14 @@ def main() -> None:
         '--fixed-bounds: then only its size counts',
     )
     ap.add_argument(
-        '--beam',
-        default=None,
-        metavar='URL',
-        help="the rover's D405 perception (rover_mapper/perception_service.py --d405), e.g. "
-        'http://<rover>:8095: what it sees right ahead adds, confirms or clears obstacles',
+        '--no-d405',
+        action='store_true',
+        help="without the rover's D405 (its GET /local_grid): the air camera's map only",
     )
     ap.add_argument(
-        '--beam-offset',
-        type=float,
-        nargs=2,
-        default=(0.10, 0.0),
-        metavar=('X', 'Y'),
-        help='where the D405 is on the rover, m ahead and to the left of its centre (0.10 0; '
-        'to measure)',
-    )
-    ap.add_argument(
-        '--beam-range', type=float, default=1.0, help='m ahead of the D405 believed (1.0)'
+        '--no-lidar',
+        action='store_true',
+        help="without the phone's LiDAR depth (/depth): heights from the moving picture only",
     )
     ap.add_argument(
         '--log',
@@ -842,8 +959,7 @@ def main() -> None:
     service = GuideService(
         a.phone, rover, finder, cfg, tuple(a.bounds), a.res, a.port, a.host,
         follow=not a.fixed_bounds, radius=a.radius, colour=not a.no_colour,
-        log_dir=a.log or None, beam=a.beam, beam_offset=tuple(a.beam_offset),
-        beam_range=a.beam_range,
+        log_dir=a.log or None, beam=not a.no_d405, lidar=not a.no_lidar,
     )  # fmt: skip
     service.start()
     print(
