@@ -252,10 +252,18 @@ class FusionReelle:
         self.arret_demande = threading.Event()
         self.requete = requete or client_http(args.rover, delai=args.delai_http)
         self.percevoir = percevoir or percevoir_http(
-            args.perception, delai=6.0, age_max=args.age_max, fraiche=False
+            args.perception,
+            delai=6.0,
+            age_max=args.age_max,
+            fraiche=False,
+            avance_camera=args.avance_camera,
         )
         self.percevoir_frais = percevoir_frais or percevoir_http(
-            args.perception, delai=8.0, age_max=args.age_max, fraiche=True
+            args.perception,
+            delai=8.0,
+            age_max=args.age_max,
+            fraiche=True,
+            avance_camera=args.avance_camera,
         )
         self.camera = None  # the overhead camera (OverheadDrone), with --drone-source
         self.ia = None  # the vision model that finds the rover, with --drone-detecteur ia
@@ -852,6 +860,11 @@ class FusionReelle:
             else:
                 self.publier(vue)
                 info = 'view fused'
+        if not self.en_mission():
+            # an obstacle the rover's guard reported during a mission that has ended leaves the
+            # map at its time too (a running mission does it itself, between two plans)
+            with self.verrou:
+                self.carte.expirer_chocs(time.monotonic())
         self.dessiner(pose, info, etat)
 
     # ---- mission ---------------------------------------------------------------------
@@ -1258,6 +1271,7 @@ class FusionReelle:
     def _boucle_segments(self, rover, ae):
         a = self.args
         sans_vue = 0
+        refus = 0  # segments in a row the rover's guard ended before the rover moved
         for k in range(a.max_pas):
             objectif = self.objectif
             if self.arret_demande.is_set() or objectif is None:
@@ -1274,14 +1288,26 @@ class FusionReelle:
                 vue = self.regard(rover.est, cap)
                 if vue is None:
                     sans_vue += 1
-                    self.journal_mission(texte=f'perception unavailable ({sans_vue}/3): waiting')
                     if sans_vue >= 3:
+                        self.journal_mission(
+                            texte="ENDED: no view from the rover's camera, 3 tries (perception "
+                            'service or its link to the depth camera down, or no floor in '
+                            'view): the rover did not move'
+                        )
                         return 'perception_indisponible'
+                    self.journal_mission(texte=f'perception unavailable ({sans_vue}/3): waiting')
                     time.sleep(1.0)
                     continue
                 sans_vue = 0
                 self.publier(vue)
             with self.verrou:
+                # What the rover's guard stopped for stays on the map for its time, even when
+                # the perception service's view just fused says "free" there: the two do not
+                # see the same things. The rover's own grid is what the guard saw: its view
+                # decides (a cell it sees free again is free at once).
+                self.carte.expirer_chocs(time.monotonic())
+                if a.source_locale != 'rover':
+                    self.carte.reposer_chocs(time.monotonic())
                 dec = self.carte.decider(
                     pos,
                     objectif,
@@ -1335,6 +1361,31 @@ class FusionReelle:
             if statut in ('liaison', 'redemarrage'):
                 self.journal_mission(texte=f'ERROR: segment ended on "{statut}" (link or server)')
                 return 'erreur'
+            fin = getattr(rover, 'fin', None) or {}
+            # (a driver without the guard's report, e.g. a test's stand-in, has none)
+            vu = rover.obstacle_vu(fin) if hasattr(rover, 'obstacle_vu') else None
+            if vu is not None:
+                # The rover's local guard (its depth camera) ended the segment before an
+                # obstacle the map did not have: on the map for --duree-obstacle s, new route.
+                # Without this the same segment was sent again while the rover stood still.
+                with self.verrou:
+                    self.carte.signaler_obstacle(
+                        *vu, rayon=0.1, t=time.monotonic(), duree=a.duree_obstacle
+                    )
+                ou = f'({vu[0] - DECALAGE:.2f}, {vu[1] - DECALAGE:.2f})'
+                refus = refus + 1 if float(fin.get('distance') or 0.0) < 0.05 else 0
+                if refus >= 3:
+                    self.journal_mission(
+                        texte=f"BLOCKED: the rover's guard refuses every way from here (obstacle "
+                        f'at {ou}, {refus} segments ended before moving): move the rover back '
+                        'by hand, or remove what is in front of it'
+                    )
+                    return 'bloque'
+                self.journal_mission(
+                    texte=f'OBSTACLE seen by the rover at {ou}: stopped before it, new route'
+                )
+                continue
+            refus = 0
             if impact is not None:
                 with self.verrou:
                     rover.signaler_choc(impact)
@@ -1744,6 +1795,14 @@ def options(argv=None):
         help="build the rover's local map from its own camera (the perception service), "
         'outside a mission and at each stop of a mission. Off for now: the maps come from '
         'the drone camera only. Also the "Local map" box of the dashboard',
+    )
+    p.add_argument(
+        '--avance-camera',
+        type=float,
+        default=0.0,
+        help="m: the lens of the rover's camera ahead of its centre of rotation, for the views "
+        "of the perception service (the rover's own grid already has it: its d405_x setting). "
+        'With 0 the obstacles are drawn that much too near the rover',
     )
     p.add_argument('--periode', type=float, default=2.0, help='s between two reads')
     p.add_argument('--delai-http', type=float, default=8.0, help='s per request to the rover')

@@ -336,6 +336,20 @@ class CarteFusion:
         self.chocs_temporaires = restants
         return effaces
 
+    def reposer_chocs(self, t):
+        """Remet en obstacle les cases des chocs temporaires encore en vie a l'instant t ;
+        renvoie leur nombre. A appeler apres avoir recu une vue du rover : une vue plus recente
+        qui dit « libre » a cet endroit l'effacerait (recevoir : le plus recent gagne), alors
+        que la camera ne voit pas toujours ce que le rover a senti ou ce que son garde-fou a
+        vu. Le choc garde sa duree de vie : expirer_chocs l'efface a la meme heure."""
+        vivants = [c for c in self.chocs_temporaires if t < c[3]]
+        for x, y, rayon, _, source in vivants:
+            for (z, tx, ty), masque in self._disque(x, y, rayon).items():
+                data = np.where(masque, OBSTACLE, INCONNU).astype(np.int8)
+                tk = max(t, self.maj.get(source, {}).get((z, tx, ty), t))
+                self.recevoir({'source': source, 't': tk, 'z': z, 'x': tx, 'y': ty, 'data': data})
+        return len(vivants)
+
     def oublier_rover(self, zone=None, source=None):
         """Oublie ce que les rovers ont vu ou ressenti (vues et chocs) dans `zone`
         (x0, y0, x1, y1 en m ; None = partout), pour toutes les sources du role rover ou

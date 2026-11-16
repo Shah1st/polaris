@@ -710,3 +710,157 @@ def test_the_mission_speed_follows_the_dashboard_slider() -> None:
                 {'vitesse': 0.01}, {'vitesse': 0.5}):  # fmt: skip
         assert f.regler_vitesse(bad)[0] == 400
     assert f.args.vitesse == 0.1 and f.rover_mission.vitesse == 0.1  # unchanged by those
+
+
+# ---- a place marked as an obstacle that turns out to be free --------------------------------
+
+
+def cell(f, x, y):
+    """The fused value (1 obstacle, 0 free, -1 unknown) of the 5 cm cell holding map (x, y)."""
+    g = f.carte.grille(x - 0.2, y - 0.2, x + 0.2, y + 0.2)
+    for i in range(g.val.shape[0]):
+        for j in range(g.val.shape[1]):
+            cx, cy = g.xy(i, j)
+            if abs(cx - x) < 0.025 and abs(cy - y) < 0.025:
+                return int(g.val[i, j])
+    raise AssertionError('cell not in the window')
+
+
+def test_an_obstacle_the_rover_sees_free_again_leaves_the_map_with_the_service() -> None:
+    """Perception service (--source-locale service): the views of the rover's camera."""
+    vues = []
+    f = fr.FusionReelle(
+        fr.options(['--carte-locale']),
+        requete=lambda methode, chemin, corps=None: {
+            'odom': {'x': 0.0, 'y': 0.0, 'heading_deg': 0.0, 'v': 0.0}
+        },
+        percevoir=lambda *a: vues[-1],
+        percevoir_frais=lambda *a: vues[-1],
+    )
+    m = np.zeros((8, 8), np.int8)
+    m[4, 4] = 1  # map point (20.225, 20.225)
+    vues.append((m, 20.0, 20.0))
+    f.tour()
+    f.tour()  # fused once the rover stood still
+    assert cell(f, 20.225, 20.225) == 1
+    vues.append((np.zeros((8, 8), np.int8), 20.0, 20.0))  # the same place, seen free
+    f.tour()
+    assert cell(f, 20.225, 20.225) == 0  # the obstacle is gone from the map
+    m = np.full((8, 8), -1, np.int8)
+    m[4, 4] = 1
+    vues.append((m, 20.0, 20.0))
+    f.tour()
+    vues.append((np.full((8, 8), -1, np.int8), 20.0, 20.0))  # not seen any more: no news
+    f.tour()
+    assert cell(f, 20.225, 20.225) == 1  # kept: only seeing it free removes it
+
+
+def test_an_obstacle_the_rover_sees_free_again_leaves_the_map_with_its_own_grid() -> None:
+    """The rover's own depth grid (--source-locale rover, its GET /local_grid)."""
+    cells = [[0] * 20 for _ in range(20)]
+    cells[10][10] = 1  # odometry (0.525, 0.525) = map (20.525, 20.525)
+    local = {'res': 0.05, 'x0': 0.0, 'y0': 0.0, 'cells': cells, 'age_s': 0.1, 'error': None}
+
+    def requete(methode, chemin, corps=None):
+        if chemin == '/local_grid':
+            return local
+        return {'odom': {'x': 0.0, 'y': 0.0, 'heading_deg': 0.0, 'v': 0.0}}
+
+    f = fr.FusionReelle(
+        fr.options(['--carte-locale', '--source-locale', 'rover']),
+        requete=requete,
+        percevoir=lambda *a: None,
+        percevoir_frais=lambda *a: None,
+    )
+    f.tour()
+    assert cell(f, 20.525, 20.525) == 1
+    cells[10][10] = 0  # the rover's camera now sees the floor there
+    f.tour()
+    assert cell(f, 20.525, 20.525) == 0
+    cells[10][10] = 1
+    f.tour()
+    cells[10][10] = -1  # the rover forgot it (not seen for local_hold s): no news
+    f.tour()
+    assert cell(f, 20.525, 20.525) == 1  # the fused map keeps it until it is seen free
+
+
+def test_an_obstacle_reported_by_the_guard_expires_and_is_not_erased_before(monkeypatch) -> None:
+    libre = (np.zeros((8, 8), np.int8), 20.0, 20.0)
+    f = fr.FusionReelle(
+        fr.options(['--carte-locale', '--duree-obstacle', '30']),
+        requete=lambda methode, chemin, corps=None: {
+            'odom': {'x': 0.0, 'y': 0.0, 'heading_deg': 0.0, 'v': 0.0}
+        },
+        percevoir=lambda *a: libre,
+        percevoir_frais=lambda *a: libre,
+    )
+    t = [1000.0]
+    monkeypatch.setattr(fr.time, 'monotonic', lambda: t[0])
+    f.carte.signaler_obstacle(20.225, 20.225, rayon=0.1, t=t[0], duree=30.0)  # as a mission does
+    assert cell(f, 20.225, 20.225) == 1
+    t[0] += 5.0
+    f.publier(libre)  # a view that says free there (it does not see what the guard saw)...
+    assert cell(f, 20.225, 20.225) == 0
+    f.carte.reposer_chocs(t[0])  # ...is undone before the next plan, as the mission loops do
+    assert cell(f, 20.225, 20.225) == 1
+    t[0] += 30.0  # its time is over: gone at the next turn, mission or not
+    f.tour()
+    f.tour()
+    assert cell(f, 20.225, 20.225) == 0 and not f.carte.chocs_temporaires
+
+
+class GuardedRover(SegmentRover):
+    """A rover whose local guard ends segments as 'blocked': it drives up to the obstacle it
+    alone sees (a wall at x = `wall`), or does not move when it is already there."""
+
+    def __init__(self, x, y, wall):
+        super().__init__(x, y)
+        self.wall, self.fin = wall, None
+
+    def suivre(self, points, duree):
+        self.segments.append([tuple(p) for p in points])
+        x, y = points[-1]
+        if x < self.wall - 0.15:  # the segment ends before the wall: driven to its end
+            self.est, self.fin = (x, y), {'status': 'done', 'distance': 1.0}
+            return 'done', None
+        stop = self.wall - 0.15
+        moved = max(0.0, stop - self.est[0])
+        self.est = (max(self.est[0], stop), self.est[1])
+        self.fin = {'status': 'blocked', 'obstacle': [self.wall, self.est[1]], 'distance': moved}
+        return 'blocked', None
+
+    def obstacle_vu(self, entree):
+        o = entree.get('obstacle')
+        return None if entree.get('status') != 'blocked' or not o else (o[0], o[1])
+
+
+def test_in_segments_what_the_guard_stops_for_goes_on_the_map_and_changes_the_route() -> None:
+    """The first real runs: the guard ended the segment ('blocked'), the loop did not read it
+    and sent the same segment again and again while the rover stood still."""
+    import avancer_esquive as ae
+
+    f = with_a_drone_map(['--max-pas', '8'])
+    f.objectif = (21.8, 20.0)
+    rover = GuardedRover(20.0, 20.0, wall=21.0)
+    issue = f._boucle_segments(rover, ae)
+    assert 'OBSTACLE seen by the rover' in f.mission['texte'] or issue == 'bloque'
+    assert cell(f, 21.025, 20.025) == 1  # what the guard saw is on the fused map
+    assert rover.segments[1] != rover.segments[0]  # a new route, not the same segment again
+    assert len(rover.segments) < 8  # and no endless resend
+
+
+def test_in_segments_three_refusals_before_moving_end_the_mission_blocked() -> None:
+    import avancer_esquive as ae
+
+    f = with_a_drone_map(['--max-pas', '20'])
+    f.objectif = (21.8, 20.0)
+
+    class Stuck(GuardedRover):  # its guard reports an obstacle the planner cannot plan round:
+        def obstacle_vu(self, entree):  # always behind the rover, never on the way
+            return None if entree.get('status') != 'blocked' else (19.6, 20.0)
+
+    rover = Stuck(20.85, 20.0, wall=21.0)  # already standing at the wall: 0 m at each try
+    assert f._boucle_segments(rover, ae) == 'bloque'
+    assert len(rover.segments) == 3  # three tries, then it stops asking
+    assert "rover's guard refuses every way" in f.mission['texte']
+    assert 'move the rover back by hand' in f.mission['texte']

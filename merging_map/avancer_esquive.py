@@ -65,6 +65,7 @@ Limites :
 
 import argparse
 import math
+import secrets
 import signal
 import time
 
@@ -322,11 +323,21 @@ class RoverSegments(RaspRoverReel):
                     f'Segment refuse : {reelle:.2f} m depuis la pose odometrique du rover pour '
                     f'{longueur:.2f} m demandes (marge {self.marge_pas:.2f} m) : repere faux.'
                 )
+        # Un nom par segment : le serveur le rend dans l'entree de ctrl.history. Sans lui, deux
+        # segments finis de la meme facon (refuses sur place par le garde-fou local : 'blocked',
+        # 0 m, 0 s, meme obstacle) laissent deux entrees identiques, et _controler_segment
+        # prenait la seconde pour un segment « disparu sans trace ». Un serveur plus ancien
+        # ignore ce champ.
+        self._n_segments = getattr(self, '_n_segments', 0) + 1
+        if not hasattr(self, '_nom'):
+            self._nom = secrets.token_hex(3)
         corps = {
             'points': [[round(x, 4), round(y, 4)] for x, y in odom],
             'frame': 'odom',
             'speed': self.vitesse,
+            'id': f'seg-{self._nom}-{self._n_segments}',
         }
+        self.fin = None  # l'entree de ctrl.history du segment fini (obstacle_vu la lit)
         self._prevu = duree  # attente_pas : le premier GET /state ne part qu'apres `duree`
         try:
             statut, etat = self._faire_un_pas('/path', corps, longueur, etat)
@@ -335,6 +346,8 @@ class RoverSegments(RaspRoverReel):
         finally:
             accepte = self.accepte = self._poste is not None
             self._prevu, self._poste = 0.0, None
+        if etat is not None and statut not in (None, 'redemarrage'):
+            self.fin = ((etat.get('ctrl') or {}).get('history') or [None])[0]
         if statut is None:
             return 'liaison', None
         if statut == 'redemarrage':

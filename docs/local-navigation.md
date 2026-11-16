@@ -62,7 +62,8 @@ Maps server (`sim/fusion_reelle.py`):
 | `--segment` | 0 | With `--continu`: longest path sent, m (2 m when 0) |
 | `--periode-plan` | 0.5 s | Time between two plans |
 | `--latence` | 0.4 s | The plan starts `vitesse * latence + 5 cm` ahead of the rover |
-| `--duree-obstacle` | 30 s | Life of an obstacle reported by the guard when nothing sees it again |
+| `--duree-obstacle` | 30 s | Life of an obstacle reported by the guard (`--continu` and `--segment`). In segments, a view of the perception service that says "free" there does not erase it before; the rover's own grid does |
+| `--avance-camera` | 0 m | Lens ahead of the rover's centre, for the views of the perception service (`--source-locale service`). The rover's own grid has it already (`d405_x`) |
 | `--duree-max` | 600 s | Longest mission |
 
 Rover settings (`POST /config` on the rover, saved in `rover_config.json`):
@@ -145,9 +146,15 @@ Then the dashboard as usual: click a goal, "Go".
   `POST /vitesse` (0.05 to 0.30 m/s; the slider stops at 0.20), from the next path sent to the
   rover, also during a mission.
 
-Each switch works alone: the guard with the
-old step-by-step mission (a `blocked` step is not yet read by that loop: use `--continu`),
-`--source-locale rover` without `--continu`, `--continu` without the local map.
+Each switch works alone: the guard with missions in segments (`--segment`: a `blocked`
+segment puts the obstacle on the map and a new route is planned; three refusals in a row
+before the rover moves end the mission as blocked) but not yet with the step-by-step loop
+(`--segment 0`), which does not read `blocked`; `--source-locale rover` without `--continu`;
+`--continu` without the local map. With the guard on, prefer `--source-locale rover`: the
+planner then sees what the guard sees. After a guard stop the rover stands about 10 cm
+from the obstacle, which can still be inside the guard's corridor (12 cm each side) for any
+new route: the mission then ends blocked and asks for the rover to be moved back by hand.
+Backing off by itself, as the tilt guard does, is not done.
 
 ## Before the first real run
 
@@ -203,6 +210,19 @@ carpet the whole time; the guard stayed off.
 - **After the swap.** The rover server restarted, so its odometry is back at (0, 0, 0): a maps
   server started before must be reset (`POST /reset`, "Reset the maps") before a goal is
   clicked.
+- **First missions with the guard on (segments, local map from the perception service).**
+  The rover sometimes stood still while the mission went on. Its history said why: 39 of its
+  last 50 paths ended `blocked` after 0 m, for the same obstacle of its own grid. The planner
+  did not have that obstacle (it read the perception service, whose views are also drawn 9 cm
+  too near without `--avance-camera`), the segments loop did not read `blocked`, and the same
+  segment was sent again every 5 to 8 s, up to 23 times. Two identical `blocked` entries in
+  `ctrl.history` then looked like a segment "disparu sans trace" and ended the mission on a
+  false error. Fixed: the loop reads `blocked` (see "Running it"), each segment carries an
+  `id`, and a mission that gets no view from the rover's camera now says that it ended.
+  Reproduced on the bench before the fix (real rover server, simulated board: 12 times
+  the same segment, the rover standing at the box); after it the rover goes round the
+  box, or ends blocked when stopped too near to leave. Kept as tests with a stand-in
+  rover (`sim/test_fusion_reelle.py`); not run on the real rover.
 - **Step 4, pictures.** `rover_mapper/scripts/record_d405.py NAME` saves the frame, the
   rover's grid and a picture with the grid drawn over it, in `rover_mapper/recordings/`.
   Recorded: the empty carpet (floor free up to the range, no false obstacle; the grid
@@ -223,8 +243,15 @@ carpet the whole time; the guard stayed off.
   next plan. Manual driving (`/cmd`) and `/move` are not guarded.
 - **Odometry frame.** The grid and the maps of `fusion_reelle.py` live in the rover's
   odometry, which drifts; an obstacle seen long ago is where the odometry put it.
-- **Obstacles that leave.** The rover forgets them after `local_hold`; the fused map keeps a
-  rover tile until the rover sees that cell free again.
+- **Obstacles that leave.** A cell the rover's camera sees free again is cleared at once, on
+  the rover and on the fused map, with either source (`sim/test_fusion_reelle.py`). A cell it
+  no longer sees is not: the rover forgets it after `local_hold`, the fused map keeps the
+  rover tile until the rover sees that cell free. Three things do not clear by being seen:
+  what the guard reported lasts `--duree-obstacle`; a bump (tilt, stall) is a forbidden zone
+  until "Reset the maps", on purpose (the camera saw nothing where the rover tipped); and on
+  the rover, an obstacle within 0.45 m is never forgotten and, inside the blind zone, cannot
+  be seen free either: a box taken away right in front of a stopped rover stays in its memory
+  until it has moved off, by another route or by hand.
 - **The link.** Through the VM's tunnel (1.3 to 4 s a request) the rover stays safe but ends
   each path before the next arrives. Smooth driving needs the planner on the room's Wi-Fi.
 - **Two processes on the RDK X5**, which has no fan; the grid is computed only while asked.
@@ -239,12 +266,15 @@ carpet the whole time; the guard stayed off.
 | `rover/tests/test_server.py` | `/local_grid`, the feed, path ids over HTTP |
 | `merging_map/test_suivi_continu.py` | Corner rounding, replacement rule, placing the rover grid |
 | `merging_map/test_conduite_continue.py` | End to end against the real rover server (simulated ESP32, stand-in camera with a field of view and shadows): clear way driven without the speed dropping; a box only the rover sees driven round without contact; a wall across the zone ends `bloque` short of it. Real time, about 45 s |
-| `sim/test_fusion_reelle.py` | Rover grid fused at the right place while moving; defaults off |
+| `sim/test_fusion_reelle.py` | Rover grid fused at the right place while moving; defaults off; an obstacle seen free again leaves the map with both sources, one no longer seen stays; the guard's obstacle expires and is not erased before; in segments a `blocked` segment changes the route, three before moving end the mission |
 
 ## Not done
 
 - The rover's own web page has no box for `local_guard` (use `POST /config`, or the
   dashboard's "Rover guard" box).
-- `merging_map/lancer_overhead.py` and the step and segment loops do not read `blocked`.
+- `merging_map/lancer_overhead.py` and the step-by-step loop do not read `blocked` (the
+  segments and continuous loops do).
+- Forgetting, on the rover, a near obstacle that was taken away (see "Obstacles that leave").
+- Backing off after a guard stop, so that a new route can leave (see "Running it").
 - Steering round an obstacle on the rover itself, and Nav2. A later Nav2 bridge would need
   the same rover interfaces (`/local_grid`, `id`, `blocked`).
