@@ -6,6 +6,12 @@ planner turns that map into a path, and a small ground rover (Waveshare RaspRove
 with its own depth camera for what the overhead view misses. Everything runs on one laptop
 plus the rover; the demo chain is plain Python, with no ROS required.
 
+![Forest search-and-rescue mission in simulation: the 3D scene on the left, the merged map and the drone and rover layers on the right](docs/images/forest-mission-sim.webp)
+
+*Search-and-rescue mission in simulation: two rovers and one drone fill one merged map
+(`merging_map.CarteFusion`). Map fusion and path planning are the real code; sensors and
+motion are simulated.*
+
 - [How it works](#how-it-works)
 - [Quick start](#quick-start)
 - [What is proven](#what-is-proven)
@@ -17,17 +23,19 @@ plus the rover; the demo chain is plain Python, with no ROS required.
 
 ## How it works
 
-```
-phone above the area (CamStream app, iphone-camera/)
-        │ pictures over Wi-Fi or USB
-        ▼
-teleop/server.py            the dashboard (web page, relays to the two below)
-        │
-        ▼
-sim/fusion_reelle.py        the maps, the planner (merging_map A*), the missions
-        │ HTTP: GET /state, POST /path, /move, /stop
-        ▼
-rover/rover_server.py       on the rover: motors, odometry, safety
+```mermaid
+flowchart TD
+    phone["<b>Phone above the area</b><br/>CamStream app, iphone-camera/"]
+    browser["<b>Browser</b><br/>cameras, maps, keys, clicked goal"]
+    dash["<b>Dashboard</b><br/>teleop/server.py"]
+    fusion["<b>Maps, planner, missions</b><br/>sim/fusion_reelle.py<br/>overhead pipeline + merging_map A*"]
+    rover["<b>Rover</b><br/>rover/rover_server.py<br/>motors, odometry, safety"]
+
+    phone -- "pictures over Wi-Fi or USB" --> dash
+    browser <--> dash
+    dash --> fusion
+    fusion -- "GET /state, POST /path, /move, /stop" --> rover
+    rover -. "GET /local_grid: obstacles seen by the depth camera (optional)" .-> fusion
 ```
 
 1. **Drone map.** The overhead picture is resampled to a metric top view; pixels that differ
@@ -43,6 +51,11 @@ rover/rover_server.py       on the rover: motors, odometry, safety
    down and stop it before what it sees.
 5. **Dashboard.** `teleop/` shows the cameras and the three maps (rover, drone, fused) in a
    browser, drives the rover from the keyboard and sends it to a clicked goal.
+
+| From above, on the real floor | Map fusion and planning |
+|---|---|
+| ![A picture of the arena taken from above, next to the obstacle grid computed from it](docs/images/overhead-real.jpg) | ![Four panels of the map fusion demo: drone view, zoomed tiles, fused map with replanning, unreachable goal](merging_map/demo_fusion.png) |
+| A picture from the phone above the arena and the obstacle grid computed from it. The red circle is where the rover was found. | Output of `merging_map/demo_fusion.py` on a simulated world (labels in French): the coarse drone view shows no path, the drone zooms where a passage may hide, the rover finds a fallen trunk and replans, and a goal that cannot be reached is replaced by the nearest point. |
 
 The ROS 2 Jazzy nodes in `src/` publish the same overhead map on topics; the demo chain does
 not go through them.
