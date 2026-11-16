@@ -84,7 +84,7 @@ flowchart LR
 | From above, on the real floor | Map fusion and planning |
 |---|---|
 | <img src="docs/images/overhead-real.jpg" width="420" alt="A picture of the arena taken from above, next to the obstacle grid computed from it"> | ![Four panels of the map fusion demo: drone view, zoomed tiles, fused map with replanning, unreachable goal](merging_map/demo_fusion.png) |
-| A picture from the phone above the arena and the obstacle grid computed from it. The red circle is where the rover was found. | Output of `merging_map/demo_fusion.py` on a simulated world (labels in French): the coarse drone view shows no path, the drone zooms where a passage may hide, the rover finds a fallen trunk and replans, and a goal that cannot be reached is replaced by the nearest point. |
+| A picture from the phone above the arena and the obstacle grid computed from it. The red circle is where the rover was found. | Output of `merging_map/demo_fusion.py` on a simulated world: the coarse drone view shows no path, the drone zooms where a passage may hide, the rover finds a fallen trunk and replans, and a goal that cannot be reached is replaced by the nearest point. |
 
 The ROS 2 Jazzy nodes in `src/` publish the same overhead map on topics; the demo chain does
 not go through them.
