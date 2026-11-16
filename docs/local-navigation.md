@@ -5,10 +5,12 @@ this layer lets the rover see what is in front of it with its D405, stop by itse
 obstacle the overhead camera missed, and drive without a stop at every step. Plain Python, no
 ROS and no Nav2.
 
-**Status: tests only.** Everything here runs against the real rover server with a simulated
-ESP32 and a stand-in depth camera. Nothing has run on the real rover or on a real D405 picture
-yet. All of it is **off by default**; the chain that works today is unchanged until the
-switches below are turned on. "Before the first real run" lists what is still to do.
+**Status: deployed, not driven.** The tests run against the real rover server with a
+simulated ESP32 and a stand-in depth camera. Since 2026-11-16 the code is on the robot, the
+floor is calibrated and `GET /local_grid` returns the real D405's grid ("On the robot,
+2026-11-16" below), but the guard has never been on with the wheels turning and no path has
+been driven with it. All of it is **off by default**; the chain that works today is unchanged
+until the switches below are turned on. "Before the first real run" lists what is still to do.
 
 ## How it works
 
@@ -98,7 +100,12 @@ path the planner sends 15 cm from an obstacle.
   history entry; a replaced entry has `replaced_by`. New status `blocked`, with
   `obstacle: [x, y]` in the odometry frame.
 - `status.json` of the maps server: `local` (`source`, `age_s`, `erreur`, `garde`,
-  `obstacle_dist`) and `conduite` (`pas`, `segments`, `continu`).
+  `obstacle_dist`) and `conduite` (`pas`, `segments`, `continu`). `POST /conduite`
+  `{"continu": bool, "source_locale": "rover"|"service"}` (either key) changes `--continu`
+  and `--source-locale` while it runs; 409 during a mission.
+- Dashboard (`teleop/server.py`): `POST /fusion/conduite` relays that; `POST /api/guard`
+  `{"local_guard": bool}`; `/api/state` has `guard` (0, 1, `"absent"` on an older rover
+  server), `robot.local` and `ctrl.local` from the rover's `/state`.
 
 ## Running it
 
@@ -119,7 +126,23 @@ python sim/fusion_reelle.py --rover http://<rover>:8080 --port 8096 \
     --continu --carte-locale --source-locale rover --drone-source <overhead camera>
 ```
 
-Then the dashboard as usual: click a goal, "Go". Each switch works alone: the guard with the
+Then the dashboard as usual: click a goal, "Go".
+
+**From the dashboard** (`teleop/`, "Drone and maps" tab), without restarting anything:
+
+- **Drive without stops** and **Rover's depth grid**: the maps server's `--continu` and
+  `--source-locale rover`, switched by its `POST /conduite` (refused during a mission).
+  Hidden with the simulation's maps server.
+- **Rover guard**: the rover's `local_guard` setting (`POST /api/guard` sends
+  `POST /config {"local_guard": 1|0}`, nothing else). Hidden, and "not on this rover server"
+  in the left table, when the rover's settings have no `local_guard` (an older
+  `rover_server.py`).
+- A line under the switches, and the "Rover guard" row on the left: the guard's state (way
+  clear, slowing down, no recent depth picture, **STOPPED before an obstacle** in red) with the
+  distance to the obstacle, the age and error of the rover's grid feed, where the rover map
+  comes from, and how missions drive.
+
+Each switch works alone: the guard with the
 old step-by-step mission (a `blocked` step is not yet read by that loop: use `--continu`),
 `--source-locale rover` without `--continu`, `--continu` without the local map.
 
@@ -141,6 +164,46 @@ old step-by-step mission (a `blocked` step is not yet read by that loop: use `--
    the wheels stop.
 7. **On the floor, in this order**: the guard alone on a straight path towards a box;
    `--source-locale rover` (the box appears on the fused map); `--continu`.
+
+## On the robot, 2026-11-16
+
+Steps 1, 2 and 5 are done, 4 is started; 3, 6 and 7 are not. The rover stood still on a flat
+carpet the whole time; the guard stayed off.
+
+- **Step 1, what the robot ran.** Not an older `main`: `rover_core.py` was the one of
+  `experiment` (8a3846f) and `rover_server.py`, `web/index.html` those of `rover-teleop`
+  (db24533): the command log (`GET /commands`, f4e92a6) and a speed carry-over for a path
+  replacing a path (13 lines of 8a3846f), neither on `main`. `d405_server.py` was an older
+  `main` (84e711b).
+- **What it runs now.** `rover/`: `main` merged with `rover-teleop`, which is
+  `git merge origin/rover-teleop` byte for byte (no conflict; 191 of the 192 rover tests pass
+  on a Windows PC, the one that fails, the SIGTERM test, fails there on plain `main` too):
+  the local navigation and the command log. The carry-over of `experiment` is gone: `main`'s take-over
+  replaces it and needs a path `id`, so a guide that sends paths without one (`air_ground`)
+  stops and pivots at each correction again. `~/polaris-d405`: `d405_server.py` and
+  `rovermap/` of `main`. Backups on the robot: `~/rover/backup/0121-pre-localnav/`,
+  `~/polaris-d405/backup/0114-pre-localnav/`. Before the swap, the merged server ran in
+  `--sim` on the robot's Python 3.10 with the real D405 feeding its local map.
+- **Step 2, the floor.** `POST /calibrate_floor`: `height_m` 0.1522 (0.15 expected),
+  `tilt_deg` 1.46: the lens looks 1.4 degrees down and rolls 0.2 degrees. Kept in
+  `~/polaris-d405/d405_floor.json`. Fitted picture by picture before that: 0.1533 m, 1.6 degrees.
+- **Step 5, the cost.** RDK X5, 8 cores, rover server running, the grid thread at its 10
+  grids a second for 20 s: `cpu_ms_per_grid` 56 to 58 ms, but the whole capture process took
+  **2.3 cores** (8 % of one core at rest). `cpu_ms_per_grid` is the grid thread's own time;
+  the rest is probably OpenCV and numpy working on other threads (OpenCV is set to 8 on this
+  board), which it does not count: not checked. 62 to 64 degrees C during the measure. To
+  try before driving, none measured yet: `--grid-hz 5`, `--grid-stride 4`, or one thread
+  (`cv2.setNumThreads(1)`, `OMP_NUM_THREADS=1`).
+- **After the swap.** The rover server restarted, so its odometry is back at (0, 0, 0): a maps
+  server started before must be reset (`POST /reset`, "Reset the maps") before a goal is
+  clicked.
+- **Step 4, pictures.** `rover_mapper/scripts/record_d405.py NAME` saves the frame, the
+  rover's grid and a picture with the grid drawn over it, in `rover_mapper/recordings/`.
+  Recorded: the empty carpet (floor free up to the range, no false obstacle; the grid
+  recomputed from the frame and the rover's own agree within a few cells). Still to record:
+  a box at 0.3, 0.6 and 1 m, a chair leg, a low object, a wall, a shiny floor.
+- **On the real rover server:** `GET /local_grid` 0.03 s old, 441 free cells, no error;
+  `local_guard` 0.
 
 ## Known limits
 
@@ -174,9 +237,8 @@ old step-by-step mission (a `blocked` step is not yet read by that loop: use `--
 
 ## Not done
 
-- Dashboard: no display of the guard's state or a switch for `--continu`; `status.json`
-  carries the fields.
-- The rover's own web page has no box for `local_guard` (use `POST /config`).
+- The rover's own web page has no box for `local_guard` (use `POST /config`, or the
+  dashboard's "Rover guard" box).
 - `merging_map/lancer_overhead.py` and the step and segment loops do not read `blocked`.
 - Steering round an obstacle on the rover itself, and Nav2. A later Nav2 bridge would need
   the same rover interfaces (`/local_grid`, `id`, `blocked`).
