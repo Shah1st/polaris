@@ -66,6 +66,15 @@ the rock step from above, so the rover is sent around it from the start; the rov
 hidden under the crowns. When nobody knows where the victim is (picture at the top), drones
 survey the open ground and rovers search under the trees.*
 
+| Nobody knows where the victim is: a rover finds it under the trees | Three rovers and two drones: a drone spots it in the open |
+|---|---|
+| ![Search with two rovers and one drone](docs/images/forest-mission-search-2-rovers-1-drone.gif) | ![Search with three rovers and two drones](docs/images/forest-mission-search-3-rovers-2-drones.gif) |
+
+*Left: the drone has mapped the open ground and the victim is still missing; a rover searching
+under the canopy finds it and drives to it. Right: the same code with three rovers and two
+drones; a drone spots the victim and the nearest rover is sent on the merged map. Videos are
+sped up five to six times.*
+
 The same code runs from simulation to the real robot: the map fusion and the planner in these
 pictures are the ones that drove the real rover ([What is proven](#what-is-proven) says what
 ran on hardware and what only in tests). In the simulation the terrain is a generated stand-in
