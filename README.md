@@ -120,10 +120,19 @@ flowchart LR
 5. **Dashboard.** `teleop/` shows the cameras and the three maps (rover, drone, fused) in a
    browser, drives the rover from the keyboard and sends it to a clicked goal.
 
-| From above, on the real floor | Map fusion and planning |
-|---|---|
-| <img src="docs/images/overhead-real.jpg" width="420" alt="A picture of the arena taken from above, next to the obstacle grid computed from it"> | ![Four panels of the map fusion demo: drone view, zoomed tiles, fused map with replanning, unreachable goal](merging_map/demo_fusion.png) |
-| A picture from the phone above the arena and the obstacle grid computed from it. The red circle is where the rover was found. | Output of `merging_map/demo_fusion.py` on a simulated world: the coarse drone view shows no path, the drone zooms where a passage may hide, the rover finds a fallen trunk and replans, and a goal that cannot be reached is replaced by the nearest point. |
+![A real picture of the arena from above, the cells found occupied drawn on it, and the obstacle grid](docs/images/overhead-real-grid.jpg)
+
+*From above, on the real floor: a picture from the phone, and the grid that
+`guidance_global_map.segment_image` computes from it. Everything that differs from the floor
+is an obstacle: the boxes, the banners, people's feet, the rover itself (on the right) and the
+blue tape line, which is what `--clear-drone` is for. The scale here is the live chain's
+starting value (phone at 1.8 m, 108 degree lens), not measured for this picture.*
+
+![Four panels of the map fusion demo: drone view, zoomed tiles, fused map with replanning, unreachable goal](merging_map/demo_fusion.png)
+
+*Map fusion and planning: output of `merging_map/demo_fusion.py` on a simulated world. The
+coarse drone view shows no path, the drone zooms where a passage may hide, the rover finds a
+fallen trunk and replans, and a goal that cannot be reached is replaced by the nearest point.*
 
 The ROS 2 Jazzy nodes in `src/` publish the same overhead map on topics; the demo chain does
 not go through them.
@@ -140,7 +149,7 @@ scripts/test_fast.sh
 **Try the overhead pipeline on one photo**
 
 ```bash
-export PYTHONPATH=src/guidance_calib:src/guidance_global_map
+export PYTHONPATH=src/guidance_calib:src/guidance_global_map:src/guidance_rover_pose
 python -m guidance_global_map.segment_image photo.jpg out/scene --camera-height 1.9
 ```
 
@@ -322,7 +331,7 @@ its own start, not as a cost.
 
 ```bash
 pip install opencv-contrib-python numpy
-export PYTHONPATH=src/guidance_calib:src/guidance_global_map
+export PYTHONPATH=src/guidance_calib:src/guidance_global_map:src/guidance_rover_pose
 python -m guidance_global_map.segment_image photo.jpg out/scene --camera-height 1.9
 ```
 
