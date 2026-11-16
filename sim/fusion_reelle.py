@@ -1272,6 +1272,7 @@ class FusionReelle:
         a = self.args
         sans_vue = 0
         refus = 0  # segments in a row the rover's guard ended before the rover moved
+        sur_place = 0  # segments in a row the rover ended 'done' without moving
         for k in range(a.max_pas):
             objectif = self.objectif
             if self.arret_demande.is_set() or objectif is None:
@@ -1386,6 +1387,33 @@ class FusionReelle:
                 )
                 continue
             refus = 0
+            if statut == 'done' and 'distance' in fin and float(fin['distance'] or 0.0) < 0.02:
+                # The rover took the segment as already done: a path shorter than its
+                # look-ahead (0.2 m) whose end is behind its nose counts as "just passed"
+                # (rover_core, PathFollower.update) and ends 'done' after 0 m. Sent again as
+                # it is, it ended the same way for ever while the rover stood still (seen on
+                # the real rover: 15 cm segments to a degraded goal). Face it, then give up.
+                sur_place += 1
+                if sur_place >= 3:
+                    self.journal_mission(
+                        texte=f'BLOCKED: the rover does not move ({sur_place} segments in a '
+                        'row ended "done" after 0 m)'
+                    )
+                    return 'bloque'
+                cible = points[1]
+                ecart = 0.0
+                if rover.cap is not None:
+                    ecart = angle(math.atan2(cible[1] - pos[1], cible[0] - pos[0]) - rover.cap)
+                if abs(ecart) > math.radians(10) and hasattr(rover, 'pivoter'):
+                    self.journal_mission(
+                        texte=f'the rover took a {a_rouler:.2f} m segment as already done (its '
+                        f'end is behind it): turning {math.degrees(ecart):+.0f} deg to face it'
+                    )
+                    rover.pivoter(math.degrees(ecart))
+                else:
+                    self.journal_mission(texte='segment ended "done" after 0 m: planning again')
+                continue
+            sur_place = 0
             if impact is not None:
                 with self.verrou:
                     rover.signaler_choc(impact)

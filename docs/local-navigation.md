@@ -222,7 +222,14 @@ carpet the whole time; the guard stayed off.
   Reproduced on the bench before the fix (real rover server, simulated board: 12 times
   the same segment, the rover standing at the box); after it the rover goes round the
   box, or ends blocked when stopped too near to leave. Kept as tests with a stand-in
-  rover (`sim/test_fusion_reelle.py`); not run on the real rover.
+  rover (`sim/test_fusion_reelle.py`). On the real rover the next mission showed the new
+  lines ("OBSTACLE seen by the rover ... new route", twice), then a second way to stand
+  still: 15 cm segments to a degraded goal ended `done` after 0 m and 0 s, 17 times. The
+  rover's path follower takes a path shorter than its look-ahead (0.2 m) whose end is
+  behind its nose as "just passed" (`rover_core.py`, `PathFollower.update`). The segments
+  loop now turns the rover to face such a segment, and ends the mission as blocked after
+  three segments in a row that end `done` without moving. That part is tested with a
+  stand-in rover only.
 - **Step 4, pictures.** `rover_mapper/scripts/record_d405.py NAME` saves the frame, the
   rover's grid and a picture with the grid drawn over it, in `rover_mapper/recordings/`.
   Recorded: the empty carpet (floor free up to the range, no false obstacle; the grid
@@ -276,5 +283,8 @@ carpet the whole time; the guard stayed off.
   segments and continuous loops do).
 - Forgetting, on the rover, a near obstacle that was taken away (see "Obstacles that leave").
 - Backing off after a guard stop, so that a new route can leave (see "Running it").
+- On the rover, a short path whose end is behind the nose ends `done` at once
+  (`PathFollower.update`: the "just past it" rule also holds before the rover has moved).
+  The segments loop works round it by pivoting first; the continuous loop does not.
 - Steering round an obstacle on the rover itself, and Nav2. A later Nav2 bridge would need
   the same rover interfaces (`/local_grid`, `id`, `blocked`).

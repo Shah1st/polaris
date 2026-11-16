@@ -864,3 +864,56 @@ def test_in_segments_three_refusals_before_moving_end_the_mission_blocked() -> N
     assert len(rover.segments) == 3  # three tries, then it stops asking
     assert "rover's guard refuses every way" in f.mission['texte']
     assert 'move the rover back by hand' in f.mission['texte']
+
+
+class LookAheadRover(SegmentRover):
+    """The real rover's path follower: a path shorter than its look-ahead whose end is behind
+    its nose counts as "just passed" and ends 'done' after 0 m (0.2 m on the rover; 0.6 m
+    here, so that the planner's shortest segments are inside it). `turns`: False, it cannot
+    pivot either (nothing ever moves)."""
+
+    def __init__(self, x, y, cap, turns=True):
+        super().__init__(x, y)
+        self.cap, self.turns, self.pivots, self.fin = cap, turns, [], None
+
+    def suivre(self, points, duree):
+        self.segments.append([tuple(p) for p in points])
+        x, y = points[-1]
+        length = math.dist(self.est, (x, y))
+        ahead = (x - self.est[0]) * math.cos(self.cap) + (y - self.est[1]) * math.sin(self.cap)
+        if length < 0.6 and ahead < 0:
+            self.fin = {'status': 'done', 'distance': 0.0}
+            return 'done', None
+        self.cap = math.atan2(y - self.est[1], x - self.est[0])
+        self.est, self.fin = (x, y), {'status': 'done', 'distance': length}
+        return 'done', None
+
+    def pivoter(self, angle_deg):
+        self.pivots.append(angle_deg)
+        if self.turns:
+            self.cap += math.radians(angle_deg)
+        return 'done'
+
+
+def test_in_segments_a_short_segment_behind_the_rover_is_faced_then_driven() -> None:
+    """Seen on the real rover: 15 cm segments ended 'done' after 0 m and were sent again and
+    again (17 times) while the rover stood still."""
+    import avancer_esquive as ae
+
+    f = with_a_drone_map(['--max-pas', '20'])
+    f.objectif = (20.5, 20.0)
+    rover = LookAheadRover(20.95, 20.0, cap=0.0)  # the goal is 45 cm behind its nose
+    assert f._boucle_segments(rover, ae) == 'arrive'
+    assert len(rover.pivots) == 1 and abs(abs(rover.pivots[0]) - 180) < 15  # turned round once
+    assert len(rover.segments) == 2  # taken as done once, driven once: no endless resend
+    assert 'ARRIVED' in f.mission['texte']
+
+
+def test_in_segments_a_rover_that_never_moves_ends_the_mission() -> None:
+    import avancer_esquive as ae
+
+    f = with_a_drone_map(['--max-pas', '20'])
+    f.objectif = (20.5, 20.0)
+    rover = LookAheadRover(20.95, 20.0, cap=0.0, turns=False)
+    assert f._boucle_segments(rover, ae) == 'bloque'
+    assert len(rover.segments) == 3 and 'does not move' in f.mission['texte']
