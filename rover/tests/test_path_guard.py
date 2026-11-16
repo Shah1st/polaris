@@ -13,6 +13,8 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# The two helper imports below come from this folder: pytest's importlib mode does not add it.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from test_local_map import picture  # noqa: E402
 from test_rover_core import Sim  # noqa: E402

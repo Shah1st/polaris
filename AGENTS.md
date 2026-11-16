@@ -154,8 +154,9 @@ for the cases where neither robot can find the route alone.
   `status.json`, `POST /reset`, `/objectif`, `/aller`, `/arreter`, `/calibrer`,
   `/carte_locale {"carte_locale": bool}`, `/marqueur {"sans_marqueur": bool}`,
   `/conduite {"continu": bool, "source_locale": "rover"|"service", "fusion":
-  "superposition"|"global"|"local"}`. `status.json` also has `local`, `conduite` and
-  `fusion` (which maps the planner uses now, and why).
+  "superposition"|"global"|"local", "clear_drone": bool}`. `status.json` also has `local`,
+  `conduite` and `fusion` (which maps the planner uses now, and why; `drone_cleared`: the
+  drone cells the rover cleared, `--clear-drone`).
 * The rover server (`rover/rover_server.py`): `GET /state`, `POST /path`, `/move`, `/turn`,
   `/stop`, in the frame of its own odometry. `POST /path` takes an optional `"id"` (given back
   in `/state`; a path with an id replaces a running one without stopping). `GET /local_grid`:

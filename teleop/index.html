@@ -192,6 +192,7 @@
         <label id="continuBox" hidden title="On: during a mission the path is planned again about twice a second while the rover drives, and the rover takes each new path over at speed (maps server --continu). Turn the rover guard on with it. Off: step by step or in segments, as before. Cannot change during a mission."><input type="checkbox" id="continu"> Drive without stops</label>
         <label id="roverGridBox" hidden title="On: the rover map comes from the grid the rover computes from its depth camera (its GET /local_grid), also while it drives. Off: from the perception service, one picture at each stop. Needs the Local map box. Cannot change during a mission."><input type="checkbox" id="roverGrid"> Rover's depth grid</label>
         <label id="fusionBox" hidden title="With the local map on, which maps the planner uses. Both: the drone map is the map, the rover's depth grid adds obstacles near the rover and never erases the drone's. Drone only / Rover only: one map alone. When the map asked for is missing (drone map not placed, no depth grid for 3 s) the other one is used; the line below says which. Cannot change during a mission.">Maps <select id="fusionMode"><option value="superposition">both (drone + rover near it)</option><option value="global">drone only</option><option value="local">rover only</option></select></label>
+        <label id="clearDroneBox" hidden title="With the maps on 'both': the rover clears the drone's false obstacles (a tape line, a stain). A drone obstacle cell is cleared when the rover's depth camera looks at it from 25 to 50 cm, sees it free with everything 10 cm around it, three times in a row. It stays cleared until the rover sees an obstacle there or something new appears there in the drone's picture. Cleared cells: purple dots on the drone and fused maps. Off gives them back to the drone. Can change during a mission."><input type="checkbox" id="clearDrone"> Rover clears the drone</label>
         <label id="guardBox" hidden title="The rover's own guard (its local_guard setting): while it follows a path it slows down near what its depth camera sees, stops before it and moves 10 cm back, whatever the network does. Without depth pictures for 3 s it drives on unprotected and says so here. Manual driving is not guarded."><input type="checkbox" id="guard"> Rover guard</label>
         <span id="mapResetMsg">Click the drone map or the fused map to set the rover's destination</span></div>
       <div id="localNav" class="localnav" hidden>–</div>
@@ -510,6 +511,7 @@ $('noMarker').addEventListener('change', async (ev) => {
 // is a setting of the rover itself (/api/guard), hidden on a rover server without it.
 let navStatus = null, roverNav = null;  // the maps server's status; the rover's side
 let continuClick = -1e9, roverGridClick = -1e9, guardClick = -1e9, fusionClick = -1e9;
+let clearDroneClick = -1e9;
 const GUARD_STATE = { off: 'no path running', ok: 'way clear', slow: 'slowing down',
                       blind: 'no recent depth picture: slow', blocked: 'STOPPED before an obstacle',
                       no_camera: 'NO DEPTH PICTURE: driving UNPROTECTED' };
@@ -556,6 +558,9 @@ function showLocalNav(s) {
   const fu = s ? s.fusion : undefined;
   $('fusionBox').hidden = !fu;
   if (fu && now - fusionClick > 3000) $('fusionMode').value = fu.demandee;
+  // a maps server without --clear-drone has no clear_drone in its status: no switch
+  $('clearDroneBox').hidden = !fu || fu.clear_drone === undefined;
+  if (fu && fu.clear_drone !== undefined && now - clearDroneClick > 3000) $('clearDrone').checked = !!fu.clear_drone;
   // red too when the guard is on but has no depth picture: the rover is not protected
   const blocked = guardBlocked(r) || (!!r.guard && (r.ctrlLocal || {}).state === 'no_camera');
   $('guardInfo').textContent = guardText(r);
@@ -572,7 +577,8 @@ function showLocalNav(s) {
     + (fu.raison ? ' · ' + esc(fu.raison) : '')
     + ` · ${fu.cellules_rover} rover obstacle cells in the plan`
     + (fu.doublons ? `, ${fu.doublons} left out as the drone's` : '')
-    + (fu.arrets_garde ? ` · ${fu.arrets_garde} guard stops` : ''));
+    + (fu.arrets_garde ? ` · ${fu.arrets_garde} guard stops` : '')
+    + (fu.clear_drone ? ` · ${fu.drone_cleared || 0} drone cells cleared by the rover` : ''));
   if (cd !== undefined) parts.push('<b>Missions</b>: ' + (cd === 'continu' ? 'without stops' : cd === 'segments' ? 'in segments' : 'step by step'));
   $('localNav').hidden = !parts.length;
   $('localNav').innerHTML = parts.join(' &nbsp;|&nbsp; ');
@@ -604,6 +610,10 @@ $('fusionMode').addEventListener('change', async (ev) => {
     if (!ok) fusionClick = -1e9;
   } catch (err) { mapMsg('no answer'); fusionClick = -1e9; }
 });
+$('clearDrone').addEventListener('change', (ev) => navSwitch(ev, () => { clearDroneClick = performance.now(); },
+  (on) => fusionPost('conduite', { clear_drone: on }),
+  "The rover clears the drone's false obstacles it looks at from close (purple dots on the maps)",
+  'The drone map is the drone\'s again: its next pictures draw the cleared cells back'));
 $('guard').addEventListener('change', (ev) => navSwitch(ev, () => { guardClick = performance.now(); },
   async (on) => {
     const r = await fetch('/api/guard', { method: 'POST', headers: { 'Content-Type': 'application/json' },

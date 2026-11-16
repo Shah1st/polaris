@@ -19,7 +19,9 @@ same format as sim/fusion_live.py, and a mission to a point picked on the map.
     POST /conduite           {"continu": true|false, "source_locale": "rover"|"service"}
                              (either key): drive without stopping or not, and what feeds the
                              rover's local map; same as --continu and --source-locale. 409
-                             while a mission runs
+                             while a mission runs. Also {"fusion": ...} (--fusion) and
+                             {"clear_drone": true|false} (--clear-drone, taken during a
+                             mission too)
     POST /vitesse            {"vitesse": m/s, 0.05 to 0.30}: the missions' speed (--vitesse),
                              also during a mission, from the next path sent to the rover
 
@@ -66,6 +68,7 @@ from perception_rover import percevoir_http  # noqa: E402
 from rover_reel import ArretOperateur, RaspRoverReel, ServeurRoverError, client_http  # noqa: E402
 
 import fusion_feed as ff  # noqa: E402
+from drone_clears import DroneClears  # noqa: E402
 
 DECALAGE = 20.0  # m: positive coordinates for the tile grid
 SOURCE_GRILLE = 'rover:d405'  # the rover's own depth grid: a layer of its own, rebuilt
@@ -99,6 +102,16 @@ def sans_traits(m, cases):
     out = m.copy()
     out[(m == 1) & ~(gros & large)] = 0
     return out
+
+
+CLEARED_C = ff.ZOOM_C  # cells the rover cleared on the drone's map (--clear-drone)
+
+
+def draw_cleared(img, vue, cells, res):
+    """The cells the rover cleared on the drone's map (--clear-drone): a small dot each, on
+    a panel drawn by fusion_feed (`vue`: its ff.View)."""
+    for i, j in cells:
+        cv2.circle(img, vue.px((j + 0.5) * res, (i + 0.5) * res), 2, CLEARED_C, -1)
 
 
 def sans_rover(m, res, rover, rayon):
@@ -401,18 +414,7 @@ class FusionReelle:
                 self.calage, self.t_calage, self.cale_par = calage, time.time(), par
             place = None if self.vue_drone is None else self.vue_drone['place']
             if calage is not None:
-                place = self.placer_vue(m, res, calage)
-                if not self.args.drone_cumul:
-                    self.carte.tuiles['drone'] = {}  # a fixed camera sees its whole area
-                    self.carte.maj['drone'] = {}
-                for msg in decouper(
-                    place[0], place[1], place[2], 4, self.carte, 'drone', t=time.monotonic()
-                ):
-                    self.carte.recevoir(msg)
-                if self.args.drone_cumul:
-                    # a camera that moves: each placed picture adds to the drone map (what it
-                    # sees again is replaced, what it no longer sees is kept)
-                    place = self.matrice_drone()
+                place = self.put_drone_picture(self.placer_vue(m, res, calage))
             self.vue_drone = {'m': m, 'res': res, 'rover': vu, 'place': place}
         self.drone = {
             'etat': 'ok',
@@ -432,6 +434,24 @@ class FusionReelle:
             'hauteur_estimee_m': self.hauteur_estimee(),
             'zone_m': [round(m.shape[1] * res, 2), round(m.shape[0] * res, 2)],
         }
+
+    def put_drone_picture(self, place):
+        """A drone picture placed on the maps (matrix, x0, y0) goes on the drone's layer.
+        Returns what the drone panel shows. Under self.verrou."""
+        if self.args.clear_drone:  # what the rover cleared stays cleared
+            self._clears_on_picture(place)
+        if not self.args.drone_cumul:
+            self.carte.tuiles['drone'] = {}  # a fixed camera sees its whole area
+            self.carte.maj['drone'] = {}
+        for msg in decouper(
+            place[0], place[1], place[2], 4, self.carte, 'drone', t=time.monotonic()
+        ):
+            self.carte.recevoir(msg)
+        if self.args.drone_cumul:
+            # a camera that moves: each placed picture adds to the drone map (what it
+            # sees again is replaced, what it no longer sees is kept)
+            place = self.matrice_drone()
+        return place
 
     def regler_carte_locale(self, corps):
         """POST /carte_locale: build the rover's local map or not, while running. (code, answer)
@@ -459,24 +479,33 @@ class FusionReelle:
 
         {"continu": true|false}: drive without stopping (--continu) or as before;
         {"source_locale": "rover"|"service"}: the rover's own depth grid (its GET /local_grid)
-        or the perception service (--source-locale). Either key or both. Refused while a
-        mission runs: its loop reads both. What is already on the maps is kept."""
-        if self.en_mission():
-            return 409, {'error': 'a mission is running: stop it first'}
+        or the perception service (--source-locale); {"fusion": ...} (--fusion). Any of the
+        keys. Refused while a mission runs: its loop reads them. What is already on the maps
+        is kept. {"clear_drone": true|false} (--clear-drone) is also taken during a mission;
+        off gives the cleared cells back to the drone (its next pictures draw them again)."""
         continu, source = corps.get('continu'), corps.get('source_locale')
-        fusion = corps.get('fusion')
-        if continu is None and source is None and fusion is None:
+        fusion, clear = corps.get('fusion'), corps.get('clear_drone')
+        if continu is None and source is None and fusion is None and clear is None:
             return 400, {
-                'error': '{"continu": true|false}, {"source_locale": ...} or {"fusion": ...} '
-                'expected'
+                'error': '{"continu": true|false}, {"source_locale": ...}, {"fusion": ...} or '
+                '{"clear_drone": true|false} expected'
             }
+        if self.en_mission() and (continu, source, fusion) != (None, None, None):
+            return 409, {'error': 'a mission is running: stop it first'}
         if fusion is not None and fusion not in ('superposition', 'global', 'local'):
             return 400, {'error': '"fusion" must be "superposition", "global" or "local"'}
         if continu is not None and not isinstance(continu, bool):
             return 400, {'error': '"continu" must be true or false'}
         if source is not None and source not in ('service', 'rover'):
             return 400, {'error': '"source_locale" must be "service" or "rover"'}
+        if clear is not None and not isinstance(clear, bool):
+            return 400, {'error': '"clear_drone" must be true or false'}
         with self.verrou:
+            if clear is not None:
+                self.args.clear_drone = clear
+                if not clear:
+                    self.clears.reset()
+                self.fusion.update(clear_drone=clear, drone_cleared=len(self.clears))
             if continu is not None:
                 self.args.continu = continu
             if source is not None and source != self.args.source_locale:
@@ -496,6 +525,7 @@ class FusionReelle:
             'without stops' if continu else 'as before',
             '| local map from',
             source,
+            '| the rover clears the drone' if self.args.clear_drone else '',
             flush=True,
         )
         return 200, {
@@ -503,6 +533,7 @@ class FusionReelle:
             'continu': continu,
             'source_locale': source,
             'fusion': self.args.fusion,
+            'clear_drone': bool(self.args.clear_drone),
         }
 
     def regler_vitesse(self, corps):
@@ -781,6 +812,17 @@ class FusionReelle:
             self.grille_ok = None  # the rover's grid is usable (None: not asked yet)
             self.grille_muette = None  # since when (monotonic) no fresh grid came
             self.grille_bonnes = 0  # fresh grids in a row
+            a = self.args
+            # --clear-drone: the drone cells the rover found free (cells of the maps: a reset
+            # changes the frame, so they all go)
+            self.clears = DroneClears(
+                res=self.carte.res_fine,
+                reach=a.clear_range,
+                margin=a.clear_margin,
+                views=a.clear_views,
+            )
+            self.grid_look = (None, None)  # (rover pose on the maps, frames) of the last grid
+            self.grid_frames = None  # the frames count of the grid last used to clear
             self.fusion = {
                 'demandee': self.args.fusion,
                 'utilisee': 'global',
@@ -788,6 +830,8 @@ class FusionReelle:
                 'cellules_rover': 0,
                 'doublons': 0,
                 'arrets_garde': 0,
+                'clear_drone': bool(a.clear_drone),
+                'drone_cleared': 0,
             }
             self.regler_fusion()
 
@@ -831,6 +875,7 @@ class FusionReelle:
         the rover, rover/local_map.py), on the maps; None when it has none or it is too old."""
         import suivi_continu as sc
 
+        self.grid_look = (None, None)
         try:
             rep = self.requete('GET', '/local_grid')
         except ServeurRoverError as e:  # e.g. 404: a rover server older than this feature
@@ -848,6 +893,13 @@ class FusionReelle:
         x0, y0, h0 = origine  # the odometry pose that is (DECALAGE, DECALAGE, 0) on the maps
         c, s = math.cos(-h0), math.sin(-h0)
         zero = (DECALAGE - (c * x0 - s * y0), DECALAGE - (s * x0 + c * y0))
+        # where the rover was for this grid, on the maps (for --clear-drone: what it looks at)
+        pose = rep.get('pose')
+        look = None
+        if isinstance(pose, (list, tuple)) and len(pose) == 3:
+            px, py, ph = (float(v) for v in pose)
+            look = (zero[0] + c * px - s * py, zero[1] + s * px + c * py, angle(ph - h0))
+        self.grid_look = (look, rep.get('frames'))
         return sc.grille_locale(rep, zero, -h0, self.args.age_max)
 
     def regard(self, position, cap):
@@ -855,7 +907,15 @@ class FusionReelle:
         the maps here (GRILLE is returned: nothing more to fuse), or the perception service's
         picture taken after the stop. None: no view, and no map to drive on."""
         if self.args.source_locale == 'rover':
-            return GRILLE if self.superposer(position) != 'aucune' else None
+            utilisee = self.superposer(position)
+            # --clear-drone: a stop is one look, and a drone obstacle needs --clear-views of
+            # them in a row; when the rover sees one free, it takes them now (0.3 s each)
+            for _ in range(max(0, self.args.clear_views - 1)):
+                if not (self.args.clear_drone and self.clears.streak):
+                    break
+                time.sleep(0.3)
+                utilisee = self.superposer(position)
+            return GRILLE if utilisee != 'aucune' else None
         self.regler_fusion()
         return self.percevoir_frais(position, cap)
 
@@ -938,7 +998,10 @@ class FusionReelle:
                 )
                 m[loin > PORTEE_GRILLE] = -1
                 if utilisee == 'superposition':
-                    drone = self.carte.couche('drone', x0, y0, x0 + w * res, y0 + h * res)
+                    zone = (x0, y0, x0 + w * res, y0 + h * res)
+                    if self.args.clear_drone:  # on the rover's grid as it came, duplicates too
+                        self._clear_drone(m, x0, y0, self.carte.couche('drone', *zone))
+                    drone = self.carte.couche('drone', *zone)  # with what was just cleared
                     if drone.shape == m.shape:
                         k = 2 * int(round(MEME_OBJET / res)) + 1
                         disque = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
@@ -958,6 +1021,67 @@ class FusionReelle:
                 }
             self.fusion.update(cellules_rover=cellules, doublons=doublons)
         return utilisee
+
+    # ---- --clear-drone: the rover clears the drone's false obstacles (drone_clears.py) ------
+    def _clear_drone(self, m, x0, y0, drone):
+        """The rover's grid `m` on the maps (first cell at x0, y0) against the drone's layer
+        `drone` on the same window: cells cleared or given back. Under self.verrou."""
+        if drone.shape != m.shape:
+            return
+        look, frames = self.grid_look
+        fresh = frames is None or frames != self.grid_frames  # new pictures in the grid
+        self.grid_frames = frames
+        if look is None:  # a rover server that does not give its pose with the grid
+            look = self.pose
+        lens = heading = None
+        if look is not None:
+            d = self.args.avance_camera
+            heading = look[2]
+            lens = (look[0] + d * math.cos(heading), look[1] + d * math.sin(heading))
+        r = self.carte.res_fine
+        new, back = self.clears.observe(
+            m, drone, round(y0 / r), round(x0 / r), lens, heading, fresh
+        )
+        if new:
+            self._clears_on_drone_tiles()
+        self._say_clears(new, back, 'the rover sees an obstacle there')
+
+    def _clears_on_drone_tiles(self):
+        """The cleared cells on the drone's layer as it is now (the tiles it already has):
+        those cells only, the slack is for the drone's later pictures."""
+        n = self.carte.n
+        tuiles = self.carte.tuiles.get('drone') or {}
+        for k in self.clears.tiles_touched(n, self.carte.zmax):
+            data = tuiles.get(k)
+            if data is not None:
+                self.clears.apply(data, k[2] * n, k[1] * n, slack=False)
+
+    def _clears_on_picture(self, place):
+        """A drone picture just placed on the maps (matrix, x0, y0), before it goes on the
+        drone's layer: cleared cells where something new appeared are given back, the others
+        are cleared on it. Under self.verrou."""
+        pm, px0, py0 = place
+        r = self.carte.res_fine
+        i0, j0 = round(py0 / r), round(px0 / r)
+        back = self.clears.check_picture(pm, i0, j0)
+        self.clears.apply(pm, i0, j0)
+        self._say_clears([], back, "something new in the drone's picture")
+
+    def _say_clears(self, new, back, why_back):
+        self.fusion['drone_cleared'] = len(self.clears)
+        parts = []
+        if new:
+            parts.append(f'{len(new)} cells cleared by the rover')
+        if back:
+            parts.append(f'{len(back)} cells given back ({why_back})')
+        if parts:
+            print(
+                time.strftime('%H:%M:%S'),
+                'drone:',
+                ', '.join(parts),
+                f'| {len(self.clears)} cleared in all',
+                flush=True,
+            )
 
     # ---- outside a mission: observe --------------------------------------------------------
     def tour(self):
@@ -1214,6 +1338,8 @@ class FusionReelle:
             self.calage, self.vue_drone = None, None
             self.carte.tuiles['drone'] = {}  # placed with the old direction and scale
             self.carte.maj['drone'] = {}
+            self.clears.reset()  # cells of the old drone map
+            self.fusion['drone_cleared'] = 0
 
     def _mission_segments(self):
         """The mission in long segments (--segment): one POST /path carries several points of
@@ -1705,6 +1831,7 @@ class FusionReelle:
             trail = list(self.trail)
             n_tuiles = len(self.carte.tuiles['rover'])
             n_tuiles_drone = len(self.carte.tuiles.get('drone') or {})
+            cleared = list(self.clears.cleared)
         gx0, gy0 = g.j0 * g.res, g.i0 * g.res
         vue = ff.View(z[0], z[1], z[2], z[3], TAILLE / (z[2] - z[0]))
         depart = trail[0] if trail else None
@@ -1713,6 +1840,7 @@ class FusionReelle:
             g.val, g.src, gx0, gy0, vue, pose, objectif, depart, None, path=chemin, trail=trail
         )
         ff.draw_frame(fused, vue, 1.0)
+        draw_cleared(fused, vue, cleared, g.res)
         # the drone panel: what the overhead camera sees. Placed on the frame of the maps once
         # the rover's marker was seen; before that, in the camera's own frame (not clickable).
         etat_drone = dict(self.drone)
@@ -1723,6 +1851,7 @@ class FusionReelle:
             md, dx0, dy0 = vd['place']
             drone = vue.raster(ff.drone_classes(md), dx0, dy0, vd['res'])
             ff.draw_frame(drone, vue, 1.0)
+            draw_cleared(drone, vue, cleared, g.res)
             ff.draw_polyline(drone, vue, chemin, ff.PATH_C, 2)
             ff.draw_markers(drone, vue, pose, objectif, depart, None)
             par = 'marker' if etat_drone.get('cale_par') == 'marker' else 'move'
@@ -2210,6 +2339,35 @@ def options(argv=None):
     )
     p.add_argument(
         '--drone-hauteur-marqueur', type=float, default=0.0, help='marker height above floor (m)'
+    )
+    p.add_argument(
+        '--clear-drone',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="superposition only: the rover clears the drone's false obstacles (a tape line, a "
+        'stain) that its depth camera looks at from close and sees free with everything '
+        'around them, for good, until it sees an obstacle there or the drone sees something '
+        'new there (sim/drone_clears.py). Also POST /conduite {"clear_drone": ...}',
+    )
+    p.add_argument(
+        '--clear-range',
+        type=float,
+        default=0.5,
+        help="m ahead of the rover's lens: --clear-drone only trusts what is nearer (the "
+        "D405's good range); from 0.25 m, where it starts to see the floor",
+    )
+    p.add_argument(
+        '--clear-margin',
+        type=float,
+        default=0.10,
+        help='m: --clear-drone clears a cell only when everything this close to it is seen '
+        'free too; it keeps a real obstacle that the drone placed a few cm off',
+    )
+    p.add_argument(
+        '--clear-views',
+        type=int,
+        default=3,
+        help='--clear-drone: fresh grids in a row that must see the cell free',
     )
     args = p.parse_args(argv)
     args.rover = args.rover.rstrip('/')

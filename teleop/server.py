@@ -39,9 +39,10 @@
   POST /fusion/calibrer  the rover drives 30 cm forward then back, seen by the drone: direction
                      and scale of the drone map (the rover MOVES)
   POST /fusion/conduite {"continu": bool, "source_locale": "rover"|"service",
-                     "fusion": "superposition"|"global"|"local"} (any of them)  drive without
-                     stopping, and what feeds the rover map (docs/local-navigation.md); 409
-                     for turning either on with a rover server older than the local navigation
+                     "fusion": "superposition"|"global"|"local", "clear_drone": bool} (any of
+                     them)  drive without stopping, what feeds the rover map, whether the rover
+                     clears the drone's false obstacles (docs/local-navigation.md); 409 for
+                     turning the first two on with a rover server older than the local navigation
   POST /fusion/vitesse {"vitesse": m/s}  the missions' speed (the page's speed slider), from
                      the next path sent to the rover
                      (these five: sim/fusion_reelle.py; the others: the simulation only)
@@ -136,7 +137,7 @@ FUSION_POSTS = {
     '/fusion/marqueur': ('sans_marqueur',),
     '/fusion/carte_locale': ('carte_locale',),
     '/fusion/calibrer': (),
-    '/fusion/conduite': ('continu', 'source_locale', 'fusion'),
+    '/fusion/conduite': ('continu', 'source_locale', 'fusion', 'clear_drone'),
     '/fusion/vitesse': ('vitesse',),
 }
 GUARD_EVERY = 10  # the rover's settings (local_guard) are read every 10th state poll (5 s)
