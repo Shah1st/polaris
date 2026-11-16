@@ -1,6 +1,6 @@
 # State of Polaris
 
-Updated 2026-11-16. Read this first in a new session, human or coding agent: it says
+Updated 2026-11-17. Read this first in a new session, human or coding agent: it says
 what runs today, how well each part is proven, which settings matter and what is still open.
 Update it in the same commit as any change of behaviour. Details of the overhead camera are in
 [overhead-camera.md](overhead-camera.md); the step-by-step guide for a real run is in
@@ -41,7 +41,8 @@ the demo chain does not go through ROS.
 | Scale check on the rover's move in `merging_map/lancer_overhead.py` | Tests only, with a simulated rover |
 | "Calibrate direction" button | Tests only, with stand-ins (its author's note) |
 | Rover's own map (perception service, D405) | Off by default; not checked by this file's author |
-| Local navigation: D405 grid on the rover, guard that slows and stops, driving without stops (`--continu`) | Tests only: real rover server with a simulated ESP32 and a stand-in depth camera. Never on the real rover, never on a real D405 picture |
+| Local navigation, first version (16 Nov): D405 grid on the rover, guard, driving without stops, rover grid fused | **Driven on the robot by the team with the guard and the rover's grid on: overprotective** (rover standing still, phantom obstacles, both maps worse than one). Floor calibrated, grid cost measured |
+| Local navigation, rework of 17 Nov: obstacles confirmed over pictures and forgotten by the clock, guard the width of the body with a back-off, the two maps as layers (`--fusion`), one map used alone when the other is missing | Tests only: real rover server with a simulated ESP32 and a stand-in depth camera, with phantom noise and a depth outage. Not on the robot. Dashboard changes not opened in a browser |
 | ROS nodes (`/map`, `/rover/pose_overhead`, `merging_map_node`) | Run in the container on one photo; not part of the demo chain |
 | iPhone app: 0.5x lens | Builds on GitHub; used by the team |
 | iPhone app: LiDAR depth, video stabilisation | Compiled only, never run on a phone (their author's note) |
@@ -58,11 +59,15 @@ Defaults of `sim/fusion_reelle.py` on `main`:
 | `--rayon` | 0.15 m | Distance kept between the rover's centre and any obstacle. Two obstacles must be twice this apart. No margin on top. |
 | `--continu` | off | Drive without stopping: plan twice a second, send a new path when it is better; the rover takes it over at speed. See local-navigation.md. |
 | `--source-locale` | `service` | What feeds the local map: the perception service at each stop, or `rover`, the grid the rover computes from its D405, also while driving. |
+| `--fusion` | `superposition` | With the local map on: the drone map plus the rover's obstacles near the rover (the rover erases nothing of the drone's), or `global` / `local`, one map alone. When the map asked for is missing the other is used; `status.json` `fusion` says which. |
 | `--pas` | 0.15 m | Length of a mission step. Unused when `--segment` is set (the Mac script sets 2.0). |
 | `--drone-ombres` | on | Shadows on the floor are not obstacles. |
 | `--drone-hauteur` | 1.8 m | Only a starting point for the scale; the tag or the rover's move corrects it. |
 | `--drone-champ` | 108 degrees | Field of view of the phone's lens (the 0.5x lens). Must be right. |
 | `--drone-pas-min` | 0.12 m | Move of the rover needed between two stops to place the map without a tag. |
+
+The robot's `rover_config.json` keeps the guard's old numbers: after deploying the rework
+send the new ones once (the command is at the top of local-navigation.md).
 
 On the rover (`POST /config`): `local_guard` 0. Set to 1, the rover slows down and stops by
 itself before what its depth camera sees on its path (status `blocked`).
@@ -109,6 +114,8 @@ One photo, no server: `python -m guidance_global_map.segment_image photo.jpg out
 - Turning the local map back on. The D405 can now feed it from the rover itself
   (`--source-locale rover`); to decide once it has been seen on real pictures.
 - Where the maps server runs for `--continu`: on the room's Wi-Fi, not through the VM's tunnel.
+- Without depth pictures for 4 s the guard lets the rover drive on unprotected and says so
+  (`guard_blind_stop` 1 ends the path instead). To confirm with the team.
 - Running the planner on the rover's own computer. Proposed; it would only help when Wi-Fi drops.
 
 ## Known limits

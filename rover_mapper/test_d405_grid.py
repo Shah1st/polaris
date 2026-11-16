@@ -111,6 +111,52 @@ def test_calibration_refuses_a_wrong_height_or_no_floor(tmp_path):
         ds.GridMaker(SimpleNamespace(), hz=0).calibrate(snap(np.zeros((480, 640), np.uint16)))
 
 
+def scene_box_at(distance, w=640, h=480):
+    """The floor and a box 20 cm wide, 15 cm high, `distance` m ahead."""
+    k = intrinsics('depth', w, h)
+    u, v = np.meshgrid(np.arange(w), np.arange(h))
+    x, y = (u - k.ppx) / k.fx, (v - k.ppy) / k.fy
+    z = scene(w, h, box=False).astype(np.float32) * SCALE
+    inside = (np.abs(x * distance) <= 0.10) & (y * distance <= HEIGHT)
+    inside &= y * distance >= HEIGHT - 0.15
+    z[inside & ((z == 0) | (z > distance))] = distance
+    return np.round(z / SCALE).astype(np.uint16)
+
+
+def test_no_obstacle_is_reported_far_away_but_the_floor_is():
+    maker = ds.GridMaker(SimpleNamespace(), hz=0)
+    far = maker.compute(snap(scene_box_at(1.0)))
+    assert len(obstacles(far)[0]) == 0  # beyond 0.8 m: too far to trust, and early enough later
+    cells = np.asarray(far['cells'])
+    free_x = far['x0'] + (np.nonzero(cells == 0)[1] + 0.5) * far['res']
+    assert float(free_x.max()) > 0.9  # the floor in front of it is still seen free
+    near = maker.compute(snap(scene_box_at(0.7)))
+    assert abs(float(np.median(obstacles(near)[0])) - 0.7) < 0.06
+    everything = ds.GridMaker(SimpleNamespace(), hz=0, obstacle_range=None)
+    assert abs(float(np.median(obstacles(everything.compute(snap(scene_box_at(1.0))))[0])) - 1.0) < 0.06
+
+
+@pytest.mark.parametrize('pitch_deg', [3.0, 2.0, -2.0])
+def test_a_rover_that_pitches_does_not_turn_the_floor_into_obstacles(tmp_path, pitch_deg):
+    """The floor is calibrated standing still; braking tips the nose down by two or three degrees.
+    With a fixed 4 cm threshold the far floor then read as obstacles (the old settings, kept
+    here to show it); with a threshold that grows with the distance it does not."""
+    path = str(tmp_path / 'floor.json')
+    still = snap(scene(640, 480, box=False))
+    tipped = snap(scene(640, 480, box=False, pitch_deg=pitch_deg))
+    maker = ds.GridMaker(SimpleNamespace(), hz=0, floor_file=path)
+    maker.calibrate(still)
+    assert len(obstacles(maker.compute(tipped))[0]) == 0
+    if pitch_deg == 3.0:
+        old = ds.GridMaker(SimpleNamespace(), hz=0, floor_file=path, obstacle_range=None,
+                           band_slope=0.0, min_points=3)  # fmt: skip
+        assert len(obstacles(old.compute(tipped))[0]) > 5  # phantoms on an empty floor
+    # a real box is still seen while pitching
+    boxed = snap(scene(640, 480, box=True, pitch_deg=pitch_deg))
+    xs, _ = obstacles(maker.compute(boxed))
+    assert len(xs) >= 3 and abs(float(np.median(xs)) - 0.5) < 0.08
+
+
 def post(url):
     req = urllib.request.Request(url, data=b'', method='POST')
     try:

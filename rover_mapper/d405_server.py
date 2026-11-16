@@ -316,8 +316,13 @@ class GridMaker:
     def __init__(self, cap: Capture, hz: float = 10.0, cam_height: float = 0.15,
                  height_tol: float = 0.03, floor_file: str | None = None, stride: int = 2,
                  max_range: float = 1.25, band: tuple[float, float] = (0.04, 0.40),
-                 depth_min: float = 0.07, depth_max: float = 3.0, log=print):
+                 depth_min: float = 0.07, depth_max: float = 3.0, log=print,
+                 obstacle_range: float | None = 0.8, band_slope: float = 0.03,
+                 min_points: int = 5):
         self.cap, self.hz = cap, hz
+        # Against phantoms (see rovermap.perception.classify_points): no obstacle beyond
+        # obstacle_range, a height threshold that grows with the distance, more points asked.
+        self.obstacle_range, self.band_slope, self.min_points = obstacle_range, band_slope, min_points
         self.cam_height, self.height_tol = cam_height, height_tol
         self.floor_file = floor_file
         self.stride, self.max_range, self.band = max(1, int(stride)), max_range, band
@@ -387,7 +392,9 @@ class GridMaker:
 
         depth, K = self.depth_m(snap, self.stride)
         per = perceive(depth, K, cam_height=self.cam_height, plane=self.plane, scale=1.0,
-                       max_range=self.max_range, band=self.band)
+                       max_range=self.max_range, band=self.band,
+                       obstacle_range=self.obstacle_range, band_slope=self.band_slope,
+                       min_obstacle_points=self.min_points)
         out = per.to_json()
         out['plane'] = 'calibrated' if self.plane is not None else ('fitted' if per.floor else None)
         out['seq'] = int(snap['seq'])
@@ -622,11 +629,23 @@ def main(argv=None) -> None:
                     help='where POST /calibrate_floor keeps the floor plane')
     ap.add_argument('--grid-stride', type=int, default=2, help='GET /grid: one depth pixel in N')
     ap.add_argument('--grid-range', type=float, default=1.25, help='GET /grid: metres ahead')
+    ap.add_argument('--grid-obstacle-range', type=float, default=0.8,
+                    help='GET /grid: no obstacle reported farther than this (m); the floor is, as free. '
+                         'The D405 is a short-range camera: far cells are where phantoms come from')
+    ap.add_argument('--grid-band-slope', type=float, default=0.03,
+                    help='GET /grid: the obstacle height threshold (4 cm) grows by this per metre of '
+                         'distance: the rover pitches when it brakes, the fitted floor does not')
+    ap.add_argument('--grid-min-points', type=int, default=5, help='GET /grid: depth points for an obstacle cell')
+    ap.add_argument('--threads', type=int, default=1,
+                    help='OpenCV threads (0: its own choice). 1: the grid took 2.3 cores of the robot with 8')
     args = ap.parse_args(argv)
 
     cap = Capture(args.width, args.height, args.fps, serial=args.serial)
+    if args.threads > 0:
+        cv2.setNumThreads(args.threads)
     grid = GridMaker(cap, args.grid_hz, args.cam_height, args.cam_height_tol, args.floor_file,
-                     args.grid_stride, args.grid_range)
+                     args.grid_stride, args.grid_range, obstacle_range=args.grid_obstacle_range,
+                     band_slope=args.grid_band_slope, min_points=args.grid_min_points)
     srv = make_server(args.host, args.port, cap, args.max_age, args.jpeg_quality, grid)
 
     def on_term(*_):  # SIGTERM (systemd, kill) : même sortie propre que Ctrl+C

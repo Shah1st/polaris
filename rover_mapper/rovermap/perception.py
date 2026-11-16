@@ -112,9 +112,19 @@ def to_rover(depth: np.ndarray, K: np.ndarray, valid: np.ndarray, plane, cam_hei
 def classify_points(points: np.ndarray, max_range: float = 1.5, min_range: float = 0.0,
                     band: tuple[float, float] = (0.04, 0.40), res: float = RES,
                     min_obstacle_points: int = 3, min_free_points: int = 2,
-                    shadow_bin_deg: float = 2.0):
+                    shadow_bin_deg: float = 2.0, obstacle_range: float | None = None,
+                    band_slope: float = 0.0):
     """Rover-frame points -> (cells, x0, y0, stats). The grid spans x in [0, max_range],
-    y in [-max_range, max_range] on multiples of `res`."""
+    y in [-max_range, max_range] on multiples of `res`.
+
+    For a short-range depth camera on a rover that pitches when it brakes (both off by
+    default: one still picture of a metric depth needs neither):
+    - `band_slope`: the height from which a point is an obstacle grows with the distance,
+      band[0] + band_slope * distance. A floor plane fitted once is wrong by the rover's
+      pitch, and the error grows with the distance (2 degrees: 3.5 cm at 1 m); so does the
+      depth noise. Below that height a point is floor.
+    - `obstacle_range`: no obstacle is reported farther than this (the floor still is, as
+      free): far cells are where phantoms come from, and near is early enough to stop."""
     n_cols = math.ceil(max_range / res - 1e-9)
     half = math.ceil(max_range / res - 1e-9)
     x0, y0 = 0.0, -half * res
@@ -129,8 +139,12 @@ def classify_points(points: np.ndarray, max_range: float = 1.5, min_range: float
     inside = (i >= 0) & (i < n_rows) & (j >= 0) & (j < n_cols)
     p, i, j = p[inside], i[inside], j[inside]
     h = p[:, 2]
-    hit = (h >= band[0]) & (h <= band[1])
-    floor = np.abs(h) < band[0]
+    rng = rng[inside]
+    low = band[0] + band_slope * rng
+    hit = (h >= low) & (h <= band[1])
+    if obstacle_range is not None:
+        hit &= rng <= obstacle_range
+    floor = np.abs(h) < low
     n_hit = np.zeros(cells.shape, np.int32)
     n_floor = np.zeros(cells.shape, np.int32)
     np.add.at(n_hit, (i[hit], j[hit]), 1)
@@ -172,7 +186,8 @@ def perceive(depth: np.ndarray, K: np.ndarray, cam_height: float = 0.22,
              conf: np.ndarray | None = None, valid: np.ndarray | None = None,
              plane=None, scale: float | None = None, max_range: float = 1.5,
              min_range: float = 0.0, band: tuple[float, float] = (0.04, 0.40),
-             res: float = RES, stride: int = 1) -> Perception:
+             res: float = RES, stride: int = 1, obstacle_range: float | None = None,
+             band_slope: float = 0.0, min_obstacle_points: int = 3) -> Perception:
     """One depth image (any unit; z along the optical axis, OpenCV axes) -> Perception.
 
     `plane`: (normal, d) if already known; `scale`: metres per depth unit if known (a metric
@@ -186,7 +201,9 @@ def perceive(depth: np.ndarray, K: np.ndarray, cam_height: float = 0.22,
         cells, x0, y0, stats = classify_points(np.zeros((0, 3)), max_range, min_range, band, res)
         return Perception(cells, x0, y0, res, float('nan'), False, stats={'floor': False})
     pts, pix, s = to_rover(depth, K, valid, plane, cam_height, scale, stride)
-    cells, x0, y0, stats = classify_points(pts, max_range, min_range, band, res)
+    cells, x0, y0, stats = classify_points(
+        pts, max_range, min_range, band, res, min_obstacle_points=min_obstacle_points,
+        obstacle_range=obstacle_range, band_slope=band_slope)
     n, d = plane
     tilt = float(np.degrees(np.arccos(np.clip(-np.asarray(n)[1], -1.0, 1.0))))
     stats.update({'floor_tilt_deg': round(tilt, 2), 'floor_height_m': round(s * d, 4)})

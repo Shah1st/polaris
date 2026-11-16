@@ -152,16 +152,19 @@ def prolonger(courant, pos, avance):
     return morceau, morceau[-1]
 
 
-def a_remplacer(courant, nouveau, pos, objectif, gain=0.2):
+def a_remplacer(courant, nouveau, pos, objectif, gain=0.2, tolerance=None):
     """True when `nouveau` is worth sending in place of `courant`, the path the rover (at
     `pos`) is driving towards `objectif`: it ends `gain` m nearer to the goal (more floor has
-    been seen), or it ends as near and is `gain` m shorter. A path that merely differs is not
-    sent: the planner's route flickers from one plan to the next, the rover should not. (A
-    path the map now bars is the caller's business: CarteFusion.premier_point_bloque.)"""
+    been seen), or it ends as near and is `gain` m shorter, or it reaches the goal (within
+    `tolerance`) when the one being driven stops short of it. A path that merely differs is
+    not sent: the planner's route flickers from one plan to the next, the rover should not.
+    (A path the map now bars is the caller's business: CarteFusion.premier_point_bloque.)"""
     vieux, neuf = reste(courant, pos), reste(nouveau, pos)
     fin_v, fin_n = math.dist(vieux[-1], objectif), math.dist(neuf[-1], objectif)
     if fin_n < fin_v - gain:
         return True
+    if tolerance is not None and fin_n <= tolerance + 0.02 and fin_v > tolerance + 0.05:
+        return True  # the last stretch: without it the rover stops just short, then hops
     return fin_n <= fin_v + 0.05 and longueur(neuf) < longueur(vieux) - gain
 
 

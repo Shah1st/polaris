@@ -1,4 +1,5 @@
-"""The rolling obstacle grid (local_map.py): placing a picture's grid, memory, path check."""
+"""The rolling obstacle grid (local_map.py): placing a picture's grid, confirmation over
+several pictures, forgetting by the clock, path check."""
 
 from __future__ import annotations
 
@@ -25,20 +26,31 @@ def picture(obstacles=(), reach: float = 1.25):
     return cells, 0.0, -reach, RES
 
 
+def look(m: LocalMap, obstacles, pose, t: float, times: int = 2) -> None:
+    """`times` pictures in a row of the same scene, 0.1 s apart, ending at `t`."""
+    for k in range(times):
+        m.integrate(*picture(obstacles), pose, t - 0.1 * (times - 1 - k))
+
+
 def value(m: LocalMap, x: float, y: float) -> int:
-    return m.cells.get((math.floor(y / RES), math.floor(x / RES)), (UNKNOWN, 0.0))[0]
+    cell = m.cells.get((math.floor(y / RES), math.floor(x / RES)))
+    return UNKNOWN if cell is None else cell[0]
+
+
+def line(y: float = 0.0, n: int = 60):
+    return [(0.02 * k, y) for k in range(n)]
 
 
 def test_a_picture_is_placed_with_the_pose_of_the_camera() -> None:
     m = LocalMap()
-    m.integrate(*picture([(0.52, 0.02)]), (0.0, 0.0, 0.0), 1.0)
+    look(m, [(0.52, 0.02)], (0.0, 0.0, 0.0), 1.0)
     assert value(m, 0.52, 0.02) == OBSTACLE
     assert value(m, 0.3, 0.02) == FREE
     assert value(m, -0.3, 0.0) == UNKNOWN  # behind the camera: never seen
 
     # the same picture from a rover at (1, 2) facing left (+y): the obstacle is 0.5 m up
     m = LocalMap()
-    m.integrate(*picture([(0.52, 0.02)]), (1.0, 2.0, math.pi / 2), 1.0)
+    look(m, [(0.52, 0.02)], (1.0, 2.0, math.pi / 2), 1.0)
     assert value(m, 1.0 - 0.02, 2.52) == OBSTACLE
     assert value(m, 1.0, 1.7) == UNKNOWN  # behind the rover: outside the picture
 
@@ -48,7 +60,7 @@ def test_a_rotated_picture_leaves_no_hole_and_loses_no_obstacle(heading_deg) -> 
     h = math.radians(heading_deg)
     m = LocalMap()
     obstacles = [(0.42, -0.28), (0.82, 0.27), (1.02, 0.02)]
-    m.integrate(*picture(obstacles), (0.0, 0.0, h), 1.0)
+    look(m, obstacles, (0.0, 0.0, h), 1.0)
     for x, y in obstacles:
         # the centre of the picture's cell, turned into the map
         px = (math.floor(x / RES) + 0.5) * RES
@@ -63,57 +75,122 @@ def test_a_rotated_picture_leaves_no_hole_and_loses_no_obstacle(heading_deg) -> 
             assert value(m, gx, gy) != UNKNOWN
 
 
-def test_seen_free_erases_an_obstacle_and_unseen_cells_expire() -> None:
-    m = LocalMap(hold=5.0, near=0.45)
-    m.integrate(*picture([(0.82, 0.02)]), (0.0, 0.0, 0.0), 0.0)
-    assert value(m, 0.82, 0.02) == OBSTACLE
-    m.integrate(*picture(), (0.0, 0.0, 0.0), 1.0)  # looked again: it left
-    assert value(m, 0.82, 0.02) == FREE
+# -- confirmation: one picture decides nothing ------------------------------------------
 
-    # an obstacle the camera no longer looks at (the rover turned away) is forgotten after hold
-    m = LocalMap(hold=5.0, near=0.45)
-    m.integrate(*picture([(0.82, 0.02)]), (0.0, 0.0, 0.0), 0.0)
-    m.integrate(*picture(), (0.0, 0.0, math.pi), 4.0)
+
+def test_a_speck_in_one_picture_is_not_an_obstacle() -> None:
+    m = LocalMap()
+    look(m, [], (0.0, 0.0, 0.0), 1.0)  # the floor, seen free
+    m.integrate(*picture([(0.62, 0.02)]), (0.0, 0.0, 0.0), 1.1)  # noise, once
+    assert value(m, 0.62, 0.02) == FREE
+    assert m.first_obstacle(line(), 0.10, 1.0, 1.1) is None
+    m.integrate(*picture(), (0.0, 0.0, 0.0), 1.2)
+    m.integrate(*picture(), (0.0, 0.0, 0.0), 1.3)
+    m.integrate(*picture([(0.62, 0.02)]), (0.0, 0.0, 0.0), 1.4)  # again, later: one in three
+    assert value(m, 0.62, 0.02) == FREE
+
+    # in a cell never seen before, one hit leaves it "not seen", not an obstacle
+    m = LocalMap()
+    m.integrate(*picture([(0.62, 0.02)]), (0.0, 0.0, 0.0), 1.0)
+    assert value(m, 0.62, 0.02) == UNKNOWN and m.counts((0.0, 0.0), 1.0)['obstacle'] == 0
+
+
+def test_two_pictures_out_of_three_make_an_obstacle_and_two_free_ones_clear_it() -> None:
+    m = LocalMap()
+    box = [(0.62, 0.02)]
+    m.integrate(*picture(box), (0.0, 0.0, 0.0), 1.0)
+    m.integrate(*picture(), (0.0, 0.0, 0.0), 1.1)  # missed once (flicker)
+    assert value(m, 0.62, 0.02) != OBSTACLE
+    m.integrate(*picture(box), (0.0, 0.0, 0.0), 1.2)
+    assert value(m, 0.62, 0.02) == OBSTACLE  # two of the last three
+    m.integrate(*picture(), (0.0, 0.0, 0.0), 1.3)
+    assert value(m, 0.62, 0.02) == OBSTACLE  # one free look does not clear it
+    m.integrate(*picture(), (0.0, 0.0, 0.0), 1.4)
+    assert value(m, 0.62, 0.02) == FREE  # two do: it left
+
+
+def test_confirm_1_takes_every_picture_at_its_word() -> None:
+    m = LocalMap(confirm=1)
+    m.integrate(*picture([(0.62, 0.02)]), (0.0, 0.0, 0.0), 1.0)
+    assert value(m, 0.62, 0.02) == OBSTACLE
+    m.integrate(*picture(), (0.0, 0.0, 0.0), 1.1)
+    assert value(m, 0.62, 0.02) == FREE
+
+
+# -- forgetting, by the clock -----------------------------------------------------------
+
+
+def test_an_obstacle_no_longer_looked_at_is_forgotten_after_hold() -> None:
+    m = LocalMap(hold=10.0)
+    look(m, [(0.82, 0.02)], (0.0, 0.0, 0.0), 0.0)
+    look(m, [], (0.0, 0.0, math.pi), 9.0)  # the rover turned away: it looks elsewhere
     assert value(m, 0.82, 0.02) == OBSTACLE
-    m.integrate(*picture(), (0.0, 0.0, math.pi), 6.0)
+    assert m.first_obstacle(line(), 0.10, 1.0, 9.0) is not None
+    look(m, [], (0.0, 0.0, math.pi), 10.5)
     assert value(m, 0.82, 0.02) == UNKNOWN
+    assert m.first_obstacle(line(), 0.10, 1.0, 10.5) is None
 
 
-def test_cells_under_the_nose_are_kept_and_far_ones_dropped() -> None:
-    m = LocalMap(size=2.5, hold=5.0, near=0.45)
-    m.integrate(*picture([(0.32, 0.02), (1.02, 0.02)]), (0.0, 0.0, 0.0), 0.0)
-    m.integrate(*picture(), (0.0, 0.0, math.pi), 60.0)
+def test_forgetting_does_not_need_pictures_to_keep_coming() -> None:
+    """The capture server stops: what was seen still expires, for every reader."""
+    m = LocalMap(hold=10.0)
+    look(m, [(0.82, 0.02)], (0.0, 0.0, 0.0), 0.0)
+    assert m.first_obstacle(line(), 0.10, 1.0, 5.0) is not None
+    assert m.first_obstacle(line(), 0.10, 1.0, 10.5) is None  # no integrate() in between
+    m = LocalMap(hold=10.0)
+    look(m, [(0.82, 0.02)], (0.0, 0.0, 0.0), 0.0)
+    assert m.counts((0.0, 0.0), 5.0)['obstacle'] == 1
+    assert m.counts((0.0, 0.0), 10.5)['obstacle'] == 0
+    assert m.counts((0.0, 0.0), 31.0) == {'obstacle': 0, 'free': 0}  # under the nose too
+    m = LocalMap(hold=10.0)
+    look(m, [(0.82, 0.02)], (0.0, 0.0, 0.0), 0.0)
+    snap = m.snapshot((0.0, 0.0), 10.5)
+    assert all(v != OBSTACLE for row in snap['cells'] for v in row)
+    snap = m.snapshot((0.0, 0.0), 31.0)
+    assert all(v == UNKNOWN for row in snap['cells'] for v in row)
+
+
+def test_cells_under_the_nose_are_kept_longer_but_not_for_ever() -> None:
+    m = LocalMap(size=2.5, hold=10.0, near=0.45, hold_near=30.0)
+    look(m, [(0.32, 0.02), (1.02, 0.02)], (0.0, 0.0, 0.0), 0.0)
+    look(m, [], (0.0, 0.0, math.pi), 20.0)
     assert value(m, 0.32, 0.02) == OBSTACLE  # too close for the camera to clear: remembered
     assert value(m, 1.02, 0.02) == UNKNOWN
+    look(m, [], (0.0, 0.0, math.pi), 31.0)
+    assert value(m, 0.32, 0.02) == UNKNOWN  # ... for hold_near, then gone too
     # the rover drove 3 m away: nothing of the old place is left
-    m.integrate(*picture(), (3.0, 0.0, 0.0), 61.0)
+    m = LocalMap()
+    look(m, [(0.32, 0.02)], (0.0, 0.0, 0.0), 0.0)
+    look(m, [], (3.0, 0.0, 0.0), 1.0)
     assert value(m, 0.32, 0.02) == UNKNOWN
+
+
+# -- reading ----------------------------------------------------------------------------
 
 
 def test_first_obstacle_along_a_path() -> None:
     m = LocalMap()
-    m.integrate(*picture([(0.62, 0.02)]), (0.0, 0.0, 0.0), 0.0)
-    line = [(0.02 * k, 0.0) for k in range(60)]
-    dist, (ox, oy) = m.first_obstacle(line, 0.12, 1.0)
-    # the cell centre is at 0.625; the rover's centre comes within 0.12 + half a cell of it
-    assert dist == pytest.approx(0.625 - 0.145, abs=0.03)
+    look(m, [(0.62, 0.02)], (0.0, 0.0, 0.0), 0.0)
+    dist, (ox, oy) = m.first_obstacle(line(), 0.10, 1.0, 0.0)
+    # the cell's centre is at 0.625: the rover's centre comes within 0.10 of it
+    assert dist == pytest.approx(0.625 - 0.10, abs=0.03)
     assert (ox, oy) == pytest.approx((0.625, 0.025))
-    assert m.first_obstacle(line, 0.12, 0.3) is None  # farther than what is looked at
-    beside = [(0.02 * k, 0.25) for k in range(60)]
-    assert m.first_obstacle(beside, 0.12, 1.0) is None  # 25 cm to the side: it passes
-    assert m.first_obstacle(beside, 0.25, 1.0) is not None
-    assert m.first_obstacle([], 0.12, 1.0) is None
+    assert m.first_obstacle(line(), 0.10, 0.3, 0.0) is None  # farther than what is looked at
+    assert m.first_obstacle(line(0.15), 0.10, 1.0, 0.0) is None  # 15 cm to the side: it passes
+    assert m.first_obstacle(line(0.15), 0.25, 1.0, 0.0) is not None
+    assert m.first_obstacle([], 0.10, 1.0, 0.0) is None
 
 
 def test_snapshot_is_a_square_around_the_rover() -> None:
     m = LocalMap(size=2.5)
-    m.integrate(*picture([(0.52, 0.02)]), (1.0, 2.0, 0.0), 0.0)
-    snap = m.snapshot((1.0, 2.0))
+    look(m, [(0.52, 0.02)], (1.0, 2.0, 0.0), 0.0)
+    snap = m.snapshot((1.0, 2.0), 0.0)
     assert len(snap['cells']) == 50 and len(snap['cells'][0]) == 50
     assert snap['x0'] == pytest.approx(1.0 - 1.25) and snap['y0'] == pytest.approx(2.0 - 1.25)
     i = math.floor((2.02 - snap['y0']) / RES)
     j = math.floor((1.52 - snap['x0']) / RES)
     assert snap['cells'][i][j] == OBSTACLE
-    assert m.counts()['obstacle'] == 1 and m.counts()['free'] > 500
+    counts = m.counts((1.0, 2.0), 0.0)
+    assert counts['obstacle'] == 1 and counts['free'] > 500
     m.clear()
-    assert m.age(1.0) is None and m.counts() == {'obstacle': 0, 'free': 0}
+    assert m.age(1.0) is None and m.counts((1.0, 2.0), 0.0) == {'obstacle': 0, 'free': 0}

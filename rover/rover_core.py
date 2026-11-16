@@ -142,15 +142,29 @@ class Config:
     # Local guard: while following a path, look at the depth camera's grid (local_map.py)
     # along the path ahead; slow down when an obstacle comes near, stop when it is on the way.
     local_guard: int = 0  # 1 on, 0 off (off until checked on the real rover)
-    guard_half_width: float = 0.12  # m, half the corridor the rover's body sweeps on the path
-    guard_stop_dist: float = 0.10  # m of free path kept before the obstacle: closer, stop
+    # m, half the corridor checked along the path, to the centre of an obstacle cell: the
+    # rover's body (20 cm wide), 5 cm inside the planner's keep-out (0.15)
+    guard_half_width: float = 0.10
+    # m of path between the rover's centre and the first point of it that touches an
+    # obstacle: closer, stop. It covers the nose (11.5 cm ahead of the centre) and the braking.
+    guard_stop_dist: float = 0.15
     guard_slow_dist: float = 0.60  # m of path looked at; the rover slows down inside it
-    guard_decel: float = 0.3  # m/s^2, braking the slow-down is computed for
+    guard_decel: float = 0.2  # m/s^2, braking the slow-down is computed for
     guard_blind_speed: float = 0.08  # m/s at most while the grid is older than guard_max_age
-    guard_max_age: float = 0.5  # s
-    local_hold: float = 10.0  # s an unseen cell of the grid is remembered
+    # s: age of the newest depth picture beyond which the guard is "blind" (ten pictures
+    # missed in a row). Not the memory of obstacles: that is local_hold.
+    guard_max_age: float = 1.0
+    # s blind before the guard gives up on the depth camera: the rover then drives at its
+    # normal speed, unprotected ('no_camera' in /state), as it did before the guard existed...
+    guard_blind_time: float = 3.0
+    guard_blind_stop: int = 0  # ... or, with 1, ends the path ('no depth camera') instead
+    guard_backoff: float = 0.10  # m driven back after a 'blocked' stop (0: stay there)
+    local_hold: float = 10.0  # s a cell of the grid is remembered after its last look
+    local_hold_near: float = 30.0  # s for cells under the nose (the camera cannot clear them)
+    local_confirm: int = 2  # looks out of the last 3 that make a cell an obstacle (1: one)
     d405_x: float = 0.0  # m, the depth camera's lens ahead of the rover's centre of rotation
     d405_y: float = 0.0  # m, and to its left
+    d405_yaw_deg: float = 0.0  # deg, the lens turned to the left of the rover's axis
 
     # Camera pan-tilt (UGV firmware T:133: pan -180 left .. 180 right, tilt -30 down .. 90 up)
     gimbal_speed: float = 90.0  # deg/s while a ZQSD key is held
@@ -314,9 +328,15 @@ CONFIG_LIMITS: dict[str, tuple[float, float]] = {
     'guard_decel': (0.01, 10.0),
     'guard_blind_speed': (0.0, 1.0),
     'guard_max_age': (0.05, 10.0),
+    'guard_blind_time': (0.0, 600.0),
+    'guard_blind_stop': (0, 1),
+    'guard_backoff': (0.0, 0.5),
     'local_hold': (0.5, 600.0),
+    'local_hold_near': (0.5, 3600.0),
+    'local_confirm': (1, 3),
     'd405_x': (-1.0, 1.0),
     'd405_y': (-1.0, 1.0),
+    'd405_yaw_deg': (-45.0, 45.0),
     'gimbal_speed': (0.0, 720.0),
     'gimbal_hz': (0.5, 50.0),
     'gimbal_timeout': (0.05, 10.0),
@@ -1064,6 +1084,8 @@ class Controller:
         self.local = None  # local_map.LocalMap, set by Rover: the depth camera's grid
         self.local_state: dict = {'state': 'off'}  # the local guard, for /state
         self._carry: float | None = None  # speed kept when a path replaces a path in motion
+        self._blind_since: float | None = None  # local guard: since when no recent picture
+        self._stop_ticks = 0  # local guard: control ticks in a row with an obstacle too near
 
     # -- commands -------------------------------------------------------------------
 
@@ -1284,17 +1306,20 @@ class Controller:
         """Slow down when tilted, stop and back off when about to tip over."""
         c, o, g = self.cfg, self.odom, self._guard
         tilt = o.tilt
-        if not c.tilt_guard or not tilt.ready:
-            self.guard_state = 'off'
-            return v, w
+        # A back-off runs to its end whatever asked for it: the tilt guard below, or the
+        # local guard after a 'blocked' stop (its own distance in g['dist']).
         if self.guard_state == 'backoff':
-            done = o.odometer - g['odo0'] >= c.tilt_backoff_dist
+            done = o.odometer - g['odo0'] >= g.get('dist', c.tilt_backoff_dist)
             if done or t - g['t0'] > c.tilt_backoff_time:
-                self.guard_state, g['hold_until'] = 'hold', t + 1.0
+                self.guard_state, g['hold_until'] = 'hold', t + (0.3 if 'dist' in g else 1.0)
+                g.pop('dist', None)
                 return 0.0, 0.0
             return g['dir'] * c.tilt_backoff_speed, 0.0
         if self.guard_state == 'hold' and t < g['hold_until']:
             return 0.0, 0.0
+        if not c.tilt_guard or not tilt.ready:
+            self.guard_state = 'off'
+            return v, w
 
         reason = tilt.danger()
         if reason and g['blocked_dir'] == 0.0:  # trip: abort everything and back off
@@ -1312,6 +1337,7 @@ class Controller:
             g['blocked_dir'] = math.copysign(1.0, last_v) if moving else 0.0
             if moving:
                 self.guard_state = 'backoff'
+                g.pop('dist', None)
                 g.update(dir=-g['blocked_dir'], odo0=o.odometer, t0=t)
                 return g['dir'] * c.tilt_backoff_speed, 0.0
             self.guard_state, g['hold_until'] = 'hold', t + 1.0
@@ -1355,26 +1381,56 @@ class Controller:
 
     def _local_guard(self, v: float, w: float, t: float) -> tuple[float, float]:
         """Look at the depth camera's grid along the path ahead: slow down when an obstacle
-        comes near, end the step as 'blocked' (with the obstacle's place) when it is on it."""
+        comes near, end the step as 'blocked' (with the obstacle's place) when it is on it.
+
+        The corridor is the rover's body (guard_half_width to a cell's centre), inside the
+        planner's keep-out, so a path the planner may send does not trip it. Nothing is
+        checked while the rover pivots on the spot: it must be able to turn away from what
+        stopped it. Without a recent picture the rover first slows down (blind), then, after
+        guard_blind_time, drives on unprotected (no_camera) or ends the path (guard_blind_stop)."""
         c, lm = self.cfg, self.local
         if not c.local_guard or lm is None:
             self.local_state = {'state': 'off'}
+            self._blind_since, self._stop_ticks = None, 0
             return v, w
-        f: PathFollower = self._task['follower']
-        n = int(c.guard_slow_dist / f.RESOLUTION) + 2
-        hit = lm.first_obstacle(f.pts[f.i : f.i + n : 2], c.guard_half_width, c.guard_slow_dist)
         age = lm.age(t)
-        state, cap = 'ok', None
-        if age is None or age > c.guard_max_age:  # no recent picture: only what is remembered
-            state, cap = 'blind', c.guard_blind_speed
-        if hit is not None:
+        fresh = age is not None and age <= c.guard_max_age
+        if fresh:
+            self._blind_since = None
+        elif self._blind_since is None:
+            self._blind_since = t
+        if not fresh and t - self._blind_since > c.guard_blind_time:
+            self._stop_ticks = 0
+            self.local_state = {'state': 'no_camera', 'obstacle_dist': None}
+            if c.guard_blind_stop:
+                return self._done('no depth camera', t)
+            return v, w  # the depth camera is gone: as without the guard, and /state says so
+        f: PathFollower = self._task['follower']
+        state, cap = ('ok', None) if fresh else ('blind', c.guard_blind_speed)
+        hit = None
+        if not f.pivoting:
+            n = int(c.guard_slow_dist / f.RESOLUTION) + 2
+            pts = f.pts[f.i : f.i + n : 2]
+            hit = lm.first_obstacle(pts, c.guard_half_width, c.guard_slow_dist, t)
+        if hit is not None and hit[0] <= c.guard_stop_dist:
             dist, (ox, oy) = hit
-            if dist <= c.guard_stop_dist:
-                self.local_state = {'state': 'blocked', 'obstacle_dist': round(dist, 3)}
-                self._done('blocked', t)
-                self._pending_result['obstacle'] = [round(ox, 3), round(oy, 3)]
+            self._stop_ticks += 1
+            if self._stop_ticks < 2:  # brake now, decide at the next tick if it is still there
+                self.local_state = {'state': 'slow', 'obstacle_dist': round(dist, 3)}
                 return 0.0, 0.0
-            slow = max(c.v_min, math.sqrt(2.0 * c.guard_decel * (dist - c.guard_stop_dist)))
+            self._stop_ticks = 0
+            self.local_state = {'state': 'blocked', 'obstacle_dist': round(dist, 3)}
+            self._done('blocked', t)
+            self._pending_result['obstacle'] = [round(ox, 3), round(oy, 3)]
+            if c.guard_backoff > 0:
+                # Move back a little, the way the rover came: stopped this close, the obstacle
+                # would be inside the corridor of any new path, which could never start.
+                self.guard_state = 'backoff'
+                self._guard.update(dir=-1.0, odo0=self.odom.odometer, t0=t, dist=c.guard_backoff)
+            return 0.0, 0.0
+        self._stop_ticks = 0
+        if hit is not None:
+            slow = max(c.v_min, math.sqrt(2.0 * c.guard_decel * (hit[0] - c.guard_stop_dist)))
             cap = slow if cap is None else min(cap, slow)
             state = 'slow' if state == 'ok' else state
         self.local_state = {
@@ -1956,7 +2012,9 @@ class Rover:
         self.lock = threading.RLock()
         self.odom = Odometry(cfg)
         self.ctrl = Controller(cfg, self.odom)
-        self.local = LocalMap(hold=cfg.local_hold)
+        self.local = LocalMap(
+            hold=cfg.local_hold, hold_near=cfg.local_hold_near, confirm=cfg.local_confirm
+        )
         self.ctrl.local = self.local
         self._poses: deque[tuple[float, float, float, float]] = deque(maxlen=60)  # 3 s
         self.link = Esp32Link(opener, self._on_message, wait_boot)
@@ -2011,11 +2069,16 @@ class Rover:
         with self.lock:
             poses = list(self._poses)
             c = self.cfg
-            dx, dy, hold = c.d405_x, c.d405_y, c.local_hold
+            dx, dy, yaw = c.d405_x, c.d405_y, math.radians(c.d405_yaw_deg)
+            hold, hold_near, confirm = c.local_hold, c.local_hold_near, c.local_confirm
             now = (t, self.odom.x, self.odom.y, self.odom.heading)
         _, x, y, h = min(poses or [now], key=lambda p: abs(p[0] - taken))
-        cam = (x + dx * math.cos(h) - dy * math.sin(h), y + dx * math.sin(h) + dy * math.cos(h), h)
-        self.local.hold = hold
+        cam = (
+            x + dx * math.cos(h) - dy * math.sin(h),
+            y + dx * math.sin(h) + dy * math.cos(h),
+            h + yaw,
+        )
+        self.local.hold, self.local.hold_near, self.local.confirm = hold, hold_near, confirm
         self.local.integrate(grid['cells'], grid['x0'], grid['y0'], grid['res'], cam, t)
 
     def local_grid(self) -> dict:
@@ -2025,7 +2088,7 @@ class Rover:
             pose = (self.odom.x, self.odom.y, self.odom.heading)
         age = self.local.age(t)
         return {
-            **self.local.snapshot(pose[:2]),
+            **self.local.snapshot(pose[:2], t),
             'pose': [round(pose[0], 4), round(pose[1], 4), round(pose[2], 4)],
             'age_s': None if age is None else round(age, 3),
             'frames': self.local.frames,

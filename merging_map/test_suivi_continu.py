@@ -79,6 +79,10 @@ def test_a_new_path_is_sent_only_when_it_is_better() -> None:
     assert sc.a_remplacer(courant, [(0.3, 0.0), (1.4, 0.0)], pos, but)  # more floor seen
     detour = [(0.0, 0.0), (0.5, 0.6), (1.0, 0.0)]
     assert sc.a_remplacer(detour, [(0.05, 0.06), (1.0, 0.0)], (0.05, 0.06), but)  # shorter
+    # the last stretch: 15 cm more reach the goal, where the path driven stops short
+    fin = [(0.3, 0.0), (1.15, 0.0)]
+    assert not sc.a_remplacer(courant, fin, pos, (1.4, 0.0))
+    assert sc.a_remplacer(courant, fin, pos, (1.4, 0.0), tolerance=0.25)
 
 
 def test_the_rover_grid_is_placed_on_the_maps() -> None:

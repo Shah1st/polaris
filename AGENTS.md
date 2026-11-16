@@ -152,8 +152,10 @@ for the cases where neither robot can find the route alone.
   top edge towards the rover's front. Floor markers, if used: ids 0 to 3 of the same family.
 * The maps server (`sim/fusion_reelle.py`, relayed by the dashboard under `/fusion/`):
   `status.json`, `POST /reset`, `/objectif`, `/aller`, `/arreter`, `/calibrer`,
-  `/carte_locale {"carte_locale": bool}`, `/marqueur {"sans_marqueur": bool}`. `status.json`
-  also has `local` and `conduite`.
+  `/carte_locale {"carte_locale": bool}`, `/marqueur {"sans_marqueur": bool}`,
+  `/conduite {"continu": bool, "source_locale": "rover"|"service", "fusion":
+  "superposition"|"global"|"local"}`. `status.json` also has `local`, `conduite` and
+  `fusion` (which maps the planner uses now, and why).
 * The rover server (`rover/rover_server.py`): `GET /state`, `POST /path`, `/move`, `/turn`,
   `/stop`, in the frame of its own odometry. `POST /path` takes an optional `"id"` (given back
   in `/state`; a path with an id replaces a running one without stopping). `GET /local_grid`:

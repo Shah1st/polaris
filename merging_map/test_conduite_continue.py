@@ -10,6 +10,7 @@ obstacle: what is in the way is only seen by the rover."""
 import math
 import sys
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -44,6 +45,11 @@ class Yeux:
     def __init__(self, banc, boites):
         self.banc, self.boites = banc, boites
         self.vitesses = []  # (true x, commanded v)
+        self.etats = []  # (true x, the rover guard's state)
+        self.coupee = False  # True: the capture server is down, no grid reaches the rover
+        self.bruit = 0.0  # share of pictures with phantom obstacles beyond 0.6 m
+        self.images = 0
+        self.alea = np.random.default_rng(3)
         self._fin = threading.Event()
         self._fil = threading.Thread(target=self._boucle, daemon=True)
         self._fil.start()
@@ -74,12 +80,21 @@ class Yeux:
         cells = np.full(X.shape, -1, np.int8)
         cells[vu & (dist <= proche[secteur])] = 0
         cells[vu & obstacle & (dist <= proche[secteur] + 2 * RES)] = 1
+        self.images += 1
+        if self.alea.random() < self.bruit:
+            # what a depth camera does far away, or when the rover pitches: a few floor cells
+            # read as obstacles, in one picture, anywhere beyond 0.6 m
+            faux = vu & (dist > 0.6) & (self.alea.random(X.shape) < 0.03)
+            cells[faux] = 1
         return {'res': RES, 'x0': 0.0, 'y0': -PORTEE, 'cells': cells.tolist(), 'age_s': 0.0}
 
     def _boucle(self):
         while not self._fin.wait(0.1):
-            self.banc.rover.feed_grid(self.grille())
-            self.vitesses.append((self.banc.board.x, self.banc.rover.ctrl.v_cmd))
+            if not self.coupee:
+                self.banc.rover.feed_grid(self.grille())
+            ctrl = self.banc.rover.ctrl
+            self.vitesses.append((self.banc.board.x, ctrl.v_cmd))
+            self.etats.append((self.banc.board.x, ctrl.local_state.get('state')))
 
     def fermer(self):
         self._fin.set()
@@ -153,3 +168,58 @@ def test_a_wall_across_the_strip_stops_the_rover_and_ends_blocked(banc) -> None:
     assert issue == 'bloque', f.mission
     assert banc.board.x < 1.0 - 0.1 - 0.05  # nose (10 cm ahead of the centre) short of it
     assert abs(banc.rover.ctrl.v_cmd) < 1e-6
+
+
+def test_phantoms_far_away_do_not_stop_the_mission(banc) -> None:
+    """One picture in three has specks of "obstacle" on the empty floor beyond 0.6 m, as a
+    depth camera gives at range. Each is in one picture only: none is confirmed on the rover,
+    none reaches the map, the guard does not stop, and the rover arrives."""
+    f, yeux = mission(banc, [], (1.8, 0.0))
+    yeux.bruit = 0.33
+    try:
+        issue = f._mission_continue()
+    finally:
+        yeux.fermer()
+    assert issue == 'arrive', f.mission
+    assert yeux.images > 30
+    statuts = [h['status'] for h in banc.rover.ctrl.history if h['kind'] == 'path']
+    assert 'blocked' not in statuts
+    assert f.fusion['arrets_garde'] == 0
+    en_route = [v for x, v in yeux.vitesses if 0.3 < x < 1.2]
+    assert en_route and min(en_route) > 0.1, min(en_route)
+
+
+def test_the_depth_camera_dies_on_the_way_the_drone_map_takes_over(banc) -> None:
+    """The capture server stops while the rover drives. The rover slows down for a few
+    seconds, then drives on at its speed without protection (and says so); the planner goes
+    on with the drone map alone; nothing of the rover's grid stays on the maps."""
+    f, yeux = mission(banc, [], (2.4, 0.0), ['--vitesse', '0.12'])
+    f.fil_mission = threading.current_thread()  # as when started by POST /aller
+    textes = []
+    journal = f.journal_mission
+    f.journal_mission = lambda etat=None, texte=None, pas=None: (
+        textes.append(texte),
+        journal(etat, texte, pas),
+    )[1]
+
+    def couper():
+        while banc.board.x < 0.4 and not yeux._fin.is_set():
+            time.sleep(0.05)
+        yeux.coupee = True
+
+    threading.Thread(target=couper, daemon=True).start()
+    try:
+        issue = f._mission_continue()
+    finally:
+        yeux.fermer()
+    assert issue == 'arrive', f.mission
+    assert math.dist((banc.board.x, banc.board.y), (2.4, 0.0)) <= f.args.tolerance + 0.1
+    etats = [e for _, e in yeux.etats]
+    assert 'blind' in etats and 'no_camera' in etats
+    assert etats.index('blind') < etats.index('no_camera')
+    sans = [v for (x, v), (_, e) in zip(yeux.vitesses, yeux.etats, strict=True)
+            if e == 'no_camera' and x < 2.0]  # fmt: skip
+    assert sans and max(sans) > 0.11  # back to its speed, not creeping for ever
+    assert any(t and 'maps: superposition -> global' in t for t in textes), textes
+    assert any(t and 'UNPROTECTED' in t for t in textes), textes
+    assert f.fusion['utilisee'] == 'global' and not f.carte.tuiles.get(fr.SOURCE_GRILLE)

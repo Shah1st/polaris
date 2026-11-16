@@ -5,12 +5,32 @@ this layer lets the rover see what is in front of it with its D405, stop by itse
 obstacle the overhead camera missed, and drive without a stop at every step. Plain Python, no
 ROS and no Nav2.
 
-**Status: deployed, not driven.** The tests run against the real rover server with a
-simulated ESP32 and a stand-in depth camera. Since 2026-11-16 the code is on the robot, the
-floor is calibrated and `GET /local_grid` returns the real D405's grid ("On the robot,
-2026-11-16" below), but the guard has never been on with the wheels turning and no path has
-been driven with it. All of it is **off by default**; the chain that works today is unchanged
-until the switches below are turned on. "Before the first real run" lists what is still to do.
+**Status: reworked on 2026-11-17 after the first drives; the rework is tests only.** The
+first version was deployed and driven on 16 Nov with the guard and the rover's grid both on,
+and was overprotective: the rover stood still in front of obstacles that were not there, and
+the two maps together were worse than either alone ("What the first drives showed" below).
+The rework below has not been on the robot. Everything is still **off by default**.
+
+**Deploying the rework: the robot's saved settings keep the old values.**
+`rover_config.json` on the robot holds every setting, so the new defaults do not apply by
+themselves. After copying `rover/`, send once:
+
+```bash
+curl -X POST http://127.0.0.1:8080/config -d '{"guard_half_width": 0.10,
+  "guard_stop_dist": 0.15, "guard_decel": 0.2, "guard_max_age": 1.0}'
+```
+
+## The idea
+
+**Global decides the route. Local only protects, for a short time and a short way.**
+
+- The drone map is the map. The rover's grid is a layer on top of it, near the rover only,
+  rebuilt from what the rover knows at every plan and never stored.
+- The rover's grid adds obstacles; it never erases the drone's.
+- An obstacle counts once two pictures out of three have shown it.
+- The guard's corridor is the rover's body, 5 cm inside the planner's keep-out.
+- Everything local is forgotten by the clock, whether or not pictures still arrive.
+- When one of the two maps is missing, the other is used alone, and the dashboard says so.
 
 ## How it works
 
@@ -18,37 +38,89 @@ until the switches below are turned on. "Before the first real run" lists what i
 ON THE ROVER (RDK X5)
   rover_mapper/d405_server.py                rover/rover_server.py (20 Hz loop)
     capture, 15 pictures a second              local_map.LocalMap: 2.5 x 2.5 m around the
-    grid thread, 10 a second at most,          rover, 5 cm cells, odometry frame
-    only while asked:                poll      Controller._local_guard, on every tick of a path:
-      depth -> points above the  -- GET /grid -->  obstacle within 0.60 m on the path -> slower
-      floor -> 5 cm cells                          obstacle within 0.10 m -> stop, status
-      (-1 / 0 / 1)                                 "blocked" and where the obstacle is
+    grid thread, 10 a second at most,          rover, 5 cm cells, odometry frame; a cell is an
+    only while asked:                poll      obstacle after 2 pictures of 3, forgotten 10 s
+      depth -> points above the  -- GET /grid -->  after its last look
+      floor -> 5 cm cells                      Controller._local_guard, on every tick of a path:
+      (-1 / 0 / 1), obstacles                    obstacle in the body's way within 0.60 m -> slower
+      up to 0.8 m                                within 0.15 m -> stop, "blocked", back 10 cm
+                                                 no picture for 1 s -> slow; for 3 s more ->
+                                                 normal speed, UNPROTECTED, and said so
                                                GET /local_grid, /state: local, ctrl.local
                     ---------------- Wi-Fi or tunnel ----------------
 ON THE PC   sim/fusion_reelle.py --continu     about twice a second
-  GET /state, GET /local_grid -> rover tiles -> CarteFusion
-  decider() + A* -> stop one rover radius before unseen cells -> round the corners
+  GET /state, GET /local_grid
+  which maps work? -> superposition | global | local          (status.json: fusion)
+  rover layer rebuilt: cells within 1.5 m, without what the drone already has within 15 cm
+  decider() + A* -> round the corners
   -> POST /path {"points", "id"} when the new path is better or the old one is barred;
      the rover takes it over at speed
-  "blocked" -> obstacle marked on the map -> new route at once
+  "blocked" -> one cell on the map for 10 s -> new route at once
 ```
 
 The rover protects itself: the stop does not depend on the network. The planner only sends
-paths. If the link is slow, the rover reaches the end of its path, which never enters cells
-nobody has seen, and waits there.
+paths. If the link is slow, the rover reaches the end of its path and waits there.
+
+## The two maps together (`--fusion`)
+
+| Asked | Drone map | Rover grid | Used | What the planner does |
+|---|---|---|---|---|
+| superposition (default) | placed | fresh | superposition | Drone map, plus the rover's obstacles near the rover |
+| superposition | placed | missing | global | Drone map alone, as before local navigation |
+| superposition | never placed | fresh | local | Rover's grid alone, only through cells seen free, looking around when needed |
+| any | never placed | missing | aucune | With the rover's grid as source: the mission does not start, or ends, and says why |
+| global | placed | any | global | Drone map alone |
+| local | any | fresh | local | Rover's grid alone |
+| local | placed | missing | global | Drone map instead, with the reason shown |
+
+- **Rover grid missing**: no answer, an error, or older than `--age-max`, for 3 s in a row;
+  back after two good grids. One late picture is not an outage. While it is missing its
+  layer is empty, whether that lasts ten seconds or ten minutes.
+- **Drone map**: the last placed picture stays valid when the camera stops sending. Only
+  "never placed" counts as missing.
+- **Superposition, in detail** (`FusionReelle.superposer`, `CarteFusion.grille` with
+  `rover_efface_drone` False):
+  - only rover cells within 1.5 m of the rover;
+  - a rover obstacle within 15 cm of a drone obstacle is the same object and is left out
+    (the rover's frame is its odometry, the drone's is the camera's: the same box lands a few
+    centimetres apart, and twice on the map it closed the passage beside it);
+  - a rover "free" fills what the drone has not seen and never replaces a drone obstacle.
+- **What the rover bumped into** (stall, tilt) and the views of the perception service
+  (`--source-locale service`) stay in the old `rover` source and are kept as before; with
+  the local map on they too add to the drone map instead of replacing it.
+- With the local map off nothing changed: the drone map, and the old rule.
+- `status.json` `fusion`: `demandee`, `utilisee`, `raison`, `cellules_rover` (rover obstacle
+  cells in the plan), `doublons` (left out as the drone's), `arrets_garde` (guard stops since
+  the maps were reset). The dashboard shows them under the switches.
 
 ## The parts
 
 | Part | File | What it does |
 |---|---|---|
-| Depth to grid | `rover_mapper/d405_server.py`, `GridMaker` | `GET /grid`: 5 cm cells in front of the lens (x forward, y left), 1.25 m ahead, from the depth alone, with `rovermap/perception.py` (the geometry of the perception service's D405 mode). `POST /calibrate_floor` fits the floor once and keeps it in `d405_floor.json` |
-| Rolling grid | `rover/local_map.py`, `LocalMap` | Places each grid with the pose the rover had when the picture was taken. A seen cell overwrites; an unseen one is forgotten after `local_hold` s, except within 0.45 m of the rover (the camera cannot see the floor under its nose) |
-| Guard | `rover/rover_core.py`, `Controller._local_guard` | Looks `guard_slow_dist` along the path ahead, in a corridor `guard_half_width` wide each side. Caps the speed at `sqrt(2 * guard_decel * (distance - guard_stop_dist))`; ends the path as `blocked` at `guard_stop_dist`. Without a grid newer than `guard_max_age`: `guard_blind_speed` at most |
+| Depth to grid | `rover_mapper/d405_server.py`, `GridMaker` | `GET /grid`: 5 cm cells in front of the lens (x forward, y left), floor seen to 1.25 m, obstacles reported to 0.8 m, with `rovermap/perception.py`. `POST /calibrate_floor` fits the floor once and keeps it in `d405_floor.json` |
+| Rolling grid | `rover/local_map.py`, `LocalMap` | Places each grid with the pose the rover had when the picture was taken. Confirmation (`local_confirm`) and forgetting by the clock (`local_hold`, `local_hold_near`) |
+| Guard | `rover/rover_core.py`, `Controller._local_guard` | Looks `guard_slow_dist` along the path ahead, `guard_half_width` each side to a cell's centre. Slows down, ends the path as `blocked` after two control ticks inside `guard_stop_dist`, then backs off `guard_backoff`. Not while pivoting on the spot |
 | Take-over | `rover/rover_core.py`, `Controller.run`, `_start` | A `POST /path` with an `id` that replaces a running path starts from the closest point of the new path, at the current speed, without the starting pivot |
-| Rover grid on the maps | `merging_map/suivi_continu.py` `grille_locale`, `sim/fusion_reelle.py` `vue_locale` | `GET /local_grid` (odometry frame) turned into rover tiles; also while the rover drives |
-| Path shaping | `merging_map/suivi_continu.py` | `lisser` cuts corners sharper than 40 degrees when the short cut is clear (the rover stops and pivots above 45); `a_remplacer` sends a new path only when it ends 0.2 m nearer the goal or is 0.2 m shorter; `prolonger` plans from a little ahead of the rover |
+| Layers | `sim/fusion_reelle.py` `regler_fusion`, `superposer`; `merging_map/fusion_carte.py` `grille`, `couche` | Which maps are used, and the rover's layer (source `rover:d405`) rebuilt at every plan |
+| Path shaping | `merging_map/suivi_continu.py` | `lisser` cuts corners sharper than 40 degrees when the short cut is clear; `a_remplacer` sends a new path only when it ends 0.2 m nearer the goal, is 0.2 m shorter, or reaches the goal; `prolonger` plans from a little ahead of the rover |
 | Driver | `merging_map/avancer_esquive.py`, `RoverSegments.lancer`, `suivi`, `obstacle_vu`, `pivoter` | Non-blocking send and poll. Any path or stop that does not carry one of the mission's ids ends the mission as an operator stop |
 | Mission loop | `sim/fusion_reelle.py`, `_boucle_continue` | The loop of the diagram. Looks around by pivoting the rover (+40, -80, +40 degrees) when nothing seen free is ahead |
+
+## Which frame the floor calibration uses
+
+- `POST /calibrate_floor` fits the plane in the **D405 depth camera's own optical frame**
+  (not the colour camera, nothing aligned): origin at the depth lens, x right, y down, z
+  forward, metres. `d405_floor.json` keeps `normal` (unit vector from the floor towards the
+  lens) and `d` (lens to floor: 0.1522 m on the robot); `tilt_deg` (1.46) is the angle
+  between that normal and the camera's "up".
+- The grid is in the frame built from that plane (`perception.rover_axes`): origin on the
+  floor under the lens, x = optical axis projected on the floor, y left. The mount's pitch
+  and roll are absorbed.
+- The rover (`Rover.feed_grid`) moves it to its centre of rotation with `d405_x` (0.09 on
+  the robot) and `d405_y`, and turns it by the rover's heading plus `d405_yaw_deg`. The
+  lens's yaw on the chassis is **not calibrated** (0 assumed): 3 degrees put an obstacle at
+  1 m 5 cm to the side. To measure it: a straight edge on the floor along the rover's axis
+  should come out along x in `GET /grid`.
 
 ## Switches and settings
 
@@ -58,12 +130,14 @@ Maps server (`sim/fusion_reelle.py`):
 |---|---|---|
 | `--continu` | off | Drive without stopping (the loop above) |
 | `--source-locale` | `service` | What feeds the local map: `service`, the perception service at each stop, as before; `rover`, the rover's own grid, also while driving |
-| `--carte-locale` | off | As before. With `--continu` it also restricts driving to cells seen free |
+| `--carte-locale` | off | As before |
+| `--fusion` | `superposition` | With the local map on: `superposition`, `global`, `local` (table above). Also `POST /conduite {"fusion": ...}` |
+| `--segment-vu` | off | Drive only through cells seen free. Also applied by itself when the rover's grid is the only map |
 | `--segment` | 0 | With `--continu`: longest path sent, m (2 m when 0) |
 | `--periode-plan` | 0.5 s | Time between two plans |
 | `--latence` | 0.4 s | The plan starts `vitesse * latence + 5 cm` ahead of the rover |
-| `--duree-obstacle` | 30 s | Life of an obstacle reported by the guard (`--continu` and `--segment`). In segments, a view of the perception service that says "free" there does not erase it before; the rover's own grid does |
-| `--avance-camera` | 0 m | Lens ahead of the rover's centre, for the views of the perception service (`--source-locale service`). The rover's own grid has it already (`d405_x`) |
+| `--duree-obstacle` | 10 s | Life of what the guard stopped for, on the map: one cell (was a 20 cm disc for 30 s). With the perception service as source, a view that says "free" there does not erase it before |
+| `--avance-camera` | 0 m | Lens ahead of the rover's centre, for the views of the perception service. The rover's own grid has it already (`d405_x`) |
 | `--duree-max` | 600 s | Longest mission |
 
 Rover settings (`POST /config` on the rover, saved in `rover_config.json`):
@@ -71,22 +145,47 @@ Rover settings (`POST /config` on the rover, saved in `rover_config.json`):
 | Setting | Default | Meaning |
 |---|---|---|
 | `local_guard` | 0 | 1: the guard is on |
-| `guard_half_width` | 0.12 m | Half the corridor checked (rover half width 0.10 + 2 cm; a 5 cm cell counts from its edge) |
-| `guard_stop_dist` | 0.10 m | Path kept free before the obstacle |
+| `guard_half_width` | 0.10 m | Half the corridor checked along the path, to the centre of an obstacle cell: the rover's body. The planner keeps 0.15 m (was 0.12 + half a cell = 0.145: a path the planner sent tripped it) |
+| `guard_stop_dist` | 0.15 m | Path between the rover's centre and the first point of it that touches an obstacle: closer, stop. Covers the nose (11.5 cm) and the braking (was 0.10) |
 | `guard_slow_dist` | 0.60 m | Path looked at |
-| `guard_decel` | 0.3 m/s² | Braking the slow-down is computed for |
-| `guard_blind_speed` | 0.08 m/s | Top speed without a recent grid |
-| `guard_max_age` | 0.5 s | A grid older than this is not recent |
-| `local_hold` | 10 s | Memory of an unseen cell |
-| `d405_x`, `d405_y` | 0, 0 m | Lens ahead of, and left of, the rover's centre of rotation. **To measure** |
+| `guard_decel` | 0.2 m/s² | Braking the slow-down is computed for (was 0.3) |
+| `guard_backoff` | 0.10 m | Driven back after a `blocked` stop, so that a new path can start (0: stay) |
+| `guard_blind_speed` | 0.08 m/s | Top speed while "blind" |
+| `guard_max_age` | 1.0 s | Age of the newest depth picture beyond which the guard is blind: ten pictures missed in a row. Not the memory of obstacles (was 0.5) |
+| `guard_blind_time` | 3 s | Blind for longer: the depth camera is given up, the rover drives at its speed, unprotected (`no_camera`) |
+| `guard_blind_stop` | 0 | 1: end the path (`no depth camera`) instead of driving on unprotected |
+| `local_hold` | 10 s | A cell is forgotten this long after its last look |
+| `local_hold_near` | 30 s | The same for cells within 0.45 m (the camera cannot see the floor under its nose, so it cannot clear them); was "never" |
+| `local_confirm` | 2 | Pictures out of the last three that make a cell an obstacle; two free ones clear it. 1: every picture at its word |
+| `d405_x`, `d405_y` | 0, 0 m | Lens ahead of, and left of, the rover's centre of rotation (0.09, 0 on the robot) |
+| `d405_yaw_deg` | 0 | Lens turned to the left of the rover's axis. Not measured |
 
 Capture server (`rover_mapper/d405_server.py`): `--grid-hz` 10 (0: no grid), `--cam-height`
-0.15 m (lens centre above the floor, measured by the team), `--cam-height-tol` 0.03,
-`--grid-stride` 2, `--grid-range` 1.25 m, `--floor-file`.
+0.15 m, `--cam-height-tol` 0.03, `--grid-stride` 2, `--grid-range` 1.25 m, `--floor-file`,
+and against phantoms (estimates, to adjust on recordings): `--grid-obstacle-range` 0.8 m,
+`--grid-band-slope` 0.03 (the 4 cm obstacle height grows by 3 cm per metre of distance),
+`--grid-min-points` 5, `--threads` 1.
 
-These values differ from the first plan (0.185 / 0.30 / 0.80 / 0.4): the corridor is the
-rover's body, not the planner's keep-out, otherwise the guard would stop the rover on every
-path the planner sends 15 cm from an obstacle.
+## What the first drives showed (review of 2026-11-17)
+
+Everything added obstacles, almost nothing removed them, and the layers did not agree on
+where things were.
+
+- **Depth grid.** One fixed floor plane, a rover that pitches when it brakes, a short-range
+  camera read out to 1.25 m, and three points in one picture enough for an obstacle. In a
+  synthetic scene a 3 degree pitch turns the floor beyond 0.8 m into obstacles; 2 degrees
+  is at the limit at 1.25 m. Not measured on the robot.
+- **The 10 s discard did not do its job.** Forgetting only ran when a new picture arrived;
+  cells within 0.45 m were never forgotten; and the fused map never forgot at all: a cell
+  the rover dropped came back as "unknown", which erases nothing there.
+- **The guard.** Its corridor (0.145 m) was the planner's keep-out (0.15 m); one cell in
+  one picture ended the path; each stop put a 20 cm disc on the map for 30 s, grown to
+  50 cm by the planner; after a stop the rover stood inside its own corridor for any new
+  path; it also blocked the pivot that would have turned it away; without a fresh picture
+  it crept at 0.08 m/s for ever.
+- **Fusion.** A known rover cell replaced the drone's, in a different frame: the same box
+  twice, a few centimetres apart, each grown by 0.15 m; a rover "free" erasing a real drone
+  obstacle; nothing of the rover's ever expiring.
 
 ## Interfaces added
 
@@ -96,14 +195,17 @@ path the planner sends 15 cm from an obstacle.
 - `rover_server`: `GET /local_grid` -> `{res, x0, y0, cells, pose: [x, y, heading rad],
   age_s, frames, error}`, odometry frame, cell `[i][j]` starts at `(x0 + j*res, y0 + i*res)`.
   `/state` has `local` (`feed`, `error`, `grids`, `age_s`, `obstacle`, `free`) and
-  `ctrl.local` (`state`: off, ok, slow, blind, blocked; `obstacle_dist`).
+  `ctrl.local` (`state`: off, ok, slow, blind, no_camera, blocked; `obstacle_dist`).
+  After a `blocked` stop `ctrl.guard.state` is `backoff` then `hold`, as for the tilt guard.
+  New status `no depth camera` (only with `guard_blind_stop`).
 - `POST /path` takes `"id"` (1 to 40 characters), given back in `ctrl.current.id` and in the
   history entry; a replaced entry has `replaced_by`. New status `blocked`, with
   `obstacle: [x, y]` in the odometry frame.
 - `status.json` of the maps server: `local` (`source`, `age_s`, `erreur`, `garde`,
   `obstacle_dist`) and `conduite` (`pas`, `segments`, `continu`). `POST /conduite`
-  `{"continu": bool, "source_locale": "rover"|"service"}` (either key) changes `--continu`
-  and `--source-locale` while it runs; 409 during a mission.
+  `{"continu": bool, "source_locale": "rover"|"service", "fusion":
+  "superposition"|"global"|"local"}` (any key) changes `--continu`, `--source-locale` and
+  `--fusion` while it runs; 409 during a mission. `status.json` has `fusion` (above).
 - Dashboard (`teleop/server.py`): `POST /fusion/conduite` relays that; `POST /api/guard`
   `{"local_guard": bool}`; `/api/state` has `guard` (0, 1, `"absent"` on an older rover
   server), `robot.local` and `ctrl.local` from the rover's `/state`.
@@ -146,15 +248,19 @@ Then the dashboard as usual: click a goal, "Go".
   `POST /vitesse` (0.05 to 0.30 m/s; the slider stops at 0.20), from the next path sent to the
   rover, also during a mission.
 
+- **Maps**: which maps the planner uses (`--fusion`); the line under the switches says
+  which are in use and why, how many rover obstacle cells are in the plan, how many were
+  left out as the drone's, and the guard's stops. The guard shows "NO DEPTH PICTURE: driving
+  UNPROTECTED" in red when it has given up on the depth camera. Not tried in a browser.
+
 Each switch works alone: the guard with missions in segments (`--segment`: a `blocked`
 segment puts the obstacle on the map and a new route is planned; three refusals in a row
 before the rover moves end the mission as blocked) but not yet with the step-by-step loop
 (`--segment 0`), which does not read `blocked`; `--source-locale rover` without `--continu`;
 `--continu` without the local map. With the guard on, prefer `--source-locale rover`: the
-planner then sees what the guard sees. After a guard stop the rover stands about 10 cm
-from the obstacle, which can still be inside the guard's corridor (12 cm each side) for any
-new route: the mission then ends blocked and asks for the rover to be moved back by hand.
-Backing off by itself, as the tilt guard does, is not done.
+planner then sees what the guard sees. After a guard stop the rover now moves 10 cm back
+(`guard_backoff`) and the guard does not check a pivot on the spot, so a new route can
+leave; the "three refusals" rule stays as a last resort.
 
 ## Before the first real run
 
@@ -250,15 +356,21 @@ carpet the whole time; the guard stayed off.
   next plan. Manual driving (`/cmd`) and `/move` are not guarded.
 - **Odometry frame.** The grid and the maps of `fusion_reelle.py` live in the rover's
   odometry, which drifts; an obstacle seen long ago is where the odometry put it.
-- **Obstacles that leave.** A cell the rover's camera sees free again is cleared at once, on
-  the rover and on the fused map, with either source (`sim/test_fusion_reelle.py`). A cell it
-  no longer sees is not: the rover forgets it after `local_hold`, the fused map keeps the
-  rover tile until the rover sees that cell free. Three things do not clear by being seen:
-  what the guard reported lasts `--duree-obstacle`; a bump (tilt, stall) is a forbidden zone
-  until "Reset the maps", on purpose (the camera saw nothing where the rover tipped); and on
-  the rover, an obstacle within 0.45 m is never forgotten and, inside the blind zone, cannot
-  be seen free either: a box taken away right in front of a stopped rover stays in its memory
-  until it has moved off, by another route or by hand.
+- **Obstacles that leave.** A cell the rover's camera sees free in two pictures is cleared,
+  on the rover and on the maps. A cell it no longer sees is forgotten `local_hold` (10 s)
+  after its last look, 30 s within 0.45 m, and with `--source-locale rover` it leaves the
+  maps at the next plan (the rover's layer is rebuilt). What still does not clear by being
+  seen: what the guard reported lasts `--duree-obstacle` (10 s, one cell); a bump (tilt,
+  stall) is a forbidden zone until "Reset the maps", on purpose; and the views of the
+  perception service stay until that cell is seen free.
+- **Unprotected without the depth camera.** After 4 s without a depth picture (1 s blind,
+  3 s more) the rover drives at its speed with no guard. That is what it did before the
+  guard existed, and it is shown in red, but it is a choice: `guard_blind_stop` 1 ends the
+  path instead.
+- **The same obstacle seen twice** is left out only within 15 cm of the drone's. A larger
+  disagreement between odometry and camera frame shows up as two obstacles again. Aligning
+  the rover's grid to the drone map would remove this at its root; not done.
+- **The numbers of the depth grid** (0.8 m, 3 cm per metre, 5 points) are estimates.
 - **The link.** Through the VM's tunnel (1.3 to 4 s a request) the rover stays safe but ends
   each path before the next arrives. Smooth driving needs the planner on the room's Wi-Fi.
 - **Two processes on the RDK X5**, which has no fan; the grid is computed only while asked.
@@ -268,12 +380,12 @@ carpet the whole time; the guard stayed off.
 | File | Covers |
 |---|---|
 | `rover_mapper/test_d405_grid.py` | Grid from a synthetic floor 15 cm under the lens and a box; floor calibration kept, refused at a wrong height, still working facing a wall; `/grid` over HTTP with a fake pyrealsense2 |
-| `rover/tests/test_local_map.py` | Placing a rotated grid without holes, memory and forgetting, first obstacle along a path |
-| `rover/tests/test_path_guard.py` | Slow then `blocked` without contact, obstacle beside the corridor ignored, no pictures -> slow, guard off changes nothing; take-over at speed, bend followed as an arc, old behaviour without `id` |
+| `rover/tests/test_local_map.py` | Placing a rotated grid without holes; one picture decides nothing, two of three do; forgetting without pictures arriving; near cells kept longer, not for ever |
+| `rover/tests/test_path_guard.py` | Slow, `blocked` with the nose 4 cm or more from the box, back-off; a path that turns away can start; a phantom in one picture does not slow the rover; a path 15 cm from obstacles is driven; blind then unprotected, or stopped; take-over at speed |
 | `rover/tests/test_server.py` | `/local_grid`, the feed, path ids over HTTP |
 | `merging_map/test_suivi_continu.py` | Corner rounding, replacement rule, placing the rover grid |
-| `merging_map/test_conduite_continue.py` | End to end against the real rover server (simulated ESP32, stand-in camera with a field of view and shadows): clear way driven without the speed dropping; a box only the rover sees driven round without contact; a wall across the zone ends `bloque` short of it. Real time, about 45 s |
-| `sim/test_fusion_reelle.py` | Rover grid fused at the right place while moving; defaults off; an obstacle seen free again leaves the map with both sources, one no longer seen stays; the guard's obstacle expires and is not erased before; in segments a `blocked` segment changes the route, three before moving end the mission |
+| `merging_map/test_conduite_continue.py` | End to end against the real rover server (simulated ESP32, stand-in camera with a field of view and shadows): clear way driven without the speed dropping; a box only the rover sees driven round without contact; a wall across the zone ends `bloque` short of it; phantoms in one picture of three beyond 0.6 m: no stop, arrives; the depth camera dies on the way: slow, then unprotected at speed, maps go to `global`, arrives. Real time, about 80 s |
+| `sim/test_fusion_reelle.py` | Rover grid fused at the right place while moving; defaults off; an obstacle seen free again leaves the map with both sources, one the rover forgot leaves it too; the guard's obstacle is one cell, expires and is not erased before; superposition (the rover adds, erases nothing of the drone; the same box seen twice is one; only near the rover); one map missing (late grid, 3 s outage, no drone map, neither); the mode asked for and switched; in segments a `blocked` segment changes the route, three before moving end the mission |
 
 ## Not done
 
@@ -281,8 +393,11 @@ carpet the whole time; the guard stayed off.
   dashboard's "Rover guard" box).
 - `merging_map/lancer_overhead.py` and the step-by-step loop do not read `blocked` (the
   segments and continuous loops do).
-- Forgetting, on the rover, a near obstacle that was taken away (see "Obstacles that leave").
-- Backing off after a guard stop, so that a new route can leave (see "Running it").
+- The rework of 17 Nov on the robot: none of it has been driven. The dashboard's new
+  selector and line have not been opened in a browser, and `teleop`'s tests do not run in
+  the dev container (no `requests`).
+- Measuring the depth grid's numbers and `d405_yaw_deg` on recordings.
+- Aligning the rover's grid to the drone map; pitch from the IMU into the floor plane.
 - On the rover, a short path whose end is behind the nose ends `done` at once
   (`PathFollower.update`: the "just past it" rule also holds before the rover has moved).
   The segments loop works round it by pivoting first; the continuous loop does not.

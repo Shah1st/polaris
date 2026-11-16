@@ -432,3 +432,27 @@ def test_no_go_zone_is_avoided_like_an_obstacle() -> None:
     assert all(np.hypot(x - 2.1, y - 3.2) > 0.8 for x, y in dec['chemin'])
     # it is not an obstacle of the map: nothing is written in the tiles
     assert (carte.grille(1.3, 2.4, 2.9, 4.0).val != OBSTACLE).all()
+
+
+def test_superposition_un_libre_du_rover_n_efface_pas_un_obstacle_du_drone():
+    """rover_efface_drone False : la carte du drone reste la carte, le rover ajoute ses
+    obstacles et ne dit « libre » que la ou le drone n'a rien vu ; roles_ignores laisse une
+    des deux cartes de cote."""
+    carte = CarteFusion(niveau_plan=4)
+    drone = np.full((32, 32), -1, np.int8)
+    drone[0, 0:3] = (1, 0, 0)
+    rover = np.full((32, 32), -1, np.int8)
+    rover[0, 0:4] = (0, 1, -1, 0)
+    carte.recevoir({'source': 'drone', 't': 1.0, 'z': 4, 'x': 0, 'y': 0, 'data': drone})
+    carte.recevoir({'source': 'rover:d405', 't': 2.0, 'z': 4, 'x': 0, 'y': 0, 'data': rover})
+    assert list(carte.grille(0, 0, 0.2, 0.05).val[0]) == [0, 1, 0, 0]  # regle historique
+    carte.rover_efface_drone = False
+    g = carte.grille(0, 0, 0.2, 0.05)
+    assert list(g.val[0]) == [1, 1, 0, 0]
+    assert list(g.src[0]) == [1, 2, 1, 2]  # drone, rover, drone, rover
+    assert list(carte.couche('drone', 0, 0, 0.2, 0.05)[0]) == [1, 0, 0, -1]
+    assert list(carte.couche('rover', 0, 0, 0.2, 0.05)[0]) == [0, 1, -1, 0]
+    carte.roles_ignores = {'drone'}
+    assert list(carte.grille(0, 0, 0.2, 0.05).val[0]) == [0, 1, -1, 0]
+    carte.roles_ignores = {'rover'}
+    assert list(carte.grille(0, 0, 0.2, 0.05).val[0]) == [1, 0, 0, -1]

@@ -43,7 +43,8 @@ def see(s: Sim, obstacles) -> None:
 
 
 def drive(s: Sim, obstacles, limit: float = 40.0, hz: float = 10.0) -> list[float]:
-    """Run until the controller is idle, with pictures at `hz`; the commanded speeds."""
+    """Run until nothing drives the rover any more (the back-off after a guard stop included),
+    with pictures at `hz`; the commanded speeds."""
     speeds = []
     end = s.t + limit
     while s.t < end:
@@ -51,9 +52,12 @@ def drive(s: Sim, obstacles, limit: float = 40.0, hz: float = 10.0) -> list[floa
             see(s, obstacles() if callable(obstacles) else obstacles)
         s.run(1.0 / hz)
         speeds.append(s.ctrl.v_cmd)
-        if s.ctrl.mode == 'idle' and not s.ctrl.queue:
+        if not s.ctrl.busy() and s.ctrl.guard_state != 'hold':
             return speeds
     raise AssertionError(f'still {s.ctrl.mode} after {limit} s')
+
+
+NOSE = 0.115  # m from the rover's centre to its front
 
 
 def test_clear_path_is_driven_at_full_speed() -> None:
@@ -65,16 +69,17 @@ def test_clear_path_is_driven_at_full_speed() -> None:
     assert s.board.x == pytest.approx(1.5, abs=0.04)
 
 
-def test_obstacle_on_the_path_slows_then_blocks_without_contact() -> None:
+def test_obstacle_on_the_path_slows_blocks_without_contact_and_backs_off() -> None:
     s = guarded()
-    box = (1.02, 0.02)
+    box = (1.02, 0.02)  # its cell is 1.00 .. 1.05
     s.start(Step.path([[2.0, 0.0]]))
-    states = []
+    states, furthest = [], 0.0
     end = s.t + 30
-    while s.t < end and not (s.ctrl.mode == 'idle' and not s.ctrl.queue):
+    while s.t < end and (s.ctrl.busy() or s.ctrl.guard_state == 'hold'):
         see(s, [box])
         s.run(0.1)
         states.append((s.ctrl.local_state['state'], s.ctrl.v_cmd))
+        furthest = max(furthest, s.board.x)
     entry = s.ctrl.history[0]
     assert entry['status'] == 'blocked'
     assert entry['obstacle'] == pytest.approx([1.025, 0.025], abs=0.06)  # odometry frame
@@ -82,44 +87,135 @@ def test_obstacle_on_the_path_slows_then_blocks_without_contact() -> None:
     assert 'slow' in names and names.index('slow') < names.index('blocked')
     slow = [v for n, v in states if n == 'slow' and v > 0]
     assert min(slow) < 0.12  # it braked before stopping
-    # stopped short: the rover's centre is still more than its half width + margin away
-    assert 0.2 < box[0] - s.board.x < 0.45
+    assert furthest + NOSE < 1.0 - 0.04  # the nose stayed 4 cm or more from the box
+    # then it moved back about guard_backoff, so that a new path can start
+    assert furthest - s.board.x == pytest.approx(s.cfg.guard_backoff, abs=0.04)
     assert abs(s.board.wl) < 0.01 and abs(s.board.wr) < 0.01
 
 
-def test_obstacle_beside_the_corridor_is_ignored() -> None:
+def test_after_a_stop_a_path_that_turns_away_can_start() -> None:
+    """Stopped in front of the box, then sent round it: the guard lets the rover pivot and
+    leave (before the back-off, the box stayed inside the corridor of every new path)."""
+    s = guarded()
+    box = [(1.02, 0.02), (1.02, -0.03)]
+    s.start(Step.path([[2.0, 0.0]]))
+    drive(s, box)
+    assert s.ctrl.history[0]['status'] == 'blocked'
+    x = s.odom.x
+    s.start(Step.path([[x + 0.1, 0.35], [1.6, 0.35]], frame='odom'))
+    drive(s, box)
+    assert s.ctrl.history[0]['status'] == 'done'
+    assert s.board.x == pytest.approx(1.6, abs=0.06) and s.board.y > 0.25
+
+
+def test_without_back_off_the_rover_stays_where_it_stopped() -> None:
+    s = guarded(guard_backoff=0.0)
+    s.start(Step.path([[2.0, 0.0]]))
+    xs = []
+    end = s.t + 30
+    while s.t < end and s.ctrl.busy():
+        see(s, [(1.02, 0.02)])
+        s.run(0.1)
+        xs.append(s.board.x)
+    assert s.ctrl.history[0]['status'] == 'blocked'
+    assert max(xs) - s.board.x < 0.02 and s.ctrl.guard_state != 'backoff'
+
+
+def test_a_phantom_seen_in_one_picture_does_not_stop_the_rover() -> None:
     s = guarded()
     s.start(Step.path([[1.5, 0.0]]))
-    speeds = drive(s, [(0.8, 0.3), (0.8, -0.3)])
+    n = [0]
+
+    def scene():
+        n[0] += 1
+        # every fifth picture has a speck right on the path, 30 cm ahead of the rover
+        return [(s.board.x + 0.3, 0.02)] if n[0] % 5 == 0 else []
+
+    speeds = drive(s, scene)
+    assert s.ctrl.history[0]['status'] == 'done'
+    assert s.board.x == pytest.approx(1.5, abs=0.04)
+    assert min(speeds[5:-12]) > 0.15  # it did not even slow down
+
+
+def test_a_path_the_planner_may_send_15_cm_from_an_obstacle_is_driven() -> None:
+    """The planner keeps the rover's centre 15 cm from obstacle cells. The guard's corridor
+    is the body (10 cm to a cell's centre): such a path must not trip it."""
+    s = guarded()
+    s.start(Step.path([[1.5, 0.0]]))
+    wall = [(0.5 + 0.05 * k, side) for k in range(10) for side in (0.13, -0.13)]
+    speeds = drive(s, wall)
     assert s.ctrl.history[0]['status'] == 'done'
     assert max(speeds) == pytest.approx(0.2, abs=0.01)
-
-
-def test_without_pictures_the_rover_creeps() -> None:
+    # ... and something that really is in the body's way still stops it
     s = guarded()
-    s.start(Step.path([[0.5, 0.0]]))
-    speeds = drive(s, None)  # the capture server is silent
-    assert s.ctrl.history[0]['status'] == 'done'
-    assert max(speeds) <= s.cfg.guard_blind_speed + 1e-6
-    assert s.ctrl.local.age(s.t) is None
+    s.start(Step.path([[1.5, 0.0]]))
+    drive(s, [(0.8, 0.07)])
+    assert s.ctrl.history[0]['status'] == 'blocked'
 
 
-def test_pictures_that_stop_coming_slow_the_rover_down() -> None:
+def test_without_pictures_the_rover_creeps_then_drives_on_unprotected() -> None:
     s = guarded()
     s.start(Step.path([[2.0, 0.0]]))
+    s.run(2.5)  # the capture server is silent
+    assert s.ctrl.local_state['state'] == 'blind'
+    assert 0 < s.ctrl.v_cmd <= s.cfg.guard_blind_speed + 1e-6
+    s.run(1.5)  # more than guard_blind_time: the depth camera is given up
+    assert s.ctrl.local_state['state'] == 'no_camera'
+    assert s.ctrl.snapshot()['local']['state'] == 'no_camera'
+    s.run(1.0)
+    assert s.ctrl.v_cmd == pytest.approx(0.2, abs=0.01)
+    s.run_until_idle()
+    assert s.ctrl.history[0]['status'] == 'done'
+
+
+def test_with_guard_blind_stop_the_path_ends_instead() -> None:
+    s = guarded(guard_blind_stop=1)
+    s.start(Step.path([[2.0, 0.0]]))
+    s.run_until_idle()
+    assert s.ctrl.history[0]['status'] == 'no depth camera'
+    assert s.board.x < 0.4  # crept for guard_blind_time, then stopped
+
+
+def test_pictures_that_stop_and_come_back() -> None:
+    s = guarded()
+    s.start(Step.path([[3.0, 0.0]]))
     for _ in range(20):
         see(s, [])
         s.run(0.1)
     assert s.ctrl.v_cmd == pytest.approx(0.2, abs=0.01)
-    s.run(1.0)  # no picture for 1 s
+    s.run(0.6)  # a few late pictures: under guard_max_age, nothing happens
+    assert s.ctrl.local_state['state'] == 'ok' and s.ctrl.v_cmd == pytest.approx(0.2, abs=0.01)
+    s.run(1.0)  # a real gap
     assert s.ctrl.local_state['state'] == 'blind'
     assert s.ctrl.v_cmd <= s.cfg.guard_blind_speed + 1e-6
+    for _ in range(10):  # the camera is back
+        see(s, [])
+        s.run(0.1)
+    assert s.ctrl.local_state['state'] == 'ok' and s.ctrl.v_cmd == pytest.approx(0.2, abs=0.01)
+
+
+def test_what_was_seen_is_forgotten_even_when_pictures_stop() -> None:
+    """Blocked by a box, then the capture server dies and the box is taken away: once the
+    rover's memory has run out (local_hold_near: the box was under its nose), it drives on
+    (unprotected, and saying so). Before, such a cell was kept for ever."""
+    s = guarded(guard_backoff=0.0)
+    s.start(Step.path([[2.0, 0.0]]))
+    drive(s, [(1.02, 0.02)])
+    assert s.ctrl.history[0]['status'] == 'blocked'
+    s.run(s.cfg.local_hold + 1.0)  # no picture at all
+    s.start(Step.path([[2.0, 0.0]], frame='odom'))
+    s.run_until_idle(limit=60.0)
+    assert s.ctrl.history[0]['status'] == 'blocked'  # still remembered: it was very near
+    s.run(s.cfg.local_hold_near)
+    s.start(Step.path([[2.0, 0.0]], frame='odom'))
+    s.run_until_idle(limit=60.0)
+    assert s.ctrl.history[0]['status'] == 'done' and s.board.x == pytest.approx(2.0, abs=0.06)
 
 
 def test_obstacle_that_leaves_lets_the_next_path_through() -> None:
     s = guarded()
     s.start(Step.path([[2.0, 0.0]]))
-    drive(s, [(1.0, 0.0)])
+    drive(s, [(1.02, 0.02)])
     assert s.ctrl.history[0]['status'] == 'blocked'
     s.start(Step.path([[2.0, 0.0]], frame='odom'))
     drive(s, [])  # it is gone: the camera sees the floor there
@@ -133,7 +229,7 @@ def test_guard_off_by_default_changes_nothing() -> None:
     s.ctrl.local = LocalMap()
     s.run(2.5)
     s.start(Step.path([[1.5, 0.0]]))
-    drive(s, [(1.0, 0.0)])
+    drive(s, [(1.02, 0.02)])
     assert s.ctrl.history[0]['status'] == 'done'  # drove through: nobody was looking
     assert s.ctrl.snapshot()['local'] == {'state': 'off'}
 

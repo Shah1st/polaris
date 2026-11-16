@@ -352,14 +352,15 @@ class GridFeed:
             self._stop.wait(1.0 if self.error else self.period)
 
     def snapshot(self) -> dict:
-        local = self.app.rover.local
-        age = local.age(time.monotonic())
+        rover = self.app.rover
+        local, now = rover.local, time.monotonic()
+        age = local.age(now)
         return {
             'feed': self.active(),
             'error': self.error,
             'grids': self.grids,
             'age_s': None if age is None else round(age, 3),
-            **local.counts(),
+            **local.counts((rover.odom.x, rover.odom.y), now),
         }
 
 

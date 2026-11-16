@@ -309,16 +309,18 @@ def test_local_grid_is_fed_from_the_capture_server_and_paths_carry_their_id(benc
     assert code == 200 and strict_json(data)['age_s'] is None  # asked: the feed wakes up
     assert feed.active() and feed.poll() and asked == ['http://capture/grid']
     assert not feed.poll()  # the same picture (seq) is not integrated twice
+    grid['seq'] = 8  # a second picture: an obstacle counts once two pictures have shown it
+    assert feed.poll()
 
     code, _, data = bench.request('GET', '/local_grid')
     local = strict_json(data)
     x, y, _ = local['pose']
     i = int((y + 0.02 - local['y0']) / local['res'])
     j = int((x + 0.62 - local['x0']) / local['res'])
-    assert local['cells'][i][j] == 1 and local['age_s'] < 2.0 and local['frames'] == 1
+    assert local['cells'][i][j] == 1 and local['age_s'] < 2.0 and local['frames'] == 2
     assert len(local['cells']) == 50 and local['error'] is None
     state = strict_json(bench.request('GET', '/state')[2])
-    assert state['local']['obstacle'] == 1 and state['local']['grids'] == 1
+    assert state['local']['obstacle'] == 1 and state['local']['grids'] == 2
     assert state['ctrl']['local'] == {'state': 'off'}
 
     code, _, _ = bench.request('POST', '/path', '{"points": [[0.3, 0]], "id": "t-1"}')
@@ -331,5 +333,6 @@ def test_local_grid_is_fed_from_the_capture_server_and_paths_carry_their_id(benc
     code, _, data = bench.request('POST', '/path', '{"points": [[0.3, 0]], "id": ""}')
     assert code == 400 and b'path id' in data
     bench.request('POST', '/reset_odom')
-    assert strict_json(bench.request('GET', '/local_grid')[2])['frames'] == 1
-    assert bench.rover.local.counts() == {'obstacle': 0, 'free': 0}  # placed in the old frame
+    assert strict_json(bench.request('GET', '/local_grid')[2])['frames'] == 2
+    counts = bench.rover.local.counts((0.0, 0.0), time.monotonic())
+    assert counts == {'obstacle': 0, 'free': 0}  # placed in the old frame
