@@ -12,6 +12,7 @@ plus the rover; the demo chain is plain Python, with no ROS required.
 (`merging_map.CarteFusion`). Map fusion and path planning are the real code; sensors and
 motion are simulated.*
 
+- [Vision](#vision)
 - [How it works](#how-it-works)
 - [Quick start](#quick-start)
 - [What is proven](#what-is-proven)
@@ -21,21 +22,48 @@ motion are simulated.*
 - [Known limits](#known-limits)
 - [Team](#team)
 
+## Vision
+
+What we built and drove during the hackathon is one rover guided by one camera above it. The
+goal behind it is larger: **a swarm of ground and aerial robots that scout an area together,
+each at its own scale, into one shared map.** Drones see wide and coarse from above, rovers
+see close and fine on the ground, and each robot is sent where the others cannot see.
+
+| Use case | How the swarm would work |
+|---|---|
+| **A missing person in a forest** | Drones map the clearings and the tree line from above; rovers go under the canopy, where no drone can see, and the merged map shows what is left to search. |
+| **Victims of a house fire** | A drone with a thermal camera and a ground robot map the rooms together and locate people before anyone goes in. |
+| **Any area to scout before people enter it** | The same map and planner, with other robots and sensors plugged in. |
+
+What already points that way in this repository:
+
+- **One map for any number of robots, at several scales.** The fused map takes tiles from
+  every source, from 80 cm cells (a drone's first survey) down to 5 cm (a rover); the finest
+  and most recent view wins ([merging_map/](merging_map/README.md)).
+- **Any device can be plugged in.** A JSON file lists the drones, rovers and sensors around
+  that map; the example runs two drones and two rovers in simulation
+  ([devices/](devices/README.md)).
+- **A forest search in simulation**, with two rovers and one drone: the picture above.
+
+What is not there yet: on real hardware the system has run with one rover and one phone
+standing in for the drone. Several robots at once exist only in simulation, and no thermal
+camera has been used.
+
 ## How it works
 
 ```mermaid
-flowchart TD
+flowchart LR
     phone["<b>Phone above the area</b><br/>CamStream app, iphone-camera/"]
-    browser["<b>Browser</b><br/>cameras, maps, keys, clicked goal"]
+    browser["<b>Browser</b><br/>cameras, maps, keys,<br/>clicked goal"]
     dash["<b>Dashboard</b><br/>teleop/server.py"]
     fusion["<b>Maps, planner, missions</b><br/>sim/fusion_reelle.py<br/>overhead pipeline + merging_map A*"]
     rover["<b>Rover</b><br/>rover/rover_server.py<br/>motors, odometry, safety"]
 
-    phone -- "pictures over Wi-Fi or USB" --> dash
+    phone -- "pictures over<br/>Wi-Fi or USB" --> dash
     browser <--> dash
     dash --> fusion
-    fusion -- "GET /state, POST /path, /move, /stop" --> rover
-    rover -. "GET /local_grid: obstacles seen by the depth camera (optional)" .-> fusion
+    fusion -- "GET /state<br/>POST /path, /move, /stop" --> rover
+    rover -. "GET /local_grid<br/>depth camera obstacles<br/>(optional)" .-> fusion
 ```
 
 1. **Drone map.** The overhead picture is resampled to a metric top view; pixels that differ
@@ -54,7 +82,7 @@ flowchart TD
 
 | From above, on the real floor | Map fusion and planning |
 |---|---|
-| ![A picture of the arena taken from above, next to the obstacle grid computed from it](docs/images/overhead-real.jpg) | ![Four panels of the map fusion demo: drone view, zoomed tiles, fused map with replanning, unreachable goal](merging_map/demo_fusion.png) |
+| <img src="docs/images/overhead-real.jpg" width="420" alt="A picture of the arena taken from above, next to the obstacle grid computed from it"> | ![Four panels of the map fusion demo: drone view, zoomed tiles, fused map with replanning, unreachable goal](merging_map/demo_fusion.png) |
 | A picture from the phone above the arena and the obstacle grid computed from it. The red circle is where the rover was found. | Output of `merging_map/demo_fusion.py` on a simulated world (labels in French): the coarse drone view shows no path, the drone zooms where a passage may hide, the rover finds a fallen trunk and replans, and a goal that cannot be reached is replaced by the nearest point. |
 
 The ROS 2 Jazzy nodes in `src/` publish the same overhead map on topics; the demo chain does
