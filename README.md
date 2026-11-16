@@ -59,7 +59,7 @@ rover can do both, but it only sees a few metres ahead and would search blindly.
 map each does what the other cannot: the drone gives the big picture and the way around large
 obstacles, the rover fills in what is hidden under the canopy and goes to the person.
 
-![Drone-guided rescue in simulation: the drone flies ahead of the rover and maps the route to a known position](docs/images/forest-mission-drone-guides-rover.jpg)
+![Drone-guided rescue in simulation: the drone flies ahead of the rover and maps the route to a known position](docs/images/forest-mission-drone-guides-rover.gif)
 
 *The victim's position is known: the drone flies ahead of the rover and maps the route. It sees
 the rock step from above, so the rover is sent around it from the start; the rover adds what is
