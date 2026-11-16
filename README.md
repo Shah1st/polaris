@@ -38,8 +38,9 @@ see close and fine on the ground, and each robot is sent where the others cannot
 What already points that way in this repository:
 
 - **One map for any number of robots, at several scales.** The fused map takes tiles from
-  every source, from 80 cm cells (a drone's first survey) down to 5 cm (a rover); the finest
-  and most recent view wins ([merging_map/](merging_map/README.md)).
+  every source, from 80 cm cells (a drone's first survey) down to 5 cm (a rover). The finest
+  and most recent view wins, and a rover's view wins over a drone's
+  ([merging_map/](merging_map/README.md)).
 - **Any device can be plugged in.** A JSON file lists the drones, rovers and sensors around
   that map; the example runs two drones and two rovers in simulation
   ([devices/](devices/README.md)).
@@ -174,11 +175,12 @@ first.
 | `guidance_global_map` | ament_python | Overhead image → `nav_msgs/OccupancyGrid` on `/map` |
 | `guidance_rover_pose` | ament_python | Rover pose in the map frame from the overhead camera |
 | `guidance_rover_vo` | ament_python | Bridge from the rover mapper: visual odometry and local 3D points |
-| `guidance_supervisor` | ament_python | Goals to Nav2, mission state machine, health checks |
+| `guidance_supervisor` | ament_python | `merging_map_node`: the map fusion and its planner on ROS topics. `supervisor_node` (goals, mission state, health checks) is still a placeholder |
 | `guidance_bringup` | ament_python | `guidance.launch.py` and `config/` for parameters |
 
-Local obstacle avoidance comes from Nav2 (controller + local costmap fed by the depth camera),
-set up in `guidance_bringup`, so it has no package of its own.
+Nav2 and robot_localization are not wired up: configuring Nav2 in `guidance_bringup` is still
+a TODO. Today the planner is `merging_map`'s A*, and local obstacle avoidance is the rover's
+own guard ([docs/local-navigation.md](docs/local-navigation.md)).
 
 ## Rover mapper bridge (`guidance_rover_vo`)
 
